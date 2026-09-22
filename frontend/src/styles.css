@@ -939,6 +939,45 @@ button, input, textarea, select { outline: none; }
     white-space: pre-wrap;
 }
 
+.file-activity-summary {
+    max-width: 760px;
+    margin: 16px 0 4px;
+    overflow: hidden;
+    border: 1px solid #dce5e2;
+    border-radius: 13px;
+    background: #fbfcfc;
+}
+.file-activity-heading {
+    display: flex;
+    width: 100%;
+    min-height: 48px;
+    align-items: center;
+    gap: 9px;
+    padding: 8px 11px;
+    border: 0;
+    color: #4d5753;
+    background: transparent;
+    text-align: left;
+}
+.file-activity-heading:hover { background: #f2f7f5; }
+.file-activity-icon { display: grid; width: 29px; height: 29px; flex: 0 0 auto; place-items: center; border-radius: 8px; color: #25705a; background: #e7f4ef; }
+.file-activity-heading > span:nth-child(2) { min-width: 0; flex: 1; }
+.file-activity-heading b, .file-activity-heading small { display: block; }
+.file-activity-heading b { font-size: 11px; }
+.file-activity-heading small { margin-top: 2px; color: #909995; font-size: 9px; }
+.file-activity-counts { display: flex; flex: 0 0 auto; gap: 4px; }
+.file-activity-counts i { padding: 3px 6px; border-radius: 6px; color: #64716d; background: #edf1f0; font-size: 8.5px; font-style: normal; }
+.file-activity-groups { display: grid; gap: 10px; padding: 10px 12px 12px; border-top: 1px solid #e8eceb; background: white; }
+.file-activity-group > div:first-child { display: flex; align-items: center; gap: 6px; margin-bottom: 5px; color: #737e7a; }
+.file-activity-group > div:first-child b { font-size: 9.5px; }
+.file-activity-group > div:last-child { display: grid; gap: 3px; }
+.file-activity-group button { display: flex; min-width: 0; min-height: 29px; align-items: center; gap: 7px; padding: 0 8px; border: 0; border-radius: 7px; color: #52605b; background: #f7f9f8; text-align: left; }
+.file-activity-group button:hover { color: #176f59; background: #edf6f2; }
+.file-activity-group code { overflow: hidden; font: 10px/1.35 "Cascadia Code", Consolas, monospace; text-overflow: ellipsis; white-space: nowrap; }
+.file-activity-group.read > div:first-child { color: #467394; }
+.file-activity-group.created > div:first-child { color: #2d7a5f; }
+.file-activity-group.modified > div:first-child { color: #966a2f; }
+
 .chart-card {
     max-width: 760px;
     margin: 12px 0 18px;

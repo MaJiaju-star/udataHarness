@@ -12,6 +12,7 @@ import com.udata.harness.service.SessionService;
 import com.udata.harness.service.UserHarnessEngineService;
 import com.udata.harness.service.UserWorkspaceService;
 import org.noear.solon.ai.chat.ChatConfig;
+import org.noear.solon.ai.agent.AgentSession;
 import org.noear.solon.ai.chat.message.ChatMessage;
 import org.noear.solon.ai.chat.message.AssistantMessage;
 import org.noear.solon.ai.chat.message.ToolMessage;
@@ -169,7 +170,10 @@ public class SessionServiceImpl implements SessionService {
     public List<Map<String, Object>> messages(String userId, String sessionId) {
         List<Map<String, Object>> result = new ArrayList<>();
         Map<String, Map<String, Object>> pendingTools = new LinkedHashMap<>();
-        for (ChatMessage message : sessionRepository.getSession(userId, sessionId).getMessages()) {
+        AgentSession session = sessionRepository.getSession(userId, sessionId);
+        Object storedActivities = session.getContext().get(ChatServiceImpl.FILE_ACTIVITIES_KEY);
+        Map<?, ?> activitiesByRun = storedActivities instanceof Map<?, ?> map ? map : Map.of();
+        for (ChatMessage message : session.getMessages()) {
             if (message instanceof ToolMessage toolMessage) {
                 Map<String, Object> tool = pendingTools.get(toolMessage.getToolCallId());
                 if (tool != null) {
@@ -201,6 +205,13 @@ public class SessionServiceImpl implements SessionService {
                     }
                 }
                 item.put("tools", tools);
+            }
+            if (message instanceof AssistantMessage) {
+                Object runId = message.getMetadata().get("_runId");
+                Object fileActivities = runId == null ? null : activitiesByRun.get(String.valueOf(runId));
+                if (fileActivities != null) {
+                    item.put("fileActivities", fileActivities);
+                }
             }
             result.add(item);
         }

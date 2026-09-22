@@ -10,10 +10,13 @@ import com.udata.harness.service.ChatService;
 import com.udata.harness.service.UserHarnessEngineService;
 import com.udata.harness.service.UserWorkspaceService;
 import org.noear.solon.ai.agent.AgentSession;
+import org.noear.solon.ai.agent.AgentChunk;
 import org.noear.solon.ai.agent.react.ReActTrace;
 import org.noear.solon.ai.agent.react.intercept.HITL;
 import org.noear.solon.ai.agent.react.intercept.HITLDecision;
 import org.noear.solon.ai.agent.react.intercept.HITLTask;
+import org.noear.solon.ai.agent.react.task.ActionChunk;
+import org.noear.solon.ai.agent.react.task.ObservationChunk;
 import org.noear.solon.ai.harness.HarnessEngine;
 import org.noear.solon.ai.chat.ChatRole;
 import org.noear.solon.ai.chat.message.ChatMessage;
@@ -23,11 +26,14 @@ import org.noear.solon.annotation.Inject;
 import reactor.core.publisher.Flux;
 
 import java.nio.file.Path;
+import java.nio.file.Files;
 import java.util.ArrayList;
 import java.util.Collection;
+import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 
 /**
@@ -42,6 +48,8 @@ public class ChatServiceImpl implements ChatService {
     static final String ALWAYS_ALLOWED_TOOLS_KEY = "_udata_always_allowed_tools";
     static final String SELECTED_MODEL_KEY = "_udata_selected_model";
     static final String THINKING_DEPTH_KEY = "_udata_thinking_depth";
+    static final String FILE_ACTIVITIES_KEY = "_udata_file_activities";
+    private static final String PENDING_FILE_ACTIVITIES_KEY = "_udata_pending_file_activities";
 
     @Inject
     private UserHarnessEngineService engines;
@@ -214,6 +222,7 @@ public class ChatServiceImpl implements ChatService {
                 // HITL 审批恢复会重放挂起前同一 reasonId 的文本；该文本已经在上一个
                 // SSE 分段发给浏览器，必须在映射前过滤，避免前端再次追加。
                 .filter(chunk -> !StreamEventMapper.isReasonReplay(chunk, suspendedReasonId))
+                .doOnNext(chunk -> trackFileActivity(workspace, session, chunk))
                 .map(StreamEventMapper::map);
 
         return chunks.concatWith(Flux.defer(() -> {
@@ -426,6 +435,75 @@ public class ChatServiceImpl implements ChatService {
 
     private boolean isFullPermission(SessionMetadata metadata) {
         return metadata != null && "full".equals(metadata.getPermissionMode());
+    }
+
+    /**
+     * 跟踪 read/write/edit 工具的成功闭环，并按 runId 保存到 Session 快照。
+     *
+     * <p>Action 阶段记录路径和写入前是否存在，Observation 成功后才正式计入，避免把
+     * 被拒绝或执行失败的工具展示成已完成文件变更。</p>
+     */
+    @SuppressWarnings("unchecked")
+    void trackFileActivity(Path workspace, AgentSession session, AgentChunk chunk) {
+        //1. Action 阶段识别文件工具，并暂存 callId 对应的活动记录。
+        if (chunk instanceof ActionChunk action) {
+            String name = action.getToolName() == null ? "" : action.getToolName().toLowerCase();
+            if (!("read".equals(name) || "write".equals(name) || "edit".equals(name))) {
+                return;
+            }
+            Object rawPath = action.getArgs() == null ? null : action.getArgs().get("file_path");
+            if (!(rawPath instanceof String filePath) || filePath.isBlank() || filePath.startsWith("@")) {
+                return;
+            }
+            String type = "read";
+            if ("edit".equals(name)) {
+                type = "modified";
+            } else if ("write".equals(name)) {
+                Path target = workspace.resolve(filePath).normalize();
+                type = target.startsWith(workspace) && Files.exists(target) ? "modified" : "created";
+            }
+            action.getMeta().put("fileOperation", type);
+            Object pendingValue = session.getContext().get(PENDING_FILE_ACTIVITIES_KEY);
+            Map<String, Map<String, String>> pending;
+            if (pendingValue instanceof Map<?, ?>) {
+                pending = (Map<String, Map<String, String>>) pendingValue;
+            } else {
+                pending = new LinkedHashMap<>();
+                session.getContext().put(PENDING_FILE_ACTIVITIES_KEY, pending);
+            }
+            pending.put(action.getCallId(), Map.of("type", type, "path", filePath));
+            return;
+        }
+
+        //2. Observation 阶段仅持久化成功操作，并按类型和路径去重。
+        if (chunk instanceof ObservationChunk observation) {
+            Map<String, Map<String, String>> pending = (Map<String, Map<String, String>>)
+                    session.getContext().get(PENDING_FILE_ACTIVITIES_KEY);
+            if (pending == null) return;
+            Map<String, String> record = pending.remove(observation.getCallId());
+            String output = observation.getContent();
+            if (record == null || observation.getError() != null
+                    || (output != null && output.matches("(?s).*(错误|失败|not found|cannot ).*"))) {
+                return;
+            }
+            Object activitiesValue = session.getContext().get(FILE_ACTIVITIES_KEY);
+            Map<String, List<Map<String, String>>> activities;
+            if (activitiesValue instanceof Map<?, ?>) {
+                activities = (Map<String, List<Map<String, String>>>) activitiesValue;
+            } else {
+                activities = new LinkedHashMap<>();
+                session.getContext().put(FILE_ACTIVITIES_KEY, activities);
+            }
+            List<Map<String, String>> runActivities = activities.computeIfAbsent(
+                    observation.getRunId(), key -> new ArrayList<>());
+            boolean duplicate = runActivities.stream().anyMatch(item ->
+                    record.get("type").equals(item.get("type"))
+                            && record.get("path").equals(item.get("path")));
+            if (!duplicate) {
+                runActivities.add(record);
+                session.updateSnapshot();
+            }
+        }
     }
 
     /** 拒绝在其他工作区继续会话，防止工具在错误目录中运行。 */

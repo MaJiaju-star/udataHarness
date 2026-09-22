@@ -195,6 +195,56 @@ function mergeReasonContentActivities(activities, reasonBuffers, event) {
     return {activities: nextActivities, reasonBuffers: nextBuffers};
 }
 
+function restoreHistory(history = []) {
+    const result = [];
+    for (const item of history) {
+        const message = {
+            id: uid(),
+            role: item.role === "user" ? "user" : "assistant",
+            content: item.content || "",
+            thinking: item.thinking ? item.content : "",
+            tools: item.tools || [],
+            fileActivities: item.fileActivities || [],
+            finished: true
+        };
+        const previous = result.at(-1);
+        if (message.role === "assistant" && previous?.role === "assistant") {
+            previous.content = [previous.content, message.content].filter(Boolean).join("\n\n");
+            previous.thinking = [previous.thinking, message.thinking].filter(Boolean).join("\n");
+            previous.tools = [...(previous.tools || []), ...(message.tools || [])];
+            previous.fileActivities = [
+                ...(previous.fileActivities || []),
+                ...(message.fileActivities || [])
+            ];
+        } else {
+            result.push(message);
+        }
+    }
+    return result;
+}
+
+function fileActivityFromTools(tools = [], recorded = []) {
+    const activity = {read: new Set(), created: new Set(), modified: new Set()};
+    for (const item of recorded) {
+        if (activity[item.type] && item.path) activity[item.type].add(item.path);
+    }
+    for (const tool of tools) {
+        if (tool.error || /(?:错误|失败|not found|cannot )/i.test(String(tool.output || ""))) continue;
+        const name = String(tool.name || "").toLowerCase();
+        const path = tool.args?.file_path || tool.args?.path;
+        if (!path || typeof path !== "string" || path.startsWith("@")) continue;
+        if (name === "read") activity.read.add(path);
+        if (name === "write" && tool.fileOperation === "modified") activity.modified.add(path);
+        if (name === "write" && tool.fileOperation !== "modified") activity.created.add(path);
+        if (name === "edit" || name === "apply_patch") activity.modified.add(path);
+    }
+    return {
+        read: [...activity.read],
+        created: [...activity.created],
+        modified: [...activity.modified]
+    };
+}
+
 function splitThinkContent(value = "") {
     value = asText(value);
     let visible = "";
@@ -384,13 +434,7 @@ function App() {
         setTokenUsage(emptyTokenUsage());
         if (mobile) useWorkspaceStore.getState().setMobilePane("chat");
         const history = await api(`/api/sessions/messages?sessionId=${encodeURIComponent(session.sessionId)}`);
-        setMessages((history || []).map(item => ({
-            id: uid(),
-            role: item.role === "user" ? "user" : "assistant",
-            content: item.content || "",
-            thinking: item.thinking ? item.content : "",
-            tools: item.tools || []
-        })));
+        setMessages(restoreHistory(history));
     }
 
     async function openFile(path) {
@@ -500,7 +544,7 @@ function App() {
                 );
                 const tool = {
                     callId: event.callId || uid(), name: event.toolName || "tool",
-                    args: event.args || {}, running: true
+                    args: event.args || {}, running: true, fileOperation: event.fileOperation
                 };
                 next.tools.push(tool);
                 next.activities.push({id: `tool-${tool.callId}`, type: "tool", callId: tool.callId});
@@ -519,6 +563,7 @@ function App() {
             }
             if (event.type === "done" && !next.content && event.content) next.content = event.content;
             if (event.type === "done" || event.type === "run_end" || event.type === "error") {
+                next.finished = true;
                 next.activities = next.activities.map(item =>
                     item.type === "thinking" && item.active ? {...item, active: false} : item
                 );
@@ -555,7 +600,8 @@ function App() {
                 thinking: "",
                 tools: [],
                 activities: [],
-                reasonBuffers: {}
+                reasonBuffers: {},
+                finished: false
             }
         ]);
         setRunning(true);
@@ -719,6 +765,7 @@ function App() {
                                   setThinkingDepth(value);
                                   localStorage.setItem("udataThinkingDepth", value);
                               }}
+                              onOpenFile={path => openFile(path).catch(error => notify(error.message))}
                               onSend={sendPrompt} onCreate={() => createSession().catch(error => notify(error.message))}
                               onDecide={decideHitl}
                               onPermissionMode={mode => changePermissionMode(mode)
@@ -904,7 +951,8 @@ function activeFileReference(path, selection) {
 }
 
 function ChatView({api, current, messages, running, models, selectedModel, thinkingDepth,
-                      onModelChange, onThinkingDepthChange, onSend, onCreate, onDecide, onPermissionMode}) {
+                      onModelChange, onThinkingDepthChange, onSend, onCreate, onDecide,
+                      onPermissionMode, onOpenFile}) {
     const [prompt, setPrompt] = useState("");
     const [completionSources, setCompletionSources] = useState({skills: [], files: [], agents: []});
     const [completion, setCompletion] = useState(null);
@@ -1041,6 +1089,7 @@ function ChatView({api, current, messages, running, models, selectedModel, think
                 </div>}
                 {messages.map(message =>
                     <Message key={message.id} message={message}
+                             onOpenFile={onOpenFile}
                              onDecide={(action, always, callUuids) =>
                                  onDecide(message.id, action, always, callUuids)}/>)}
                 {running && messages.at(-1)?.role !== "assistant" &&
@@ -1219,7 +1268,7 @@ function TokenMeter({usage, contextLength, provider, running}) {
     </div>;
 }
 
-function Message({message, onDecide}) {
+function Message({message, onDecide, onOpenFile}) {
     const parsed = message.role === "assistant"
         ? splitThinkContent(message.content || "")
         : {visible: message.content || "", thinking: "", pending: false};
@@ -1260,12 +1309,50 @@ function Message({message, onDecide}) {
                     ? <ReactMarkdown remarkPlugins={[remarkGfm]}>{parsed.visible}</ReactMarkdown>
                     : parsed.visible}
             </div>}
+            {message.role === "assistant" && message.finished &&
+                <FileActivitySummary tools={message.tools} activities={message.fileActivities}
+                                     onOpenFile={onOpenFile}/>}
             {!parsed.visible && !thinking && message.role === "assistant" && !message.error &&
                 <div className="typing-row inline"><span/><span/><span/></div>}
             {message.hitl && <HitlCard event={message.hitl} onDecide={onDecide}/>}
             {message.error && <div className="message-error"><X size={16}/>{message.error}</div>}
         </div>
     </article>;
+}
+
+function FileActivitySummary({tools, activities, onOpenFile}) {
+    const [open, setOpen] = useState(true);
+    const activity = fileActivityFromTools(tools, activities);
+    const sections = [
+        {id: "read", label: "读取", icon: Search, paths: activity.read},
+        {id: "created", label: "创建", icon: FilePlus2, paths: activity.created},
+        {id: "modified", label: "修改", icon: Pencil, paths: activity.modified}
+    ].filter(section => section.paths.length > 0);
+    const total = sections.reduce((sum, section) => sum + section.paths.length, 0);
+    if (total === 0) return null;
+    return <section className="file-activity-summary" aria-label="本轮文件活动">
+        <button className="file-activity-heading" onClick={() => setOpen(value => !value)}
+                aria-expanded={open}>
+            <span className="file-activity-icon"><Files size={15}/></span>
+            <span><b>本轮文件活动</b><small>{total} 项文件记录</small></span>
+            <span className="file-activity-counts">
+                {activity.read.length > 0 && <i>{activity.read.length} 读</i>}
+                {activity.created.length > 0 && <i>{activity.created.length} 建</i>}
+                {activity.modified.length > 0 && <i>{activity.modified.length} 改</i>}
+            </span>
+            {open ? <ChevronDown size={15}/> : <ChevronRight size={15}/>}
+        </button>
+        {open && <div className="file-activity-groups">
+            {sections.map(section => {
+                const Icon = section.icon;
+                return <div className={`file-activity-group ${section.id}`} key={section.id}>
+                    <div><Icon size={13}/><b>{section.label}</b></div>
+                    <div>{section.paths.map(path => <button key={path} title={path}
+                        onClick={() => onOpenFile?.(path)}><FileCode2 size={13}/><code>{path}</code></button>)}</div>
+                </div>;
+            })}
+        </div>}
+    </section>;
 }
 
 function Thinking({content, active = false}) {

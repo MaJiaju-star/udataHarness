@@ -107,6 +107,9 @@ public final class StreamEventMapper {
             event.put("callId", action.getCallId());
             event.put("toolName", action.getToolName());
             event.put("args", action.getArgs());
+            if (action.hasMeta("fileOperation")) {
+                event.put("fileOperation", action.getMeta().get("fileOperation"));
+            }
         } else if (chunk instanceof ObservationChunk observation) {
             event.put("type", "tool_end");
             event.put("callId", observation.getCallId());
