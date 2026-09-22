@@ -12,6 +12,8 @@ import org.noear.solon.annotation.Mapping;
 import org.noear.solon.annotation.Param;
 import org.noear.solon.annotation.Post;
 import org.noear.solon.core.handle.Result;
+import org.noear.solon.core.handle.DownloadedFile;
+import org.noear.solon.core.handle.UploadedFile;
 
 import java.util.List;
 import java.util.Map;
@@ -121,5 +123,24 @@ public class WorkspaceFileController {
     public Result<List<Map<String, Object>>> search(@Header("X-User-Id") String userId,
                                                     @Param("keyword") String keyword) {
         return Result.succeed(files.search(userId, keyword));
+    }
+
+    /** 上传一个文件到指定工作区目录；空 path 表示工作区根目录。 */
+    @Post
+    @Mapping("/upload")
+    public Result<Map<String, Object>> upload(
+            @Header("X-User-Id") String userId,
+            @Param(value = "path", required = false) String path,
+            @Param("file") UploadedFile file) {
+        return Result.succeed(files.upload(userId, path, file));
+    }
+
+    /** 下载工作区内的普通文件。 */
+    @Get
+    @Mapping("/download")
+    public DownloadedFile download(
+            @Header("X-User-Id") String userId,
+            @Param("path") String path) {
+        return files.download(userId, path);
     }
 }

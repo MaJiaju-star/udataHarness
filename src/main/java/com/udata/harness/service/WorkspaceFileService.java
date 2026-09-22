@@ -1,5 +1,8 @@
 package com.udata.harness.service;
 
+import org.noear.solon.core.handle.DownloadedFile;
+import org.noear.solon.core.handle.UploadedFile;
+
 import java.util.List;
 import java.util.Map;
 
@@ -27,4 +30,10 @@ public interface WorkspaceFileService {
 
     /** 在安全深度与结果上限内按相对路径关键字搜索。 */
     List<Map<String, Object>> search(String userId, String keyword);
+
+    /** 将上传文件保存到工作区指定目录，重名文件会被覆盖。 */
+    Map<String, Object> upload(String userId, String directory, UploadedFile file);
+
+    /** 返回工作区内普通文件的流式下载对象。 */
+    DownloadedFile download(String userId, String path);
 }

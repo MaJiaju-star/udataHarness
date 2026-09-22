@@ -18,7 +18,7 @@ self.MonacoEnvironment = {
 };
 loader.config({monaco});
 
-export default function MonacoEditor({path, value, language, onChange, onSelectionChange}) {
+export default function MonacoEditor({path, value, language, onChange, onSelectionChange, onEditorReady}) {
     const selectionListener = useRef(onSelectionChange);
     useEffect(() => {
         selectionListener.current = onSelectionChange;
@@ -30,19 +30,22 @@ export default function MonacoEditor({path, value, language, onChange, onSelecti
         language={language}
         theme="vs"
         onChange={onChange}
-        onMount={editor => editor.onDidChangeCursorSelection(event => {
-            const selection = event.selection;
-            let endLine = selection.endLineNumber;
-            if (!selection.isEmpty() && selection.endColumn === 1
-                    && endLine > selection.startLineNumber) {
-                endLine--;
-            }
-            selectionListener.current?.({
-                empty: selection.isEmpty(),
-                startLine: selection.startLineNumber,
-                endLine
+        onMount={editor => {
+            onEditorReady?.(editor);
+            editor.onDidChangeCursorSelection(event => {
+                const selection = event.selection;
+                let endLine = selection.endLineNumber;
+                if (!selection.isEmpty() && selection.endColumn === 1
+                        && endLine > selection.startLineNumber) {
+                    endLine--;
+                }
+                selectionListener.current?.({
+                    empty: selection.isEmpty(),
+                    startLine: selection.startLineNumber,
+                    endLine
+                });
             });
-        })}
+        }}
         options={{
             fontSize: 13,
             minimap: {enabled: false},

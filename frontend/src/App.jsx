@@ -5,9 +5,10 @@ import ChartCard, {chartSpecFromTool} from "./ChartCard.jsx";
 import {useWorkspaceStore} from "./workspaceStore.js";
 import {
     Activity, ArrowLeft, Bot, Box, BrainCircuit, Check, ChevronDown, ChevronRight, CircleStop,
-    File, FileCode2, FilePlus2, Files, Folder, FolderOpen, HardDrive, Link2, Menu, MessageSquare,
+    ClipboardPaste, Copy, Download, File, FileCode2, FilePlus2, Files, Folder, FolderOpen,
+    HardDrive, Link2, Menu, MessageSquare,
     MoreHorizontal, Network, PanelLeftClose, PanelLeftOpen, Pencil, Plus, RefreshCw,
-    Save, Search, Send, Settings2, ShieldCheck, Sparkles, SquareTerminal, Trash2,
+    Save, Scissors, Search, Send, Settings2, ShieldCheck, Sparkles, SquareTerminal, Trash2,
     Upload, UserRound, X, Zap
 } from "lucide-react";
 
@@ -323,15 +324,18 @@ function App() {
     }, []);
 
     const api = useCallback(async (path, options = {}) => {
+        const {raw = false, ...fetchOptions} = options;
+        const multipart = fetchOptions.body instanceof FormData;
         const response = await fetch(path, {
-            ...options,
+            ...fetchOptions,
             headers: {
-                "Content-Type": "application/json",
+                ...(multipart ? {} : {"Content-Type": "application/json"}),
                 "X-User-Id": userId,
-                ...(options.headers || {})
+                ...(fetchOptions.headers || {})
             }
         });
         if (!response.ok) throw new Error(await response.text() || `HTTP ${response.status}`);
+        if (raw) return response;
         const body = await response.json();
         if (body.code && body.code >= 400) throw new Error(body.description || "请求失败");
         return body.data === undefined ? body : body.data;
@@ -1364,12 +1368,51 @@ function replaceTreeChildren(items, path, children) {
     });
 }
 
+function ContextMenu({x, y, items, onClose}) {
+    useEffect(() => {
+        const close = event => {
+            if (event.type === "keydown" && event.key !== "Escape") return;
+            onClose();
+        };
+        window.addEventListener("mousedown", close);
+        window.addEventListener("keydown", close);
+        window.addEventListener("resize", close);
+        window.addEventListener("scroll", close, true);
+        return () => {
+            window.removeEventListener("mousedown", close);
+            window.removeEventListener("keydown", close);
+            window.removeEventListener("resize", close);
+            window.removeEventListener("scroll", close, true);
+        };
+    }, [onClose]);
+
+    const left = Math.max(8, Math.min(x, window.innerWidth - 196));
+    const top = Math.max(8, Math.min(y, window.innerHeight - items.length * 36 - 16));
+    return <div className="context-menu" role="menu" style={{left, top}}
+                onMouseDown={event => event.stopPropagation()}>
+        {items.map(item => {
+            const Icon = item.icon;
+            return <button key={item.id} role="menuitem" disabled={item.disabled}
+                           onClick={() => {
+                               onClose();
+                               item.action();
+                           }}>
+                <Icon size={14}/><span>{item.label}</span>
+            </button>;
+        })}
+    </div>;
+}
+
 function ExplorerPanel({api, notify, onOpenFile}) {
     const [tree, setTree] = useState([]);
     const [query, setQuery] = useState("");
     const [loading, setLoading] = useState(true);
     const [expandedPaths, setExpandedPaths] = useState(() => new Set());
     const [loadingPaths, setLoadingPaths] = useState(() => new Set());
+    const [contextMenu, setContextMenu] = useState(null);
+    const uploadInputRef = useRef(null);
+    const batchUploadInputRef = useRef(null);
+    const uploadDirectoryRef = useRef("");
     const activePath = useWorkspaceStore(state => state.activePath);
 
     const loadTree = useCallback(async () => {
@@ -1424,6 +1467,72 @@ function ExplorerPanel({api, notify, onOpenFile}) {
         onOpenFile(data.path);
     }
 
+    async function uploadFiles(files) {
+        const selectedFiles = Array.from(files || []);
+        if (selectedFiles.length === 0) return;
+        for (const file of selectedFiles) {
+            const form = new FormData();
+            form.append("file", file, file.name);
+            await api(`/api/files/upload?path=${encodeURIComponent(uploadDirectoryRef.current)}`, {
+                method: "POST",
+                body: form
+            });
+        }
+        await loadTree();
+        notify(selectedFiles.length === 1
+            ? `已上传 ${selectedFiles[0].name}`
+            : `已上传 ${selectedFiles.length} 个文件`);
+    }
+
+    async function downloadFile(item) {
+        const response = await api(`/api/files/download?path=${encodeURIComponent(item.path)}`, {raw: true});
+        const blob = await response.blob();
+        const url = URL.createObjectURL(blob);
+        const anchor = document.createElement("a");
+        anchor.href = url;
+        anchor.download = item.name;
+        document.body.appendChild(anchor);
+        anchor.click();
+        anchor.remove();
+        window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+    }
+
+    function openUploadPicker(directory, multiple) {
+        uploadDirectoryRef.current = directory || "";
+        (multiple ? batchUploadInputRef : uploadInputRef).current?.click();
+    }
+
+    function openTreeContextMenu(event, item = null) {
+        event.preventDefault();
+        event.stopPropagation();
+        setContextMenu({x: event.clientX, y: event.clientY, item});
+    }
+
+    function treeMenuItems(item) {
+        if (item?.type === "file") {
+            return [
+                {id: "open", label: "打开", icon: FileCode2, action: () => onOpenFile(item.path)},
+                {id: "download", label: "下载", icon: Download,
+                    action: () => downloadFile(item).catch(error => notify(error.message))},
+                {id: "copy-path", label: "复制路径", icon: Copy,
+                    action: () => navigator.clipboard.writeText(item.path)
+                        .then(() => notify("路径已复制"))
+                        .catch(error => notify(error.message))}
+            ];
+        }
+        const directory = item?.path || "";
+        return [
+            {id: "upload", label: "上传文件", icon: Upload,
+                action: () => openUploadPicker(directory, false)},
+            {id: "batch-upload", label: "批量上传", icon: Files,
+                action: () => openUploadPicker(directory, true)},
+            ...(item ? [{id: "copy-path", label: "复制路径", icon: Copy,
+                action: () => navigator.clipboard.writeText(item.path)
+                    .then(() => notify("路径已复制"))
+                    .catch(error => notify(error.message))}] : [])
+        ];
+    }
+
     return <div className="explorer-panel">
         <div className="explorer-toolbar">
             <span>资源管理器</span>
@@ -1433,18 +1542,34 @@ function ExplorerPanel({api, notify, onOpenFile}) {
         <div className="search-box"><Search size={15}/><input value={query} placeholder="搜索文件"
             onChange={event => setQuery(event.target.value)}
             onKeyDown={event => event.key === "Enter" && search().catch(error => notify(error.message))}/></div>
-        <div className="tree-scroll" role="tree" aria-label="工作区文件">
+        <div className="tree-scroll" role="tree" aria-label="工作区文件"
+             onContextMenu={event => openTreeContextMenu(event)}>
             {loading ? <PanelLoading/> : <FileTree items={tree || []}
                 onOpen={onOpenFile}
                 onToggle={toggleDirectory}
+                onContextMenu={openTreeContextMenu}
                 expandedPaths={expandedPaths}
                 loadingPaths={loadingPaths}
                 activePath={activePath}/>}
         </div>
+        <input ref={uploadInputRef} className="visually-hidden" type="file" tabIndex={-1}
+               aria-label="上传文件"
+               onChange={event => {
+                   uploadFiles(event.target.files).catch(error => notify(error.message));
+                   event.target.value = "";
+               }}/>
+        <input ref={batchUploadInputRef} className="visually-hidden" type="file" multiple tabIndex={-1}
+               aria-label="批量上传文件"
+               onChange={event => {
+                   uploadFiles(event.target.files).catch(error => notify(error.message));
+                   event.target.value = "";
+               }}/>
+        {contextMenu && <ContextMenu x={contextMenu.x} y={contextMenu.y}
+            items={treeMenuItems(contextMenu.item)} onClose={() => setContextMenu(null)}/>}
     </div>;
 }
 
-function FileTree({items, onOpen, onToggle, expandedPaths, loadingPaths, activePath, depth = 0}) {
+function FileTree({items, onOpen, onToggle, onContextMenu, expandedPaths, loadingPaths, activePath, depth = 0}) {
     return items.map(item => {
         const directory = item.type === "directory";
         const expanded = directory && expandedPaths.has(item.path);
@@ -1455,6 +1580,7 @@ function FileTree({items, onOpen, onToggle, expandedPaths, loadingPaths, activeP
                 role="treeitem"
                 aria-level={depth + 1}
                 aria-expanded={directory ? expanded : undefined}
+                onContextMenu={event => onContextMenu(event, item)}
                 onKeyDown={event => {
                     if (!directory) return;
                     if ((event.key === "ArrowRight" && !expanded)
@@ -1475,6 +1601,7 @@ function FileTree({items, onOpen, onToggle, expandedPaths, loadingPaths, activeP
         {expanded && item.children && <div role="group"><FileTree items={item.children}
             onOpen={onOpen}
             onToggle={onToggle}
+            onContextMenu={onContextMenu}
             expandedPaths={expandedPaths}
             loadingPaths={loadingPaths}
             activePath={activePath}
@@ -1492,6 +1619,10 @@ function EditorPanel({api, notify}) {
     const setEditorSelection = useWorkspaceStore(state => state.setEditorSelection);
     const markSaved = useWorkspaceStore(state => state.markSaved);
     const closeFile = useWorkspaceStore(state => state.closeFile);
+    const selections = useWorkspaceStore(state => state.selections);
+    const enableReference = useWorkspaceStore(state => state.enableReference);
+    const [contextMenu, setContextMenu] = useState(null);
+    const editorRef = useRef(null);
     const active = activePath ? buffers[activePath] : null;
 
     async function save() {
@@ -1508,6 +1639,47 @@ function EditorPanel({api, notify}) {
         event.stopPropagation();
         if (buffers[path]?.dirty && !window.confirm(`“${buffers[path].name}”尚未保存，仍要关闭吗？`)) return;
         closeFile(path);
+    }
+
+    async function copySelection(cut = false) {
+        const editor = editorRef.current;
+        const selection = editor?.getSelection();
+        const model = editor?.getModel();
+        if (!selection || selection.isEmpty() || !model) return;
+        await navigator.clipboard.writeText(model.getValueInRange(selection));
+        if (cut) {
+            editor.executeEdits("context-menu", [{range: selection, text: "", forceMoveMarkers: true}]);
+        }
+        editor.focus();
+    }
+
+    async function pasteSelection() {
+        const editor = editorRef.current;
+        const selection = editor?.getSelection();
+        if (!selection) return;
+        const text = await navigator.clipboard.readText();
+        editor.executeEdits("context-menu", [{range: selection, text, forceMoveMarkers: true}]);
+        editor.focus();
+    }
+
+    function referenceSelection() {
+        if (!active) return;
+        enableReference();
+        const reference = activeFileReference(active.path, selections[active.path]);
+        notify(`已引用 ${reference}`);
+    }
+
+    function editorMenuItems(hasSelection) {
+        return [
+            {id: "copy", label: "复制", icon: Copy, disabled: !hasSelection,
+                action: () => copySelection().catch(error => notify(error.message))},
+            {id: "paste", label: "粘贴", icon: ClipboardPaste,
+                action: () => pasteSelection().catch(error => notify(error.message))},
+            {id: "cut", label: "剪切", icon: Scissors, disabled: !hasSelection,
+                action: () => copySelection(true).catch(error => notify(error.message))},
+            {id: "reference", label: "引用", icon: Link2,
+                action: referenceSelection}
+        ];
     }
 
     return <section className="editor-pane" aria-label="文件预览与编辑"
@@ -1531,15 +1703,27 @@ function EditorPanel({api, notify}) {
                 <Save size={14}/>保存
             </button>
         </div>
-        <div className="editor-surface">
+        <div className="editor-surface" onContextMenuCapture={event => {
+            event.preventDefault();
+            event.stopPropagation();
+            const selection = editorRef.current?.getSelection();
+            setContextMenu({
+                x: event.clientX,
+                y: event.clientY,
+                hasSelection: Boolean(selection && !selection.isEmpty())
+            });
+        }}>
             {active ? <Suspense fallback={<PanelLoading/>}><MonacoEditor
                     path={active.path}
                     value={active.content}
                     language={editorLanguage(active.path)}
                     onChange={value => updateBuffer(active.path, value || "")}
-                    onSelectionChange={selection => setEditorSelection(active.path, selection)}/></Suspense>
+                    onSelectionChange={selection => setEditorSelection(active.path, selection)}
+                    onEditorReady={editor => { editorRef.current = editor; }}/></Suspense>
                 : <div className="editor-empty"><FileCode2 size={36}/><b>打开文件开始编辑</b><span>从左侧文件树选择一个文本文件</span></div>}
         </div>
+        {contextMenu && <ContextMenu x={contextMenu.x} y={contextMenu.y}
+            items={editorMenuItems(contextMenu.hasSelection)} onClose={() => setContextMenu(null)}/>}
     </section>;
 }
 

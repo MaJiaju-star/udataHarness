@@ -2,6 +2,8 @@ package com.udata.harness.service.impl;
 
 import com.udata.harness.service.UserWorkspaceService;
 import com.udata.harness.service.WorkspaceFileService;
+import org.noear.solon.core.handle.DownloadedFile;
+import org.noear.solon.core.handle.UploadedFile;
 import org.noear.solon.annotation.Component;
 import org.noear.solon.annotation.Inject;
 
@@ -10,6 +12,7 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardOpenOption;
+import java.nio.file.StandardCopyOption;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.LinkedHashMap;
@@ -150,6 +153,45 @@ public class WorkspaceFileServiceImpl implements WorkspaceFileService {
             throw new IllegalStateException("Cannot search workspace", e);
         }
         return result;
+    }
+
+    /** 将 multipart 文件流保存到指定相对目录。 */
+    @Override
+    public Map<String, Object> upload(String userId, String directory, UploadedFile file) {
+        if (file == null || file.getName() == null || file.getName().isBlank()) {
+            throw new IllegalArgumentException("file is required");
+        }
+        //1. 文件名只取最后一段，目录仍通过统一 resolve 执行 containment 校验。
+        Path root = workspaces.getOrCreate(userId);
+        String fileName = Path.of(file.getName()).getFileName().toString();
+        String parent = directory == null ? "" : directory.trim().replace('\\', '/');
+        Path target = resolve(root, parent.isEmpty() ? fileName : parent + "/" + fileName, false);
+
+        //2. 直接复制上传流，支持文本和二进制文件。
+        try {
+            if (target.getParent() != null) {
+                Files.createDirectories(target.getParent());
+            }
+            Files.copy(file.getContent(), target, StandardCopyOption.REPLACE_EXISTING);
+            return node(root, target, false);
+        } catch (IOException e) {
+            throw new IllegalStateException("Cannot upload file", e);
+        }
+    }
+
+    /** 创建文件下载响应，目录和不存在路径会被拒绝。 */
+    @Override
+    public DownloadedFile download(String userId, String path) {
+        Path root = workspaces.getOrCreate(userId);
+        Path file = resolve(root, path, true);
+        if (!Files.isRegularFile(file)) {
+            throw new IllegalArgumentException("File not found");
+        }
+        try {
+            return new DownloadedFile(file.toFile());
+        } catch (IOException e) {
+            throw new IllegalStateException("Cannot download file", e);
+        }
     }
 
     private List<Map<String, Object>> buildTree(Path root, Path directory, int maxDepth, int currentDepth) {

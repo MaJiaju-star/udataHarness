@@ -21,6 +21,7 @@ export const useWorkspaceStore = create(persist((set, get) => ({
     toggleLeft: () => set(state => ({leftCollapsed: !state.leftCollapsed})),
     setMobilePane: mobilePane => set({mobilePane}),
     toggleReference: () => set(state => ({referenceEnabled: !state.referenceEnabled})),
+    enableReference: () => set({referenceEnabled: true}),
     setEditorSelection: (path, selection) => set(state => ({
         selections: {...state.selections, [path]: selection}
     })),

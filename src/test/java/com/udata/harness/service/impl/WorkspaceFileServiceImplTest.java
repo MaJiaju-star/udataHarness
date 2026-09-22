@@ -2,13 +2,17 @@ package com.udata.harness.service.impl;
 
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import org.noear.solon.core.handle.DownloadedFile;
+import org.noear.solon.core.handle.UploadedFile;
 
+import java.io.ByteArrayInputStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
 import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -46,5 +50,22 @@ class WorkspaceFileServiceImplTest {
         assertTrue(names.contains(".env.example"));
         assertTrue(names.contains(".git"));
         assertEquals(1, files.search("alice", ".env").size());
+    }
+
+    @Test
+    void uploadsAndDownloadsBinaryFiles() throws Exception {
+        WorkspaceFileServiceImpl files =
+                new WorkspaceFileServiceImpl(new UserWorkspaceServiceImpl(tempDir));
+        byte[] content = new byte[]{0, 1, 2, 3, 127};
+        UploadedFile upload = new UploadedFile(
+                "application/octet-stream", content.length,
+                new ByteArrayInputStream(content), "sample.bin", "bin");
+
+        Map<String, Object> saved = files.upload("alice", "artifacts", upload);
+        DownloadedFile download = files.download("alice", "artifacts/sample.bin");
+
+        assertEquals("artifacts/sample.bin", saved.get("path"));
+        assertArrayEquals(content, download.getContent().readAllBytes());
+        download.close();
     }
 }
