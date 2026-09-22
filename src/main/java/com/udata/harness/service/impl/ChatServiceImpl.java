@@ -63,6 +63,14 @@ public class ChatServiceImpl implements ChatService {
     @Inject
     private UserWorkspaceService workspaces;
 
+    /** 模型请求总尝试次数，包含第一次请求。 */
+    @Inject("${agent.model.retry.max-attempts:3}")
+    private int modelMaxAttempts;
+
+    /** 模型重试指数退避的基础等待时间。 */
+    @Inject("${agent.model.retry.initial-delay-ms:1000}")
+    private long modelRetryInitialDelayMs;
+
     public Flux<String> chat(String userId, ChatRequest request) {
         validate(request);
         userId = UserWorkspaceService.requireUserId(userId);
@@ -208,6 +216,7 @@ public class ChatServiceImpl implements ChatService {
         Flux<String> chunks = engine.prompt(prompt)
                 .session(session)
                 .options(options -> {
+                    options.retryConfig(modelMaxAttempts, modelRetryInitialDelayMs);
                     options.toolContextPut(HarnessEngine.ATTR_CWD, workspace.toString());
                     if (!isBlank(selectedModel)) {
                         options.chatModel(engine.getModelOrDefInstance(selectedModel));

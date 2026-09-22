@@ -30,6 +30,7 @@ class UserHarnessEngineServiceImplTest {
         inject(service, "compressionMaxMessages", 20);
         inject(service, "compressionMaxContextRatio", 0.75D);
         inject(service, "modelContextLength", 20000L);
+        inject(service, "modelMaxAttempts", 4);
         inject(service, "modelName", "deepseek");
         inject(service, "apiUrl", "https://api.deepseek.com");
         inject(service, "apiKey", "");
@@ -37,6 +38,7 @@ class UserHarnessEngineServiceImplTest {
         inject(service, "model", "deepseek-v4-flash");
 
         assertNotNull(service.get("alice"));
+        assertEquals(4, service.get("alice").getModelRetries());
     }
 
     @Test
@@ -58,6 +60,7 @@ class UserHarnessEngineServiceImplTest {
     private UserHarnessEngineServiceImpl configuredService() throws Exception {
         UserHarnessEngineServiceImpl service = new UserHarnessEngineServiceImpl();
         inject(service, "modelContextLength", 1000000L);
+        inject(service, "modelMaxAttempts", 3);
         inject(service, "modelName", "deepseek-flash");
         inject(service, "apiUrl", "https://api.deepseek.com");
         inject(service, "apiKey", "");

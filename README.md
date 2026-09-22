@@ -39,6 +39,8 @@ $env:AGENT_PROVIDER='openai'
 默认通过 OpenAI 兼容协议连接 DeepSeek。前端模型列表由 `app.yml` 中的
 `agent.model.models` 配置，`agent.model.default` 指定默认项；每个列表项可覆盖
 `api-url`、`api-key`、`provider` 和 `context-length`。
+模型请求重试通过 `agent.model.retry.max-attempts` 和
+`agent.model.retry.initial-delay-ms` 调整；最大尝试次数包含第一次请求。
 `AGENT_API_KEY` 没有默认值；必须通过进程环境或密钥管理服务注入。不要将密钥
 提交到仓库或写入配置文件。
 

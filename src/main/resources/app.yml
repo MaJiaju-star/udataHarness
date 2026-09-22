@@ -32,6 +32,11 @@ agent:
     explain material decisions, and verify changes with relevant builds or tests.
   model:
     default: "deepseek-flash"
+    retry:
+      # Total attempts, including the first request.
+      max-attempts: 3
+      # Base delay for exponential backoff with full jitter.
+      initial-delay-ms: 1000
     api-url: "${AGENT_API_URL:https://api.deepseek.com}"
     api-key: "${AGENT_API_KEY:sk-216497bffef942c09b250555bb4ac5ac}"
     provider: "${AGENT_PROVIDER:openai}"

@@ -81,6 +81,10 @@ public class UserHarnessEngineServiceImpl implements UserHarnessEngineService {
     @Inject("${agent.model.context-length:1000000}")
     private long modelContextLength;
 
+    /** 模型请求总尝试次数，包含第一次请求。 */
+    @Inject("${agent.model.retry.max-attempts:3}")
+    private int modelMaxAttempts;
+
     @Inject("${agent.model.default:deepseek-flash}")
     private String modelName;
 
@@ -194,6 +198,7 @@ public class UserHarnessEngineServiceImpl implements UserHarnessEngineService {
                 .systemPrompt(systemPrompt)
                 .maxTurns(maxTurns)
                 .sessionWindowSize(sessionWindowSize)
+                .modelRetries(modelMaxAttempts)
                 .compressionThreshold(compressionMaxMessages, compressionMaxContextRatio)
                 .sessionProvider(sessionRepository)
                 .toolsAdd(Arrays.asList(ToolName.TOOL_ALL_PUBLIC.getName(), ToolName.TOOL_HITL.getName()))
