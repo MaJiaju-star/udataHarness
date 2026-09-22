@@ -1,0 +1,125 @@
+package com.udata.harness.controller;
+
+import com.udata.harness.common.request.FileWriteRequest;
+import com.udata.harness.service.WorkspaceFileService;
+import org.noear.solon.annotation.Body;
+import org.noear.solon.annotation.Controller;
+import org.noear.solon.annotation.Delete;
+import org.noear.solon.annotation.Get;
+import org.noear.solon.annotation.Header;
+import org.noear.solon.annotation.Inject;
+import org.noear.solon.annotation.Mapping;
+import org.noear.solon.annotation.Param;
+import org.noear.solon.annotation.Post;
+import org.noear.solon.core.handle.Result;
+
+import java.util.List;
+import java.util.Map;
+
+/**
+ * 用户工作区文件面板的 HTTP 接口。
+ *
+ * <p>所有 path 都是相对于当前用户专属工作区的逻辑路径。绝对路径、{@code ..} 穿越、
+ * 符号链接逃逸以及对其他用户目录的访问必须由 {@link WorkspaceFileService} 拒绝。
+ * Controller 不拼接物理路径，也不直接使用 {@code java.nio.file.Files}。</p>
+ *
+ * <p>该接口面向轻量代码编辑器，提供目录树、文本读取/保存、目录创建、删除和文件名搜索。
+ * 大文件、二进制文件和搜索数量限制由服务层统一控制。</p>
+ */
+@Controller
+@Mapping("/api/files")
+public class WorkspaceFileController {
+    /** 封装用户目录解析、路径 containment 校验和文件系统操作。 */
+    @Inject
+    private WorkspaceFileService files;
+
+    /**
+     * 获取指定目录下的文件树。
+     *
+     * @param userId 当前用户标识
+     * @param path 可选相对目录；为空表示用户工作区根目录
+     * @param depth 可选递归深度；未传时默认为 2
+     * @return 适合文件面板渲染的树节点列表
+     */
+    @Get
+    @Mapping("/tree")
+    public Result<List<Map<String, Object>>> tree(@Header("X-User-Id") String userId,
+                                                  @Param(value = "path", required = false) String path,
+                                                  @Param(value = "depth", required = false) Integer depth) {
+        return Result.succeed(files.tree(userId, path, depth == null ? 2 : depth));
+    }
+
+    /**
+     * 读取工作区内的文本文件。
+     *
+     * @param userId 当前用户标识
+     * @param path 文件相对路径
+     * @return 文件路径、内容及服务层提供的附加元数据
+     */
+    @Get
+    @Mapping("/read")
+    public Result<Map<String, Object>> read(@Header("X-User-Id") String userId,
+                                            @Param("path") String path) {
+        return Result.succeed(files.read(userId, path));
+    }
+
+    /**
+     * 新建或覆盖工作区内的文本文件。
+     *
+     * @param userId 当前用户标识
+     * @param request 相对路径与完整文本内容
+     * @return 保存后的文件元数据
+     */
+    @Post
+    @Mapping("/save")
+    public Result<Map<String, Object>> save(@Header("X-User-Id") String userId,
+                                            @Body FileWriteRequest request) {
+        return Result.succeed(files.save(userId, request.getPath(), request.getContent()));
+    }
+
+    /**
+     * 在当前用户工作区内创建目录。
+     *
+     * @param userId 当前用户标识
+     * @param path 待创建目录的相对路径
+     * @return 无响应数据
+     */
+    @Post
+    @Mapping("/directory")
+    public Result<Void> directory(@Header("X-User-Id") String userId,
+                                  @Param("path") String path) {
+        files.createDirectory(userId, path);
+        return Result.succeed();
+    }
+
+    /**
+     * 删除工作区内的文件或目录。
+     *
+     * <p>是否允许递归删除以及根目录保护规则由服务层决定。</p>
+     *
+     * @param userId 当前用户标识
+     * @param path 待删除对象的相对路径
+     * @return 无响应数据
+     */
+    @Delete
+    @Mapping
+    public Result<Void> delete(@Header("X-User-Id") String userId,
+                               @Param("path") String path) {
+        files.delete(userId, path);
+        return Result.succeed();
+    }
+
+    /**
+     * 按文件名关键字搜索当前用户工作区。
+     *
+     * @param userId 当前用户标识
+     * @param keyword 文件名匹配关键字
+     * @return 命中的相对路径及节点元数据
+     */
+    @Get
+    @Mapping("/search")
+    public Result<List<Map<String, Object>>> search(@Header("X-User-Id") String userId,
+                                                    @Param("keyword") String keyword) {
+        return Result.succeed(files.search(userId, keyword));
+    }
+}

@@ -1,0 +1,1564 @@
+import {lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState} from "react";
+import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
+import ChartCard, {chartSpecFromTool} from "./ChartCard.jsx";
+import {useWorkspaceStore} from "./workspaceStore.js";
+import {
+    Activity, ArrowLeft, Bot, Box, BrainCircuit, Check, ChevronDown, ChevronRight, CircleStop,
+    File, FileCode2, FilePlus2, Files, Folder, FolderOpen, HardDrive, Menu, MessageSquare,
+    MoreHorizontal, Network, PanelLeftClose, PanelLeftOpen, Pencil, Plus, RefreshCw,
+    Save, Search, Send, Settings2, ShieldCheck, Sparkles, SquareTerminal, Trash2,
+    Upload, UserRound, X, Zap
+} from "lucide-react";
+
+const navItems = [
+    {id: "files", label: "文件", icon: Files},
+    {id: "sessions", label: "会话", icon: MessageSquare}
+];
+
+const EChartCard = lazy(() => import("./EChartCard.jsx"));
+const AntVChartCard = lazy(() => import("./AntVChartCard.jsx"));
+const MonacoEditor = lazy(() => import("./MonacoEditor.jsx"));
+
+const uid = () => `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+const formatTime = value => value
+    ? new Date(value).toLocaleString("zh-CN", {month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit"})
+    : "—";
+
+/**
+ * 流式协议正常返回字符串；若模型适配器意外给出数字或对象，则安全转换，
+ * 避免 React 渲染阶段因调用字符串方法而让整个工作台白屏。
+ */
+function asText(value) {
+    if (value == null) return "";
+    if (typeof value === "string") return value;
+    if (typeof value === "number" || typeof value === "boolean") return String(value);
+    try {
+        return JSON.stringify(value);
+    } catch {
+        return String(value);
+    }
+}
+
+/**
+ * 合并模型文本增量，并兼容少数模型适配器在工具切换点重放累计正文的情况。
+ *
+ * 正常短增量保持原样追加；只有完整累计前缀、较长的完全重复块，或长度至少 12
+ * 的首尾重叠才会被折叠，避免影响模型有意输出的短词重复。
+ */
+function mergeStreamText(current, incoming) {
+    const existing = asText(current);
+    const addition = asText(incoming);
+    if (!addition) return existing;
+    if (!existing) return addition;
+    if (addition.startsWith(existing)) return addition;
+    if (addition.length >= 12 && existing.endsWith(addition)) return existing;
+
+    const maxOverlap = Math.min(existing.length, addition.length);
+    for (let length = maxOverlap; length >= 12; length--) {
+        if (existing.endsWith(addition.slice(0, length))) {
+            return existing + addition.slice(length);
+        }
+    }
+    return existing + addition;
+}
+
+/**
+ * 按 reasonId 维护思考活动。一次 ReAct 对话会多次调用模型，每次调用都有独立
+ * reasonId；同一 reasonId 的流式增量更新同一卡片，新 reasonId 创建新卡片。
+ */
+function mergeThinkingActivity(activities, event) {
+    const next = (activities || []).map(item => ({...item}));
+    let index = event.reasonId
+        ? next.findIndex(item => item.type === "thinking" && item.reasonId === event.reasonId)
+        : -1;
+
+    // 兼容没有 reasonId 的模型：只续写当前仍在流式输出的最后一张思考卡。
+    if (index < 0 && !event.reasonId) {
+        for (let cursor = next.length - 1; cursor >= 0; cursor--) {
+            if (next[cursor].type === "thinking" && next[cursor].active) {
+                index = cursor;
+                break;
+            }
+        }
+    }
+
+    if (index < 0) {
+        next.push({
+            id: event.reasonId || uid(),
+            type: "thinking",
+            reasonId: event.reasonId || null,
+            content: asText(event.content),
+            active: event.finished !== true
+        });
+    } else {
+        next[index] = {
+            ...next[index],
+            content: mergeStreamText(next[index].content, event.content),
+            active: event.finished !== true
+        };
+    }
+    return next;
+}
+
+/**
+ * 将一个 reasonId 的普通文本流拆成思考与可见正文，并写入活动时间线。
+ *
+ * DeepSeek 的工具调用终态可能返回 isThinking=false，但 content 实际是
+ * <think>...</think>。因此不能只依赖 SSE type，必须基于该 reason 的累计内容解析；
+ * 同时保留 text 活动，避免过程正文被统一堆到所有工具卡之后。
+ */
+function mergeReasonContentActivities(activities, reasonBuffers, event) {
+    const nextActivities = (activities || []).map(item => ({...item}));
+    const nextBuffers = {...(reasonBuffers || {})};
+    const reasonId = event.reasonId || `anonymous-${event.runId || "run"}`;
+    const raw = mergeStreamText(nextBuffers[reasonId], event.content);
+    nextBuffers[reasonId] = raw;
+
+    const parsed = splitThinkContent(raw);
+    let thinkingIndex = nextActivities.findIndex(
+        item => item.type === "thinking" && item.reasonId === reasonId
+    );
+    const thinkingId = thinkingIndex >= 0
+        ? nextActivities[thinkingIndex].id
+        : `embedded-thinking-${reasonId}`;
+    const textId = `text-${reasonId}`;
+    let textIndex = nextActivities.findIndex(item => item.id === textId);
+
+    if (parsed.thinking) {
+        const thinkingItem = {
+            id: thinkingId,
+            type: "thinking",
+            reasonId,
+            content: thinkingIndex >= 0
+                ? mergeStreamText(nextActivities[thinkingIndex].content, parsed.thinking)
+                : parsed.thinking,
+            active: parsed.pending && event.finished !== true
+        };
+        if (thinkingIndex >= 0) {
+            nextActivities[thinkingIndex] = {...nextActivities[thinkingIndex], ...thinkingItem};
+        } else {
+            // 同一 reason 已经产生可见正文时，思考卡仍应排在正文之前。
+            textIndex = nextActivities.findIndex(item => item.id === textId);
+            if (textIndex >= 0) nextActivities.splice(textIndex, 0, thinkingItem);
+            else nextActivities.push(thinkingItem);
+        }
+    }
+
+    if (parsed.visible) {
+        const textItem = {
+            id: textId,
+            type: "text",
+            reasonId,
+            content: parsed.visible
+        };
+        textIndex = nextActivities.findIndex(item => item.id === textId);
+        if (textIndex >= 0) {
+            nextActivities[textIndex] = {...nextActivities[textIndex], ...textItem};
+        } else {
+            nextActivities.push(textItem);
+        }
+    }
+
+    return {activities: nextActivities, reasonBuffers: nextBuffers};
+}
+
+function splitThinkContent(value = "") {
+    value = asText(value);
+    let visible = "";
+    let thinking = "";
+    let cursor = 0;
+    let pending = false;
+
+    while (cursor < value.length) {
+        const open = value.indexOf("<think>", cursor);
+        if (open < 0) {
+            visible += value.slice(cursor);
+            break;
+        }
+        visible += value.slice(cursor, open);
+        const contentStart = open + "<think>".length;
+        const close = value.indexOf("</think>", contentStart);
+        if (close < 0) {
+            thinking += value.slice(contentStart);
+            pending = true;
+            break;
+        }
+        thinking += `${thinking ? "\n" : ""}${value.slice(contentStart, close)}`;
+        cursor = close + "</think>".length;
+    }
+
+    // Streaming may stop in the middle of an opening tag. Keep partial XML out
+    // of the visible answer until the following chunk completes it.
+    const partialOpen = ["<", "<t", "<th", "<thi", "<thin"];
+    const suffix = partialOpen.findLast?.(part => visible.endsWith(part))
+        || [...partialOpen].reverse().find(part => visible.endsWith(part));
+    if (suffix) visible = visible.slice(0, -suffix.length);
+
+    // Do the same for a closing tag while it is still arriving.
+    if (pending) {
+        const partialClose = ["<", "</", "</t", "</th", "</thi", "</thin", "</think"];
+        const closeSuffix = [...partialClose].reverse().find(part => thinking.endsWith(part));
+        if (closeSuffix) thinking = thinking.slice(0, -closeSuffix.length);
+    }
+
+    return {visible, thinking: thinking.trim(), pending};
+}
+
+async function readEventStream(stream, onEvent) {
+    const reader = stream.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+    while (true) {
+        const {value, done} = await reader.read();
+        buffer += decoder.decode(value || new Uint8Array(), {stream: !done});
+        const frames = buffer.split(/\r?\n\r?\n/);
+        buffer = frames.pop() || "";
+        for (const frame of frames) {
+            const payload = frame.split(/\r?\n/)
+                .filter(line => line.startsWith("data:"))
+                .map(line => line.slice(5).trimStart()).join("\n");
+            if (payload) onEvent(JSON.parse(payload));
+        }
+        if (done) break;
+    }
+    if (buffer.trim()) {
+        const payload = buffer.replace(/^data:\s?/, "").trim();
+        if (payload) onEvent(JSON.parse(payload));
+    }
+}
+
+function App() {
+    const [userId, setUserId] = useState(() => localStorage.getItem("udataHarnessUserId") || "");
+    const [meta, setMeta] = useState(null);
+    const [sessions, setSessions] = useState([]);
+    const [current, setCurrent] = useState(null);
+    const [messages, setMessages] = useState([]);
+    const [running, setRunning] = useState(false);
+    const [mobile, setMobile] = useState(() => window.matchMedia("(max-width: 760px)").matches);
+    const [notice, setNotice] = useState("");
+    const [page, setPage] = useState(() => window.location.hash === "#/admin" ? "admin" : "workspace");
+    const [workspacePickerOpen, setWorkspacePickerOpen] = useState(false);
+    const leftTab = useWorkspaceStore(state => state.leftTab);
+    const setLeftTab = useWorkspaceStore(state => state.setLeftTab);
+    const leftWidth = useWorkspaceStore(state => state.leftWidth);
+    const chatWidth = useWorkspaceStore(state => state.chatWidth);
+    const leftCollapsed = useWorkspaceStore(state => state.leftCollapsed);
+    const mobilePane = useWorkspaceStore(state => state.mobilePane);
+    const toggleLeft = useWorkspaceStore(state => state.toggleLeft);
+    const setLeftWidth = useWorkspaceStore(state => state.setLeftWidth);
+    const setChatWidth = useWorkspaceStore(state => state.setChatWidth);
+    const setMobilePane = useWorkspaceStore(state => state.setMobilePane);
+    const openEditorFile = useWorkspaceStore(state => state.openFile);
+    const resetEditor = useWorkspaceStore(state => state.resetEditor);
+    const hasDirtyFiles = useWorkspaceStore(state => state.hasDirtyFiles);
+
+    const notify = useCallback(message => {
+        setNotice(message);
+        window.clearTimeout(window.__udataNotice);
+        window.__udataNotice = window.setTimeout(() => setNotice(""), 3200);
+    }, []);
+
+    const api = useCallback(async (path, options = {}) => {
+        const response = await fetch(path, {
+            ...options,
+            headers: {
+                "Content-Type": "application/json",
+                "X-User-Id": userId,
+                ...(options.headers || {})
+            }
+        });
+        if (!response.ok) throw new Error(await response.text() || `HTTP ${response.status}`);
+        const body = await response.json();
+        if (body.code && body.code >= 400) throw new Error(body.description || "请求失败");
+        return body.data === undefined ? body : body.data;
+    }, [userId]);
+
+    const loadSessions = useCallback(async () => {
+        const data = await api("/api/sessions");
+        setSessions(data || []);
+        setCurrent(selected => selected
+            ? (data || []).find(item => item.sessionId === selected.sessionId) || selected
+            : selected);
+        return data || [];
+    }, [api]);
+
+    useEffect(() => {
+        const syncPage = () => setPage(window.location.hash === "#/admin" ? "admin" : "workspace");
+        window.addEventListener("hashchange", syncPage);
+        return () => window.removeEventListener("hashchange", syncPage);
+    }, []);
+
+    useEffect(() => {
+        if (!userId) return;
+        Promise.all([api("/api/meta"), api("/api/sessions")])
+            .then(([metaData, sessionData]) => {
+                setMeta(metaData);
+                setSessions(sessionData || []);
+            })
+            .catch(error => notify(error.message));
+    }, [userId, api, notify]);
+
+    useEffect(() => {
+        const media = window.matchMedia("(max-width: 760px)");
+        const onChange = event => {
+            setMobile(event.matches);
+        };
+        media.addEventListener("change", onChange);
+        return () => media.removeEventListener("change", onChange);
+    }, []);
+
+    async function chooseSession(session) {
+        if (running) return;
+        setCurrent(session);
+        if (mobile) useWorkspaceStore.getState().setMobilePane("chat");
+        const history = await api(`/api/sessions/messages?sessionId=${encodeURIComponent(session.sessionId)}`);
+        setMessages((history || []).map(item => ({
+            id: uid(),
+            role: item.role === "user" ? "user" : "assistant",
+            content: item.content || "",
+            thinking: item.thinking ? item.content : "",
+            tools: item.tools || []
+        })));
+    }
+
+    async function openFile(path) {
+        const data = await api(`/api/files/read?path=${encodeURIComponent(path)}`);
+        openEditorFile(data);
+    }
+
+    async function switchWorkspace(workspaceId) {
+        if (running) throw new Error("请先停止当前智能体任务");
+        if (hasDirtyFiles() && !window.confirm("当前有未保存文件，切换工作区将放弃这些修改。继续吗？")) return;
+        await api("/api/workspaces/activate", {
+            method: "POST",
+            body: JSON.stringify({workspaceId})
+        });
+        await reloadWorkspace();
+    }
+
+    async function registerWorkspace(path) {
+        if (running) throw new Error("请先停止当前智能体任务");
+        if (hasDirtyFiles() && !window.confirm("当前有未保存文件，打开新工作区将放弃这些修改。继续吗？")) return;
+        await api("/api/workspaces", {method: "POST", body: JSON.stringify({path})});
+        await reloadWorkspace();
+    }
+
+    async function reloadWorkspace() {
+        const [metaData, sessionData] = await Promise.all([api("/api/meta"), api("/api/sessions")]);
+        setMeta(metaData);
+        setSessions(sessionData || []);
+        setCurrent(null);
+        setMessages([]);
+        resetEditor();
+        setWorkspacePickerOpen(false);
+        notify(`已打开 ${metaData.activeWorkspace?.name || "工作区"}`);
+    }
+
+    async function createSession() {
+        const created = await api("/api/sessions", {
+            method: "POST",
+            body: JSON.stringify({title: "新的编码任务", model: meta?.defaultModel})
+        });
+        await loadSessions();
+        await chooseSession(created);
+    }
+
+    async function deleteSession(event, session) {
+        event.stopPropagation();
+        if (!window.confirm(`删除会话“${session.title}”？`)) return;
+        await api(`/api/sessions?sessionId=${encodeURIComponent(session.sessionId)}`, {method: "DELETE"});
+        if (current?.sessionId === session.sessionId) {
+            setCurrent(null);
+            setMessages([]);
+        }
+        await loadSessions();
+        notify("会话已删除");
+    }
+
+    async function renameSession(event, session) {
+        event.stopPropagation();
+        const title = window.prompt("重命名会话", session.title);
+        if (title === null || title.trim() === session.title) return;
+        if (!title.trim()) throw new Error("会话名称不能为空");
+        const updated = await api("/api/sessions/title", {
+            method: "POST",
+            body: JSON.stringify({sessionId: session.sessionId, title: title.trim()})
+        });
+        setSessions(items => items.map(item =>
+            item.sessionId === updated.sessionId ? {...item, ...updated} : item
+        ));
+        setCurrent(selected => selected?.sessionId === updated.sessionId
+            ? {...selected, ...updated}
+            : selected);
+        notify("会话已重命名");
+    }
+
+    const mutateAssistant = useCallback((messageId, event) => {
+        setMessages(items => items.map(message => {
+            if (message.id !== messageId) return message;
+            const next = {
+                ...message,
+                tools: [...(message.tools || [])],
+                activities: [...(message.activities || [])],
+                reasonBuffers: {...(message.reasonBuffers || {})}
+            };
+            if (event.type === "text" || event.type === "text_replay") {
+                const merged = mergeReasonContentActivities(
+                    next.activities,
+                    next.reasonBuffers,
+                    event);
+                next.activities = merged.activities;
+                next.reasonBuffers = merged.reasonBuffers;
+                next.content = next.activities
+                    .filter(item => item.type === "text")
+                    .map(item => item.content)
+                    .join("\n\n");
+            }
+            if (event.type === "thinking") {
+                next.thinking = mergeStreamText(next.thinking, event.content);
+                next.activities = mergeThinkingActivity(next.activities, event);
+            }
+            if (event.type === "tool_start") {
+                // 工具开始意味着它之前的模型思考阶段已经结束，即使供应商没有发出
+                // finished=true 的最后一个 thinking 增量，也不能让卡片一直显示推理中。
+                next.activities = next.activities.map(item =>
+                    item.type === "thinking" && item.active ? {...item, active: false} : item
+                );
+                const tool = {
+                    callId: event.callId || uid(), name: event.toolName || "tool",
+                    args: event.args || {}, running: true
+                };
+                next.tools.push(tool);
+                next.activities.push({id: `tool-${tool.callId}`, type: "tool", callId: tool.callId});
+            }
+            if (event.type === "tool_end") {
+                const index = next.tools.findIndex(tool => event.callId ? tool.callId === event.callId : tool.running);
+                if (index >= 0) next.tools[index] = {
+                    ...next.tools[index], running: false, durationMs: event.durationMs,
+                    output: event.error || event.content, error: Boolean(event.error)
+                };
+            }
+            if (event.type === "hitl") {
+                next.hitl = event;
+                // HITL 是等待用户决策的正常暂停，不应和普通运行错误同时展示。
+                next.error = null;
+            }
+            if (event.type === "done" && !next.content && event.content) next.content = event.content;
+            if (event.type === "done" || event.type === "run_end" || event.type === "error") {
+                next.activities = next.activities.map(item =>
+                    item.type === "thinking" && item.active ? {...item, active: false} : item
+                );
+            }
+            if (event.type === "error") next.error = event.message || event.content || "智能体运行失败";
+            return next;
+        }));
+    }, []);
+
+    async function stream(path, body, messageId) {
+        const response = await fetch(path, {
+            method: "POST",
+            headers: {"Content-Type": "application/json", "X-User-Id": userId},
+            body: JSON.stringify(body)
+        });
+        if (!response.ok || !response.body) throw new Error(await response.text() || "流式连接不可用");
+        await readEventStream(response.body, event => mutateAssistant(messageId, event));
+    }
+
+    async function sendPrompt(text) {
+        if (!current || running || !text.trim()) return;
+        const assistantId = uid();
+        setMessages(items => [
+            ...items,
+            {id: uid(), role: "user", content: text.trim(), tools: []},
+            {
+                id: assistantId,
+                role: "assistant",
+                content: "",
+                thinking: "",
+                tools: [],
+                activities: [],
+                reasonBuffers: {}
+            }
+        ]);
+        setRunning(true);
+        try {
+            await stream("/api/chat/stream", {
+                sessionId: current.sessionId,
+                prompt: text.trim(),
+                model: current.model
+            }, assistantId);
+        } catch (error) {
+            mutateAssistant(assistantId, {type: "error", message: error.message});
+        } finally {
+            setRunning(false);
+            await loadSessions();
+        }
+    }
+
+    async function decideHitl(messageId, action, alwaysAllow, callUuids) {
+        if (!current || running) return;
+        setRunning(true);
+        try {
+            setMessages(items => items.map(item => item.id === messageId
+                ? {...item, hitl: null, error: null}
+                : item));
+            await stream("/api/hitl/decide", {
+                sessionId: current.sessionId, action, alwaysAllow, callUuids
+            }, messageId);
+        } catch (error) {
+            mutateAssistant(messageId, {type: "error", message: error.message});
+        } finally {
+            setRunning(false);
+            await loadSessions();
+        }
+    }
+
+    async function stopRun() {
+        if (!current) return;
+        await api(`/api/chat/cancel?sessionId=${encodeURIComponent(current.sessionId)}`, {method: "POST"});
+        notify("正在停止智能体");
+    }
+
+    async function changePermissionMode(permissionMode) {
+        if (!current || running || current.permissionMode === permissionMode) return;
+        if (permissionMode === "full" && !window.confirm(
+            "完整权限模式会自动执行写文件、编辑和命令等操作，不再逐次请求审批。确定为当前会话开启吗？"
+        )) return;
+        const updated = await api("/api/sessions/permission", {
+            method: "POST",
+            body: JSON.stringify({sessionId: current.sessionId, permissionMode})
+        });
+        setCurrent(updated);
+        setSessions(items => items.map(item =>
+            item.sessionId === updated.sessionId ? {...item, ...updated} : item
+        ));
+        notify(permissionMode === "full" ? "已开启完整权限模式" : "已恢复标准权限模式");
+    }
+
+    function changeUser(nextUserId) {
+        const value = nextUserId.trim();
+        if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(value)) {
+            throw new Error("userId 仅支持字母、数字、点、下划线和短横线");
+        }
+        localStorage.setItem("udataHarnessUserId", value);
+        setUserId(value);
+        setCurrent(null);
+        setMessages([]);
+        setMeta(null);
+    }
+
+    if (!userId) return <UserGate onSubmit={changeUser}/>;
+
+    if (page === "admin") {
+        return <>
+            <AdminShell api={api} notify={notify} userId={userId} workspace={meta?.workspace}
+                        onBack={() => {
+                            window.location.hash = "";
+                            setPage("workspace");
+                        }}/>
+            {notice && <div className="toast"><Check size={16}/>{notice}</div>}
+        </>;
+    }
+
+    const title = current?.title || "开始一个新的任务";
+    const sidebarOpen = !leftCollapsed;
+
+    return (
+        <div className={`app-shell workbench pane-${mobilePane} ${sidebarOpen ? "" : "sidebar-collapsed"} ${mobile ? "mobile-shell" : ""}`}
+             style={{"--left-width": `${leftWidth}px`, "--chat-width": `${chatWidth}px`}}>
+            <Sidebar
+                open={sidebarOpen}
+                view={leftTab}
+                setView={setLeftTab}
+                sessions={sessions}
+                current={current}
+                userId={userId}
+                workspace={meta?.workspace}
+                api={api}
+                notify={notify}
+                onOpenFile={path => openFile(path).catch(error => notify(error.message))}
+                onOpenWorkspace={() => setWorkspacePickerOpen(true)}
+                onCreate={() => createSession().catch(error => notify(error.message))}
+                onSelect={session => chooseSession(session).catch(error => notify(error.message))}
+                onRename={(event, session) => renameSession(event, session).catch(error => notify(error.message))}
+                onDelete={(event, session) => deleteSession(event, session).catch(error => notify(error.message))}
+                onOpenAdmin={() => {
+                    window.location.hash = "/admin";
+                    setPage("admin");
+                }}
+                onChangeUser={() => {
+                    const value = window.prompt("切换 userId", userId);
+                    if (value && value !== userId) {
+                        try { changeUser(value); } catch (error) { notify(error.message); }
+                    }
+                }}
+                onClose={toggleLeft}
+            />
+            <ResizeHandle axis="left" onResize={delta => setLeftWidth(Math.max(220, Math.min(420, leftWidth + delta)))}/>
+            <main className="workspace-shell">
+                <header className="app-header">
+                    <button className="icon-button sidebar-toggle" onClick={toggleLeft}
+                            aria-label="切换侧栏">
+                        {mobile ? <Menu size={20}/> : sidebarOpen ? <PanelLeftClose size={19}/> : <PanelLeftOpen size={19}/>}
+                    </button>
+                    <div className="header-title">
+                        <h1>{title}</h1>
+                        <span className="header-meta">
+                            {running ? <><span className="pulse-dot"/> 智能体运行中</> :
+                                <><span className="ready-dot"/> {meta?.models?.[0]?.model || "正在连接"}</>}
+                        </span>
+                    </div>
+                    <div className="header-actions">
+                        <div className="mobile-pane-switch" role="group" aria-label="主面板">
+                            <button className={mobilePane === "chat" ? "active" : ""} onClick={() => setMobilePane("chat")}>对话</button>
+                            <button className={mobilePane === "editor" ? "active" : ""} onClick={() => setMobilePane("editor")}>编辑器</button>
+                        </div>
+                        {running &&
+                            <button className="stop-button" onClick={() => stopRun().catch(error => notify(error.message))}>
+                                <CircleStop size={16}/> 停止
+                            </button>}
+                        <div className="model-chip"><Zap size={14}/>{meta?.defaultModel || "model"}</div>
+                    </div>
+                </header>
+
+                <section className="content-shell">
+                    <ChatView api={api} current={current} messages={messages} running={running}
+                              onSend={sendPrompt} onCreate={() => createSession().catch(error => notify(error.message))}
+                              onDecide={decideHitl}
+                              onPermissionMode={mode => changePermissionMode(mode)
+                                  .catch(error => notify(error.message))}/>
+                </section>
+            </main>
+            <ResizeHandle axis="chat" onResize={delta => setChatWidth(Math.max(380, Math.min(760, chatWidth + delta)))}/>
+            <EditorPanel api={api} notify={notify}/>
+            {workspacePickerOpen && <WorkspacePicker
+                api={api}
+                workspaces={meta?.workspaces || []}
+                activeWorkspace={meta?.activeWorkspace}
+                onActivate={workspaceId => switchWorkspace(workspaceId).catch(error => notify(error.message))}
+                onRegister={path => registerWorkspace(path).catch(error => notify(error.message))}
+                onClose={() => setWorkspacePickerOpen(false)}
+            />}
+            {notice && <div className="toast"><Check size={16}/>{notice}</div>}
+        </div>
+    );
+}
+
+function AdminShell({api, notify, userId, workspace, onBack}) {
+    const [section, setSection] = useState("mcp");
+    const sections = [
+        {id: "mcp", label: "MCP 管理", description: "外部工具服务", icon: Network},
+        {id: "skills", label: "Skill 管理", description: "可复用能力包", icon: Sparkles},
+        {id: "subagents", label: "SubAgent 管理", description: "专项智能体", icon: Bot}
+    ];
+    const active = sections.find(item => item.id === section);
+
+    return <div className="admin-shell">
+        <aside className="admin-sidebar">
+            <div className="admin-brand">
+                <span className="brand-symbol"><Settings2 size={19}/></span>
+                <span><b>管理后台</b><small>UdataBuddy Harness</small></span>
+            </div>
+            <button className="admin-back-button" onClick={onBack}><ArrowLeft size={17}/>返回对话工作台</button>
+            <div className="admin-nav-label">能力与集成</div>
+            <nav className="admin-nav">
+                {sections.map(item => {
+                    const Icon = item.icon;
+                    return <button key={item.id} className={section === item.id ? "active" : ""}
+                                   onClick={() => setSection(item.id)}>
+                        <span className={`admin-nav-icon ${item.id}`}><Icon size={18}/></span>
+                        <span><b>{item.label}</b><small>{item.description}</small></span>
+                        <ChevronRight size={15}/>
+                    </button>;
+                })}
+            </nav>
+            <div className="admin-user">
+                <span className="avatar">{userId.slice(0, 1).toUpperCase()}</span>
+                <span><b>{userId}</b><small title={workspace}>{workspace || "正在准备工作区"}</small></span>
+            </div>
+        </aside>
+        <main className="admin-main">
+            <header className="admin-header">
+                <div>
+                    <span>UDATABUDDY ADMIN</span>
+                    <h1>{active?.label}</h1>
+                </div>
+                <button onClick={onBack}><ArrowLeft size={16}/>返回对话</button>
+            </header>
+            <section className="admin-content">
+                {section === "mcp" && <IntegrationsView api={api} notify={notify}/>}
+                {section === "skills" && <CapabilitiesView api={api} notify={notify} section="skills"/>}
+                {section === "subagents" && <CapabilitiesView api={api} notify={notify} section="subagents"/>}
+            </section>
+        </main>
+    </div>;
+}
+
+function UserGate({onSubmit}) {
+    const [value, setValue] = useState("local-user");
+    const [error, setError] = useState("");
+    return (
+        <div className="user-gate">
+            <div className="gate-glow"/>
+            <form className="gate-card" onSubmit={event => {
+                event.preventDefault();
+                try { onSubmit(value); } catch (e) { setError(e.message); }
+            }}>
+                <div className="brand-orb"><Sparkles size={25}/></div>
+                <span className="eyebrow">SOLON AI WORKSPACE</span>
+                <h1>欢迎使用 UdataBuddy</h1>
+                <p>输入用户标识，为你创建隔离的会话、文件和智能体工作区。</p>
+                <label>用户标识</label>
+                <div className="gate-input"><UserRound size={18}/><input value={value}
+                    onChange={event => setValue(event.target.value)} autoFocus/></div>
+                {error && <div className="field-error">{error}</div>}
+                <button className="primary-button gate-submit">进入工作台 <ChevronRight size={18}/></button>
+            </form>
+        </div>
+    );
+}
+
+function Sidebar({open, view, setView, sessions, current, userId, workspace, api, notify, onOpenFile,
+                     onOpenWorkspace, onCreate, onSelect, onRename, onDelete, onOpenAdmin, onChangeUser, onClose}) {
+    return (
+        <aside className="sidebar" aria-label="工作区导航">
+            <div className="brand">
+                <div className="brand-symbol"><Sparkles size={19}/></div>
+                {open && <div><strong>UdataBuddy</strong><span>AI Agent Workspace</span></div>}
+                {open && <button className="sidebar-close" onClick={onClose} aria-label="关闭导航"><X size={18}/></button>}
+            </div>
+            {open && <button className="workspace-switcher" onClick={onOpenWorkspace} title={workspace}>
+                <HardDrive size={16}/><span><b>{workspace?.split(/[\\/]/).pop() || "选择工作区"}</b><small>{workspace}</small></span>
+                <ChevronDown size={14}/>
+            </button>}
+            <nav className="workspace-tabs" aria-label="侧栏视图">
+                {navItems.map(item => {
+                    const Icon = item.icon;
+                    return <button key={item.id} className={view === item.id ? "active" : ""}
+                                   onClick={() => setView(item.id)} title={item.label} aria-label={item.label}>
+                        <Icon size={17}/>{open && <span>{item.label}</span>}
+                    </button>;
+                })}
+            </nav>
+            {open && <div className="sidebar-content">
+                {view === "files"
+                    ? <ExplorerPanel api={api} notify={notify} onOpenFile={onOpenFile}/>
+                    : <SessionPanel sessions={sessions} current={current} onCreate={onCreate}
+                                    onSelect={onSelect} onRename={onRename} onDelete={onDelete}/>}
+            </div>}
+            <div className="sidebar-footer">
+                <button className="sidebar-tool" onClick={onOpenAdmin} title="后台管理"><Settings2 size={17}/>{open && <span>后台管理</span>}</button>
+                <button className="profile-card" onClick={onChangeUser} title="切换用户">
+                    <span className="avatar">{userId.slice(0, 1).toUpperCase()}</span>
+                    {open && <span className="profile-copy"><b>{userId}</b><small>切换用户</small></span>}
+                </button>
+            </div>
+        </aside>
+    );
+}
+
+function SessionPanel({sessions, current, onCreate, onSelect, onRename, onDelete}) {
+    return <div className="session-panel">
+        <button className="new-chat-button" onClick={onCreate}><Plus size={17}/><span>新建会话</span></button>
+        <div className="section-label"><span>当前工作区会话</span><MoreHorizontal size={15}/></div>
+        <div className="session-scroll">
+            {sessions.length === 0 && <div className="sidebar-empty">这个工作区还没有会话</div>}
+            {sessions.map(session => <button key={session.sessionId}
+                className={`session-item ${current?.sessionId === session.sessionId ? "active" : ""}`}
+                onClick={() => onSelect(session)}>
+                <MessageSquare size={15}/>
+                <span><b>{session.title}</b><small>{formatTime(session.updatedAt)}</small></span>
+                {session.active && <i className="session-live"/>}
+                <span className="session-actions">
+                    <span className="session-rename" role="button" tabIndex={0} title="重命名会话"
+                          onClick={event => onRename(event, session)}><Pencil size={13}/></span>
+                    <span className="session-delete" role="button" tabIndex={0} title="删除会话"
+                          onClick={event => onDelete(event, session)}><Trash2 size={14}/></span>
+                </span>
+            </button>)}
+        </div>
+    </div>;
+}
+
+function flattenFiles(items = []) {
+    return items.flatMap(item => [
+        {name: item.name, path: item.path, type: item.type},
+        ...flattenFiles(item.children || [])
+    ]);
+}
+
+function findCompletionTrigger(value, cursor) {
+    const beforeCursor = value.slice(0, cursor);
+    const match = beforeCursor.match(/(^|\s)([/@#])([^\s/@#]*)$/);
+    if (!match) return null;
+    return {
+        symbol: match[2],
+        query: match[3].toLowerCase(),
+        start: beforeCursor.length - match[2].length - match[3].length,
+        end: cursor
+    };
+}
+
+function ChatView({api, current, messages, running, onSend, onCreate, onDecide, onPermissionMode}) {
+    const [prompt, setPrompt] = useState("");
+    const [completionSources, setCompletionSources] = useState({skills: [], files: [], agents: []});
+    const [completion, setCompletion] = useState(null);
+    const [activeCompletion, setActiveCompletion] = useState(0);
+    const textareaRef = useRef(null);
+    const endRef = useRef(null);
+    useEffect(() => {
+        // 使用块函数确保 effect 返回 undefined。表达式写法可能把宿主环境中
+        // scrollIntoView 的返回值注册成清理函数，下一次流式更新时会触发白屏。
+        endRef.current?.scrollIntoView({behavior: "smooth"});
+    }, [messages]);
+
+    useEffect(() => {
+        let cancelled = false;
+        if (!current) {
+            setCompletionSources({skills: [], files: [], agents: []});
+            return () => { cancelled = true; };
+        }
+        Promise.all([
+            api("/api/capabilities/skills"),
+            api("/api/files/tree?depth=12"),
+            api("/api/capabilities/agents")
+        ]).then(([skills, tree, agents]) => {
+            if (cancelled) return;
+            setCompletionSources({
+                skills: (skills || []).filter(skill => skill.active || skill.loaded),
+                files: flattenFiles(tree || []),
+                agents: agents || []
+            });
+        }).catch(() => {
+            if (!cancelled) setCompletionSources({skills: [], files: [], agents: []});
+        });
+        return () => { cancelled = true; };
+    }, [api, current]);
+
+    const completionItems = useMemo(() => {
+        if (!completion) return [];
+        const filter = (items, fields) => items
+            .filter(item => fields.some(field => (item[field] || "").toLowerCase().includes(completion.query)))
+            .slice(0, 8);
+        if (completion.symbol === "/") {
+            return filter(completionSources.skills, ["name", "description"]).map(skill => ({
+                key: skill.name,
+                value: `/${skill.name}`,
+                title: skill.name,
+                description: skill.description || "已加载 Skill",
+                icon: Sparkles,
+                type: "Skill"
+            }));
+        }
+        if (completion.symbol === "@") {
+            return filter(completionSources.files, ["name", "path"]).map(file => ({
+                key: file.path,
+                value: `@${file.path}`,
+                title: file.name,
+                description: file.path,
+                icon: file.type === "directory" ? Folder : FileCode2,
+                type: file.type === "directory" ? "目录" : "文件"
+            }));
+        }
+        return filter(completionSources.agents, ["name", "description"]).map(agent => ({
+            key: agent.name,
+            value: `#${agent.name}`,
+            title: agent.name,
+            description: agent.description || "专项智能体",
+            icon: Bot,
+            type: "SubAgent"
+        }));
+    }, [completion, completionSources]);
+
+    useEffect(() => {
+        setActiveCompletion(0);
+    }, [completion?.symbol, completion?.query]);
+
+    const refreshCompletion = (value, cursor) => {
+        setCompletion(findCompletionTrigger(value, cursor));
+    };
+
+    const selectCompletion = item => {
+        if (!completion || !item) return;
+        const next = `${prompt.slice(0, completion.start)}${item.value} ${prompt.slice(completion.end)}`;
+        const nextCursor = completion.start + item.value.length + 1;
+        setPrompt(next);
+        setCompletion(null);
+        window.requestAnimationFrame(() => {
+            textareaRef.current?.focus();
+            textareaRef.current?.setSelectionRange(nextCursor, nextCursor);
+        });
+    };
+
+    const submit = () => {
+        if (!prompt.trim() || !current || running) return;
+        const value = prompt;
+        setPrompt("");
+        setCompletion(null);
+        onSend(value);
+    };
+
+    if (!current) {
+        return <div className="welcome-view">
+            <div className="welcome-icon"><Bot size={33}/></div>
+            <span className="eyebrow">SOLON HARNESS AGENT</span>
+            <h2>今天想构建什么？</h2>
+            <p>创建一个会话，让智能体读取代码、编辑文件、运行命令，并协调 Skill 与 Subagent 完成复杂任务。</p>
+            <button className="primary-button" onClick={onCreate}><Plus size={18}/> 创建第一个会话</button>
+            <div className="feature-row">
+                <Feature icon={FileCode2} title="理解项目" text="搜索并分析完整代码库"/>
+                <Feature icon={SquareTerminal} title="执行任务" text="运行命令并验证结果"/>
+                <Feature icon={ShieldCheck} title="权限可控" text="HITL 审批敏感操作"/>
+            </div>
+        </div>;
+    }
+
+    return <div className="chat-layout">
+        <div className="message-scroll">
+            <div className="message-column">
+                {messages.length === 0 && <div className="conversation-empty">
+                    <div className="mini-orb"><Sparkles size={20}/></div>
+                    <h3>会话已就绪</h3>
+                    <p>描述目标、粘贴错误信息，或让智能体先浏览当前项目。</p>
+                    <div className="suggestion-grid">
+                        {["分析项目结构并给出改进建议", "查找潜在 Bug 并补充测试", "使用 Subagent 并行理解核心模块"].map(text =>
+                            <button key={text} onClick={() => setPrompt(text)}>{text}<ChevronRight size={15}/></button>)}
+                    </div>
+                </div>}
+                {messages.map(message =>
+                    <Message key={message.id} message={message}
+                             onDecide={(action, always, callUuids) =>
+                                 onDecide(message.id, action, always, callUuids)}/>)}
+                {running && messages.at(-1)?.role !== "assistant" &&
+                    <div className="typing-row"><span/><span/><span/></div>}
+                <div ref={endRef}/>
+            </div>
+        </div>
+        <div className="composer-wrap">
+            <div className={`permission-mode-bar ${current.permissionMode === "full" ? "full" : ""}`}>
+                <div className="permission-mode-copy">
+                    {current.permissionMode === "full" ? <Zap size={15}/> : <ShieldCheck size={15}/>}
+                    <span>
+                        <b>{current.permissionMode === "full" ? "完整权限" : "标准权限"}</b>
+                        <small>{current.permissionMode === "full"
+                            ? "当前会话的工具调用自动执行，无需审批"
+                            : "敏感工具执行前会询问你的许可"}</small>
+                    </span>
+                </div>
+                <div className="permission-mode-switch" role="group" aria-label="权限模式">
+                    <button className={current.permissionMode !== "full" ? "active" : ""}
+                            disabled={running} onClick={() => onPermissionMode("standard")}>
+                        标准
+                    </button>
+                    <button className={current.permissionMode === "full" ? "active" : ""}
+                            disabled={running} onClick={() => onPermissionMode("full")}>
+                        完整权限
+                    </button>
+                </div>
+            </div>
+            <div className="composer-input-shell">
+                {completion && <div className="completion-menu" role="listbox">
+                    <div className="completion-heading">
+                        <span>{completion.symbol === "/" ? "选择 Skill" : completion.symbol === "@" ? "选择文件或目录" : "选择 SubAgent"}</span>
+                        <small>↑↓ 选择 · Enter/Tab 补全 · Esc 关闭</small>
+                    </div>
+                    <div className="completion-list">
+                        {completionItems.length > 0 ? completionItems.map((item, index) => {
+                            const Icon = item.icon;
+                            return <button key={item.key}
+                                           className={index === activeCompletion ? "active" : ""}
+                                           role="option"
+                                           aria-selected={index === activeCompletion}
+                                           onMouseDown={event => {
+                                               event.preventDefault();
+                                               selectCompletion(item);
+                                           }}
+                                           onMouseEnter={() => setActiveCompletion(index)}>
+                                <span className={`completion-icon symbol-${completion.symbol === "/" ? "skill" : completion.symbol === "@" ? "file" : "agent"}`}>
+                                    <Icon size={16}/>
+                                </span>
+                                <span className="completion-copy">
+                                    <b>{completion.symbol}{item.title}</b>
+                                    <small>{item.description}</small>
+                                </span>
+                                <span className="completion-type">{item.type}</span>
+                            </button>;
+                        }) : <div className="completion-empty">
+                            {completion.symbol === "/"
+                                ? "没有匹配的已加载 Skill"
+                                : completion.symbol === "@"
+                                    ? "没有匹配的工作区文件或目录"
+                                    : "没有匹配的 SubAgent"}
+                        </div>}
+                    </div>
+                </div>}
+                <div className={`composer-box ${running ? "running" : ""}`}>
+                    <textarea ref={textareaRef} value={prompt} disabled={running}
+                              placeholder="输入任务，使用 / Skill、@ 文件或目录、# SubAgent…"
+                              onBlur={() => window.setTimeout(() => setCompletion(null), 120)}
+                              onClick={event => refreshCompletion(prompt, event.currentTarget.selectionStart)}
+                              onChange={event => {
+                                  const value = event.target.value;
+                                  setPrompt(value);
+                                  refreshCompletion(value, event.target.selectionStart);
+                              }}
+                              onKeyDown={event => {
+                                  if (completion && completionItems.length > 0) {
+                                      if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+                                          event.preventDefault();
+                                          const direction = event.key === "ArrowDown" ? 1 : -1;
+                                          setActiveCompletion(index =>
+                                              (index + direction + completionItems.length) % completionItems.length);
+                                          return;
+                                      }
+                                      if (event.key === "Enter" || event.key === "Tab") {
+                                          event.preventDefault();
+                                          selectCompletion(completionItems[activeCompletion]);
+                                          return;
+                                      }
+                                  }
+                                  if (event.key === "Escape" && completion) {
+                                      event.preventDefault();
+                                      setCompletion(null);
+                                      return;
+                                  }
+                                  if (event.key === "Enter" && !event.shiftKey) {
+                                      event.preventDefault();
+                                      submit();
+                                  }
+                              }}/>
+                    <div className="composer-footer">
+                        <span><Activity size={14}/>{running ? "正在执行任务" : "/ Skill · @ 文件/目录 · # SubAgent"}</span>
+                        <button className="send-button" onClick={submit} disabled={!prompt.trim() || running}>
+                            <Send size={17}/>
+                        </button>
+                    </div>
+                </div>
+            </div>
+            <small className="disclaimer">智能体可能出错，请检查重要的代码改动和命令结果。</small>
+        </div>
+    </div>;
+}
+
+function Feature({icon: Icon, title, text}) {
+    return <div className="feature-card"><Icon size={19}/><div><b>{title}</b><span>{text}</span></div></div>;
+}
+
+function Message({message, onDecide}) {
+    const parsed = message.role === "assistant"
+        ? splitThinkContent(message.content || "")
+        : {visible: message.content || "", thinking: "", pending: false};
+    const thinking = [message.thinking, parsed.thinking].filter(Boolean).join("\n").trim();
+    const activities = message.activities || [];
+    const hasThinkingActivities = activities.some(item => item.type === "thinking");
+    const hasTextActivities = activities.some(item => item.type === "text");
+    const activityToolIds = new Set(
+        activities.filter(item => item.type === "tool").map(item => item.callId)
+    );
+    return <article className={`message-row ${message.role}`}>
+        <div className="message-avatar">
+            {message.role === "user" ? <UserRound size={17}/> : <Sparkles size={17}/>}
+        </div>
+        <div className="message-body">
+            <div className="message-author">{message.role === "user" ? "你" : "UdataBuddy"}</div>
+            {!hasThinkingActivities && thinking && <Thinking content={thinking} active={parsed.pending}/>}
+            {activities.map(activity => {
+                if (activity.type === "thinking") {
+                    return <Thinking key={`thinking-${activity.id}`} content={activity.content}
+                                     active={activity.active}/>;
+                }
+                if (activity.type === "tool") {
+                    const tool = message.tools?.find(item => item.callId === activity.callId);
+                    return tool ? <ToolCall key={tool.callId} tool={tool}/> : null;
+                }
+                if (activity.type === "text" && activity.content) {
+                    return <div className="markdown-body assistant timeline-text" key={activity.id}>
+                        <ReactMarkdown remarkPlugins={[remarkGfm]}>{activity.content}</ReactMarkdown>
+                    </div>;
+                }
+                return null;
+            })}
+            {message.tools?.filter(tool => !activityToolIds.has(tool.callId))
+                .map(tool => <ToolCall key={tool.callId} tool={tool}/>)}
+            {!hasTextActivities && parsed.visible && <div className={`markdown-body ${message.role}`}>
+                {message.role === "assistant"
+                    ? <ReactMarkdown remarkPlugins={[remarkGfm]}>{parsed.visible}</ReactMarkdown>
+                    : parsed.visible}
+            </div>}
+            {!parsed.visible && !thinking && message.role === "assistant" && !message.error &&
+                <div className="typing-row inline"><span/><span/><span/></div>}
+            {message.hitl && <HitlCard event={message.hitl} onDecide={onDecide}/>}
+            {message.error && <div className="message-error"><X size={16}/>{message.error}</div>}
+        </div>
+    </article>;
+}
+
+function Thinking({content, active = false}) {
+    const [open, setOpen] = useState(active);
+    useEffect(() => {
+        if (active) setOpen(true);
+    }, [active]);
+    const preview = content.replace(/\s+/g, " ").trim().slice(0, 88);
+    return <div className={`thinking-card ${active ? "active" : ""}`}>
+        <button onClick={() => setOpen(value => !value)}>
+            <span className="thinking-icon"><BrainCircuit size={16}/></span>
+            <span className="thinking-title">
+                <b>{active ? "正在思考" : "已完成思考"}</b>
+                {!open && <small>{preview}{content.length > 88 ? "…" : ""}</small>}
+            </span>
+            {active && <span className="thinking-status"><i/> 推理中</span>}
+            {open ? <ChevronDown size={16}/> : <ChevronRight size={16}/>}
+        </button>
+        {open && <div className="thinking-content"><div className="thinking-line"/><pre>{content}</pre></div>}
+    </div>;
+}
+
+function ToolCall({tool}) {
+    const [open, setOpen] = useState(false);
+    const chartSpec = chartSpecFromTool(tool);
+    return <>
+        <div className={`tool-call ${tool.error ? "error" : ""}`}>
+            <button onClick={() => setOpen(value => !value)}>
+                <span className="tool-icon">{tool.running ? <RefreshCw className="spin" size={15}/> : <Check size={15}/>}</span>
+                <span><b>{tool.name}</b><small>{tool.running ? "执行中" : `${tool.durationMs || 0} ms`}</small></span>
+                {open ? <ChevronDown size={15}/> : <ChevronRight size={15}/>}
+            </button>
+            {open && <pre>{JSON.stringify(tool.args || {}, null, 2)}{tool.output ? `\n\n${tool.output}` : ""}</pre>}
+        </div>
+        {tool.name === "render_chart" && !tool.running && <ChartCard spec={chartSpec}/>}
+        {tool.name === "render_echart" && !tool.running &&
+            <Suspense fallback={<div className="chart-loading"><RefreshCw className="spin" size={15}/> 正在加载图表引擎</div>}>
+                <EChartCard tool={tool}/>
+            </Suspense>}
+        {tool.name === "render_antv_chart" && !tool.running &&
+            <Suspense fallback={<div className="chart-loading"><RefreshCw className="spin" size={15}/> 正在加载 AntV 图表引擎</div>}>
+                <AntVChartCard tool={tool}/>
+            </Suspense>}
+    </>;
+}
+
+function HitlCard({event, onDecide}) {
+    const [always, setAlways] = useState(false);
+    const tasks = event.tasks?.length ? event.tasks : [{
+        callUuid: event.callUuid,
+        toolName: event.toolName,
+        args: event.args,
+        comment: event.comment
+    }];
+    const callUuids = tasks.map(task => task.callUuid).filter(Boolean);
+    const multiple = tasks.length > 1;
+    const comments = [...new Set(tasks.map(task => task.comment?.trim()).filter(Boolean))];
+    const commonComment = multiple && comments.length === 1 ? comments[0] : "";
+    return <div className="hitl-card">
+        <div className="hitl-head"><ShieldCheck size={19}/><div>
+            <b>{multiple ? `${tasks.length} 项操作需要你的授权` : "需要你的授权"}</b>
+            <span>{commonComment || (multiple
+                ? "确认后将对本批操作统一应用选择"
+                : tasks[0]?.toolName || "工具调用")}</span>
+        </div></div>
+        <div className="hitl-task-list">
+            {tasks.map((task, index) => <div className="hitl-task" key={task.callUuid || `${task.toolName}-${index}`}>
+                <div><b>{task.toolName || "工具调用"}</b><span>{
+                    commonComment ? `操作 ${index + 1}` : task.comment || "敏感操作"
+                }</span></div>
+                <pre>{JSON.stringify(task.args || {}, null, 2)}</pre>
+            </div>)}
+        </div>
+        <label><input type="checkbox" checked={always} onChange={e => setAlways(e.target.checked)}/>
+            {multiple ? "本会话始终允许这些工具" : "本会话始终允许此工具"}</label>
+        <div className="hitl-actions">
+            <button className="danger-soft"
+                    onClick={() => onDecide("reject", always, callUuids)}>拒绝</button>
+            <button onClick={() => onDecide("skip", always, callUuids)}>跳过</button>
+            <button className="primary-button small"
+                    onClick={() => onDecide("approve", always, callUuids)}>
+                {multiple ? "全部允许执行" : "允许执行"}
+            </button>
+        </div>
+    </div>;
+}
+
+function PanelHeader({eyebrow, title, description, actions}) {
+    return <div className="panel-header">
+        <div><span className="eyebrow">{eyebrow}</span><h2>{title}</h2><p>{description}</p></div>
+        {actions && <div className="panel-actions">{actions}</div>}
+    </div>;
+}
+
+function ExplorerPanel({api, notify, onOpenFile}) {
+    const [tree, setTree] = useState([]);
+    const [query, setQuery] = useState("");
+    const [loading, setLoading] = useState(true);
+
+    const loadTree = useCallback(async () => {
+        setLoading(true);
+        try { setTree(await api("/api/files/tree?depth=5")); }
+        finally { setLoading(false); }
+    }, [api]);
+    useEffect(() => { loadTree().catch(error => notify(error.message)); }, [loadTree, notify]);
+
+    async function search() {
+        if (!query.trim()) return loadTree();
+        setTree(await api(`/api/files/search?keyword=${encodeURIComponent(query.trim())}`));
+    }
+    async function create() {
+        const path = window.prompt("新文件的相对路径", "src/new-file.txt");
+        if (!path) return;
+        const data = await api("/api/files/save", {method: "POST", body: JSON.stringify({path, content: ""})});
+        await loadTree();
+        onOpenFile(data.path);
+    }
+
+    return <div className="explorer-panel">
+        <div className="explorer-toolbar">
+            <span>资源管理器</span>
+            <button onClick={() => create().catch(error => notify(error.message))} aria-label="新建文件"><FilePlus2 size={15}/></button>
+            <button onClick={() => loadTree().catch(error => notify(error.message))} aria-label="刷新文件树"><RefreshCw size={14}/></button>
+        </div>
+        <div className="search-box"><Search size={15}/><input value={query} placeholder="搜索文件"
+            onChange={event => setQuery(event.target.value)}
+            onKeyDown={event => event.key === "Enter" && search().catch(error => notify(error.message))}/></div>
+        <div className="tree-scroll">
+            {loading ? <PanelLoading/> : <FileTree items={tree || []} onOpen={onOpenFile}/>}
+        </div>
+    </div>;
+}
+
+function FileTree({items, onOpen, depth = 0}) {
+    return items.map(item => <div key={item.path}>
+        <button className="tree-node" style={{paddingLeft: 12 + depth * 16}}
+                onClick={() => item.type === "file" && onOpen(item.path)}>
+            {item.type === "directory" ? <Folder size={16}/> : <File size={15}/>}<span>{item.name}</span>
+        </button>
+        {item.children && <FileTree items={item.children} onOpen={onOpen} depth={depth + 1}/>}
+    </div>);
+}
+
+function EditorPanel({api, notify}) {
+    const openedPaths = useWorkspaceStore(state => state.openedPaths);
+    const activePath = useWorkspaceStore(state => state.activePath);
+    const buffers = useWorkspaceStore(state => state.buffers);
+    const activateFile = useWorkspaceStore(state => state.activateFile);
+    const updateBuffer = useWorkspaceStore(state => state.updateBuffer);
+    const markSaved = useWorkspaceStore(state => state.markSaved);
+    const closeFile = useWorkspaceStore(state => state.closeFile);
+    const active = activePath ? buffers[activePath] : null;
+
+    async function save() {
+        if (!active) return;
+        const file = await api("/api/files/save", {
+            method: "POST",
+            body: JSON.stringify({path: active.path, content: active.content})
+        });
+        markSaved(active.path, file);
+        notify(`已保存 ${active.path}`);
+    }
+
+    function close(event, path) {
+        event.stopPropagation();
+        if (buffers[path]?.dirty && !window.confirm(`“${buffers[path].name}”尚未保存，仍要关闭吗？`)) return;
+        closeFile(path);
+    }
+
+    return <section className="editor-pane" aria-label="文件预览与编辑"
+                    onKeyDown={event => {
+                        if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "s") {
+                            event.preventDefault();
+                            save().catch(error => notify(error.message));
+                        }
+                    }}>
+        <div className="editor-tabs" role="tablist" aria-label="已打开文件">
+            {openedPaths.map(path => <button key={path} role="tab" aria-selected={path === activePath}
+                className={path === activePath ? "active" : ""} onClick={() => activateFile(path)} title={path}>
+                <FileCode2 size={14}/><span>{buffers[path]?.name || path}</span>
+                {buffers[path]?.dirty && <i/>}
+                <span className="tab-close" role="button" onClick={event => close(event, path)}><X size={13}/></span>
+            </button>)}
+        </div>
+        <div className="editor-toolbar">
+            <span title={active?.path}>{active?.path || "文件预览"}</span>
+            <button disabled={!active || !active.dirty} onClick={() => save().catch(error => notify(error.message))}>
+                <Save size={14}/>保存
+            </button>
+        </div>
+        <div className="editor-surface">
+            {active ? <Suspense fallback={<PanelLoading/>}><MonacoEditor
+                    path={active.path}
+                    value={active.content}
+                    language={editorLanguage(active.path)}
+                    onChange={value => updateBuffer(active.path, value || "")}/></Suspense>
+                : <div className="editor-empty"><FileCode2 size={36}/><b>打开文件开始编辑</b><span>从左侧文件树选择一个文本文件</span></div>}
+        </div>
+    </section>;
+}
+
+function editorLanguage(path = "") {
+    const extension = path.split(".").pop()?.toLowerCase();
+    return ({js: "javascript", jsx: "javascript", ts: "typescript", tsx: "typescript", java: "java",
+        json: "json", css: "css", html: "html", md: "markdown", yml: "yaml", yaml: "yaml",
+        xml: "xml", sql: "sql", py: "python", sh: "shell"})[extension] || "plaintext";
+}
+
+function ResizeHandle({axis, onResize}) {
+    const start = useRef(0);
+    return <div className={`resize-handle ${axis}`} role="separator" aria-orientation="vertical"
+                onPointerDown={event => {
+                    start.current = event.clientX;
+                    event.currentTarget.setPointerCapture(event.pointerId);
+                }}
+                onPointerMove={event => {
+                    if (!event.currentTarget.hasPointerCapture(event.pointerId)) return;
+                    const delta = event.clientX - start.current;
+                    start.current = event.clientX;
+                    onResize(delta);
+                }}/>
+}
+
+function WorkspacePicker({api, workspaces, activeWorkspace, onActivate, onRegister, onClose}) {
+    const [entries, setEntries] = useState([]);
+    const [path, setPath] = useState("");
+    const [history, setHistory] = useState([]);
+    const [loading, setLoading] = useState(true);
+
+    const loadRoots = useCallback(async () => {
+        setLoading(true);
+        try {
+            setEntries(await api("/api/workspaces/roots"));
+            setPath("");
+            setHistory([]);
+        } finally {
+            setLoading(false);
+        }
+    }, [api]);
+
+    useEffect(() => { loadRoots().catch(() => setLoading(false)); }, [loadRoots]);
+    useEffect(() => {
+        const closeOnEscape = event => event.key === "Escape" && onClose();
+        window.addEventListener("keydown", closeOnEscape);
+        return () => window.removeEventListener("keydown", closeOnEscape);
+    }, [onClose]);
+
+    async function browse(directory) {
+        setLoading(true);
+        try {
+            const children = await api(`/api/workspaces/children?path=${encodeURIComponent(directory)}`);
+            if (path) setHistory(items => [...items, path]);
+            setPath(directory);
+            setEntries(children || []);
+        } finally {
+            setLoading(false);
+        }
+    }
+
+    async function back() {
+        if (history.length === 0) return loadRoots();
+        const parent = history[history.length - 1];
+        const children = await api(`/api/workspaces/children?path=${encodeURIComponent(parent)}`);
+        setHistory(items => items.slice(0, -1));
+        setPath(parent);
+        setEntries(children || []);
+    }
+
+    return <div className="modal-backdrop" role="presentation" onMouseDown={event => event.target === event.currentTarget && onClose()}>
+        <section className="workspace-picker" role="dialog" aria-modal="true" aria-labelledby="workspace-picker-title">
+            <header><div><span className="eyebrow">LOCAL WORKSPACE</span><h2 id="workspace-picker-title">打开本地目录</h2></div>
+                <button className="icon-button" onClick={onClose} aria-label="关闭"><X size={18}/></button></header>
+            {workspaces.length > 0 && <div className="recent-workspaces">
+                <span>最近使用</span>
+                {workspaces.map(item => <button key={item.workspaceId} className={item.workspaceId === activeWorkspace?.workspaceId ? "active" : ""}
+                    onClick={() => onActivate(item.workspaceId)}><HardDrive size={15}/><span><b>{item.name}</b><small>{item.path}</small></span></button>)}
+            </div>}
+            <div className="directory-browser">
+                <div className="directory-path">
+                    <button onClick={() => back().catch(() => {})} disabled={!path}><ArrowLeft size={15}/></button>
+                    <input value={path} onChange={event => setPath(event.target.value)} placeholder="选择目录或输入绝对路径"/>
+                </div>
+                <div className="directory-list" aria-busy={loading}>
+                    {loading ? <PanelLoading/> : entries.map(item => <button key={item.path} onDoubleClick={() => browse(item.path)}
+                        onClick={() => setPath(item.path)} title="双击进入目录">
+                        <FolderOpen size={17}/><span><b>{item.name}</b><small>{item.path}</small></span><ChevronRight size={14}/>
+                    </button>)}
+                </div>
+            </div>
+            <footer><button className="secondary-button" onClick={onClose}>取消</button>
+                <button className="primary-button" disabled={!path} onClick={() => onRegister(path)}><FolderOpen size={16}/>打开此目录</button></footer>
+        </section>
+    </div>;
+}
+
+function IntegrationsView({api, notify}) {
+    const [items, setItems] = useState([]);
+    const [json, setJson] = useState('{"name":"example","transport":"sse","url":"http://127.0.0.1:3000/sse","enabled":true}');
+    const load = useCallback(async () => {
+        const mcp = await api("/api/integrations/mcp");
+        setItems(mcp || []);
+    }, [api]);
+    useEffect(() => { load().catch(e => notify(e.message)); }, [load, notify]);
+
+    async function save() {
+        let config;
+        try { config = JSON.parse(json); } catch { throw new Error("请输入有效 JSON"); }
+        await api("/api/integrations/mcp", {method: "POST", body: JSON.stringify(config)});
+        notify("MCP 配置已保存");
+        await load();
+    }
+    async function remove(name) {
+        await api(`/api/integrations/mcp?name=${encodeURIComponent(name)}`, {method: "DELETE"});
+        await load();
+    }
+
+    return <div className="panel-page">
+        <PanelHeader eyebrow="CONNECTIONS" title="MCP" description="通过 Model Context Protocol 为智能体连接外部工具服务。"
+                     actions={<button onClick={() => load()}><RefreshCw size={16}/>刷新连接</button>}/>
+        <div className="integration-panels">
+            <section className="surface integration-surface">
+                <div className="integration-heading">
+                    <span className="integration-icon mcp"><Box size={20}/></span>
+                    <div><h3>MCP Servers</h3><p>Model Context Protocol 工具</p></div>
+                </div>
+                <textarea className="json-editor" value={json} onChange={e => setJson(e.target.value)}/>
+                <button className="primary-button full-button" onClick={() => save().catch(e => notify(e.message))}>
+                    <Save size={16}/>保存 MCP
+                </button>
+                <div className="connection-list">
+                    {items.length === 0 && <span className="muted-empty">还没有配置服务</span>}
+                    {items.map(item => <div className="connection-item" key={item.name}>
+                        <span className="connection-status"/><div><b>{item.name}</b><small>{item.url || (item.command || []).join?.(" ") || item.command}</small></div>
+                        <button className="icon-button" onClick={() => remove(item.name).catch(e => notify(e.message))}><Trash2 size={15}/></button>
+                    </div>)}
+                </div>
+            </section>
+        </div>
+    </div>;
+}
+
+function CapabilitiesView({api, notify, section = "skills"}) {
+    const [skills, setSkills] = useState([]);
+    const [agents, setAgents] = useState([]);
+    const [skillName, setSkillName] = useState("");
+    const [skillFile, setSkillFile] = useState(null);
+    const [skillContent, setSkillContent] = useState("---\nname: code-review\ndescription: 审查代码正确性、安全性与可维护性\n---\n\n# Code Review\n\n先阅读相关代码和测试，再按严重级别报告问题。");
+    const [agentName, setAgentName] = useState("");
+    const [agentContent, setAgentContent] = useState('---\nname: reviewer\ndescription: 专注代码审查的只读子智能体\ntools: ["read", "grep", "glob", "skill"]\n---\n\n你是代码审查专家。先检查事实，再报告高置信度问题。');
+
+    const load = useCallback(async () => {
+        if (section === "skills") {
+            setSkills(await api("/api/capabilities/skills") || []);
+        } else {
+            setAgents(await api("/api/capabilities/agents") || []);
+        }
+    }, [api, section]);
+    useEffect(() => { load().catch(e => notify(e.message)); }, [load, notify]);
+
+    async function saveSkill() {
+        if (!skillName.trim()) throw new Error("请输入 Skill 名称");
+        await api("/api/capabilities/skills", {method: "POST", body: JSON.stringify({name: skillName, content: skillContent})});
+        setSkillName("");
+        notify("Skill 已保存到后台仓库");
+        await load();
+    }
+    async function importZip() {
+        if (!skillName.trim() || !skillFile) throw new Error("请输入名称并选择 ZIP");
+        if (skillFile.size > 20 * 1024 * 1024) throw new Error("ZIP 最大 20MB");
+        const bytes = new Uint8Array(await skillFile.arrayBuffer());
+        let binary = "";
+        for (let offset = 0; offset < bytes.length; offset += 0x8000) {
+            binary += String.fromCharCode(...bytes.subarray(offset, offset + 0x8000));
+        }
+        await api("/api/capabilities/skills/import", {
+            method: "POST", body: JSON.stringify({name: skillName, archiveBase64: btoa(binary)})
+        });
+        setSkillFile(null);
+        setSkillName("");
+        notify("完整 Skill 包已导入");
+        await load();
+    }
+    async function skillAction(skill, action) {
+        await api(`/api/capabilities/skills/action?name=${encodeURIComponent(skill.name)}&action=${action}`, {method: "POST"});
+        notify(action === "activate" ? "Skill 已复制并加载" : "Skill 已从当前用户停用");
+        await load();
+    }
+    async function deleteSkill(skill) {
+        if (!window.confirm(`删除后台 Skill 包“${skill.name}”？已生效副本不会被自动删除。`)) return;
+        await api(`/api/capabilities/skills?name=${encodeURIComponent(skill.name)}`, {method: "DELETE"});
+        await load();
+    }
+    async function saveAgent() {
+        if (!agentName.trim()) throw new Error("请输入 Subagent 名称");
+        await api("/api/capabilities/agents", {method: "POST", body: JSON.stringify({name: agentName, content: agentContent})});
+        setAgentName("");
+        notify("Subagent 已保存并刷新");
+        await load();
+    }
+    async function deleteAgent(agent) {
+        await api(`/api/capabilities/agents?name=${encodeURIComponent(agent.name)}`, {method: "DELETE"});
+        await load();
+    }
+
+    const isSkills = section === "skills";
+
+    return <div className="panel-page">
+        <PanelHeader eyebrow="CAPABILITIES" title={isSkills ? "Skill 管理" : "SubAgent 管理"}
+                     description={isSkills
+                         ? "维护全局 Skill 仓库，并精确控制当前用户加载哪些能力包。"
+                         : "创建和维护可由 task / multitask 调度的专项智能体。"}
+                     actions={<button onClick={() => api("/api/capabilities/refresh", {method: "POST"}).then(load)}><RefreshCw size={16}/>重新扫描</button>}/>
+        {isSkills && <div className="capability-banner"><ShieldCheck size={20}/><div><b>按用户隔离加载</b>
+            <span>点击生效后，完整目录复制到当前工作区的 <code>.soloncode/skills/&lt;name&gt;</code>，由 Solon Harness 加载。</span></div></div>}
+        <div className="capability-grid single">
+            {isSkills && <section className="surface capability-manager">
+                <div className="manager-heading"><span className="integration-icon skill"><Sparkles size={20}/></span>
+                    <div><h3>Skill 仓库</h3><p>导入完整目录，或快速创建 SKILL.md</p></div></div>
+                <label>Skill 名称<input value={skillName} placeholder="code-review" onChange={e => setSkillName(e.target.value)}/></label>
+                <label className="upload-zone">
+                    <Upload size={21}/><span>{skillFile ? skillFile.name : "选择 ZIP 完整包"}</span><small>根目录需包含 SKILL.md · 最大 20MB</small>
+                    <input type="file" accept=".zip,application/zip" onChange={e => setSkillFile(e.target.files?.[0] || null)}/>
+                </label>
+                <button className="secondary-button full-button" onClick={() => importZip().catch(e => notify(e.message))}><Upload size={16}/>导入 ZIP</button>
+                <div className="or-divider"><span>或者编辑 SKILL.md</span></div>
+                <textarea className="markdown-editor" value={skillContent} onChange={e => setSkillContent(e.target.value)}/>
+                <button className="primary-button full-button" onClick={() => saveSkill().catch(e => notify(e.message))}><Save size={16}/>保存到仓库</button>
+                <div className="capability-list">
+                    {skills.length === 0 && <span className="muted-empty">后台仓库中暂无 Skill 包</span>}
+                    {skills.map(skill => <div className="capability-item" key={skill.name}>
+                        <div className="capability-state">{skill.loaded ? <Check size={15}/> : <Box size={15}/>}</div>
+                        <div><b>{skill.name}</b><small>{skill.description}</small>
+                            <span>{skill.fileCount} files · {skill.loaded ? "Harness 已加载" : skill.active ? "已复制，等待刷新" : "未生效"}</span></div>
+                        <div className="capability-actions">
+                            <button className={skill.active ? "" : "primary-button"} onClick={() => skillAction(skill, skill.active ? "deactivate" : "activate").catch(e => notify(e.message))}>
+                                {skill.active ? "停用" : "生效"}</button>
+                            <button className="icon-button" onClick={() => deleteSkill(skill).catch(e => notify(e.message))}><Trash2 size={15}/></button>
+                        </div>
+                    </div>)}
+                </div>
+            </section>}
+
+            {!isSkills && <section className="surface capability-manager">
+                <div className="manager-heading"><span className="integration-icon agent"><Bot size={20}/></span>
+                    <div><h3>Subagents</h3><p>专项智能体，可由 task / multitask 调度</p></div></div>
+                <label>Subagent 名称<input value={agentName} placeholder="reviewer" onChange={e => setAgentName(e.target.value)}/></label>
+                <textarea className="markdown-editor tall" value={agentContent} onChange={e => setAgentContent(e.target.value)}/>
+                <button className="primary-button full-button" onClick={() => saveAgent().catch(e => notify(e.message))}><Save size={16}/>保存 Subagent</button>
+                <div className="capability-list">
+                    {agents.map(agent => <div className="capability-item" key={agent.name}>
+                        <div className="capability-state agent"><Bot size={15}/></div>
+                        <div><b>{agent.name}</b><small>{agent.description}</small>
+                            <span>{agent.editable ? "后台自定义" : "Harness 内置"}</span></div>
+                        {agent.editable && <button className="icon-button" onClick={() => deleteAgent(agent).catch(e => notify(e.message))}><Trash2 size={15}/></button>}
+                    </div>)}
+                </div>
+            </section>}
+        </div>
+    </div>;
+}
+
+function EmptyState({icon: Icon, title, text}) {
+    return <div className="panel-empty"><Icon size={30}/><b>{title}</b><span>{text}</span></div>;
+}
+
+function PanelLoading() {
+    return <div className="panel-loading"><RefreshCw className="spin" size={19}/>正在加载</div>;
+}
+
+export default App;

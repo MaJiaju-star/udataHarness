@@ -1,0 +1,4 @@
+Manifest-Version: 1.0
+Solon-Jar-Build-Tool: Solon-Jar-Plugin
+Start-Class: com.udata.harness.App
+Main-Class: org.noear.solon.loader.JarLauncher

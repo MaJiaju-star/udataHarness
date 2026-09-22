@@ -1,0 +1,10 @@
+/target/
+/frontend/node_modules/
+/frontend/.vite/
+/data/
+/workspace/
+/.idea/
+/*.iml
+.env
+*.log
+/src/main/resources/static/
