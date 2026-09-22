@@ -2,14 +2,15 @@ package com.udata.harness.common.util;
 
 import org.noear.snack4.ONode;
 import org.noear.solon.ai.AiUsage;
-import org.noear.solon.ai.agent.AgentChunk;
+import org.noear.solon.ai.agent.AgentEvent;
 import org.noear.solon.ai.agent.trace.Metrics;
-import org.noear.solon.ai.agent.react.ReActChunk;
-import org.noear.solon.ai.agent.react.RunEndChunk;
-import org.noear.solon.ai.agent.react.RunStartChunk;
-import org.noear.solon.ai.agent.react.task.ActionChunk;
-import org.noear.solon.ai.agent.react.task.ObservationChunk;
-import org.noear.solon.ai.agent.react.task.ReasonChunk;
+import org.noear.solon.ai.agent.react.RunEndEvent;
+import org.noear.solon.ai.agent.react.RunStartEvent;
+import org.noear.solon.ai.agent.react.task.ReasonDeltaEvent;
+import org.noear.solon.ai.agent.react.task.ReasonEndEvent;
+import org.noear.solon.ai.agent.react.task.ReasonStartEvent;
+import org.noear.solon.ai.agent.react.task.ToolCallEndEvent;
+import org.noear.solon.ai.agent.react.task.ToolCallStartEvent;
 import org.noear.solon.ai.agent.react.intercept.HITLTask;
 
 import java.util.ArrayList;
@@ -18,9 +19,9 @@ import java.util.List;
 import java.util.Map;
 
 /**
- * 将 Solon AI AgentChunk 转换成前端稳定的 JSON 事件协议。
+ * 将 Solon AI AgentEvent 转换成前端稳定的 JSON 事件协议。
  *
- * <p>映射层隔离框架类型和 UI 协议；未知 Chunk 降级为通用 chunk 事件，避免框架
+ * <p>映射层隔离框架类型和 UI 协议；未知 Event 降级为通用 chunk 事件，避免框架
  * 增加事件类型时导致前端解析失败。</p>
  */
 public final class StreamEventMapper {
@@ -81,28 +82,43 @@ public final class StreamEventMapper {
     }
 
     /**
-     * 判断 Chunk 是否是 HITL 恢复时对挂起前 Reason 的重放。
+     * 判断 Event 是否是 HITL 恢复时对挂起前 Reason 的重放。
      *
-     * <p>Solon Flow 从 Action 节点恢复时可能再次发射上一 Reason 的文本 Chunk；
-     * {@code reasonId} 保持不变。只过滤 ReasonChunk，不影响同一次恢复中新生成的
-     * Action、Observation 和具有新 reasonId 的模型文本。</p>
+     * <p>Solon Flow 从 ToolCall 节点恢复时可能再次发射上一 Reason 的事件；
+     * {@code reasonId} 保持不变。只过滤 Reason 事件，不影响同一次恢复中新生成的
+     * ToolCall 事件和具有新 reasonId 的模型文本。</p>
      */
-    public static boolean isReasonReplay(AgentChunk chunk, String suspendedReasonId) {
-        return suspendedReasonId != null
-                && chunk instanceof ReasonChunk reason
+    public static boolean isReasonReplay(AgentEvent event, String suspendedReasonId) {
+        if (suspendedReasonId == null) {
+            return false;
+        }
+        if (event instanceof ReasonStartEvent reason) {
+            return suspendedReasonId.equals(reason.getReasonId());
+        }
+        if (event instanceof ReasonDeltaEvent reason) {
+            return suspendedReasonId.equals(reason.getReasonId());
+        }
+        return event instanceof ReasonEndEvent reason
                 && suspendedReasonId.equals(reason.getReasonId());
     }
 
-    public static String map(AgentChunk chunk) {
-        String type = chunk.getClass().getSimpleName();
-        Map<String, Object> event = base("chunk", chunk);
+    public static String map(AgentEvent agentEvent) {
+        String type = agentEvent.getClass().getSimpleName();
+        Map<String, Object> event = base("chunk", agentEvent);
 
-        if (chunk instanceof RunStartChunk) {
+        if (agentEvent instanceof RunStartEvent) {
             event.put("type", "run_start");
-        } else if (chunk instanceof RunEndChunk runEnd) {
-            event.put("type", "run_end");
+        } else if (agentEvent instanceof RunEndEvent runEnd) {
+            if (runEnd.getResponse().getSession().isPending()) {
+                event.put("type", "run_pending");
+            } else if (runEnd.isAbnormal()) {
+                event.put("type", "error");
+                event.put("message", runEnd.getText());
+            } else {
+                event.put("type", "run_end");
+            }
             putRunMetrics(event, runEnd.getMetrics());
-        } else if (chunk instanceof ActionChunk action) {
+        } else if (agentEvent instanceof ToolCallStartEvent action) {
             event.put("type", "tool_start");
             event.put("callId", action.getCallId());
             event.put("toolName", action.getToolName());
@@ -110,7 +126,7 @@ public final class StreamEventMapper {
             if (action.hasMeta("fileOperation")) {
                 event.put("fileOperation", action.getMeta().get("fileOperation"));
             }
-        } else if (chunk instanceof ObservationChunk observation) {
+        } else if (agentEvent instanceof ToolCallEndEvent observation) {
             event.put("type", "tool_end");
             event.put("callId", observation.getCallId());
             event.put("toolName", observation.getToolName());
@@ -119,44 +135,33 @@ public final class StreamEventMapper {
             if (observation.getError() != null) {
                 event.put("error", observation.getError().getMessage());
             }
-        } else if (chunk instanceof ReasonChunk reason) {
-            // HITL 挂起时 Solon ReAct 会额外发出 response == null 的 ReasonChunk，
-            // 其内容是 pendingReason（例如“高危操作，需要人工介入确认”），并非模型正文。
-            // 该信息随后会通过结构化 hitl 事件发送，不能再次作为 text 追加到聊天内容。
-            //
-            // 模型准备调用工具时还会发出带 ToolCalls 的最终 ReasonChunk。部分模型适配器
-            // 会在该 Chunk 的 content 中附带本轮已经逐段发送过的累计正文；如果继续映射
-            // 为 text，多工具链每进入一次 Action 都会把先前正文再追加一遍。
-            // 部分模型会把后续一轮的 thinking 与 toolCalls 放在同一个终态消息中。
-            // thinking 必须优先透传；非 thinking 的 toolCalls 正文标记为 replay 候选，
-            // 由前端按累计文本规则合并，既保留新内容又不重复追加旧内容。
-            event.put("type", reason.isError()
-                    ? "reason_interrupted"
-                    : reason.isThinking()
-                    ? "thinking"
-                    : reason.isToolCalls() ? "text_replay" : "text");
+        } else if (agentEvent instanceof ReasonStartEvent reason) {
+            event.put("type", "reason_start");
             event.put("reasonId", reason.getReasonId());
-            event.put("finished", reason.isFinished());
+        } else if (agentEvent instanceof ReasonDeltaEvent reason) {
+            event.put("type", reason.isThinking() ? "thinking" : "text");
+            event.put("reasonId", reason.getReasonId());
+            event.put("finished", false);
+        } else if (agentEvent instanceof ReasonEndEvent reason) {
+            boolean hasThinking = reason.getThinking() != null && !reason.getThinking().isBlank();
+            event.put("type", hasThinking ? "thinking" : "text_replay");
+            event.put("reasonId", reason.getReasonId());
+            event.put("finished", true);
             event.put("toolCalls", reason.isToolCalls());
-            if (reason.getResponse() != null && reason.isFinished()) {
+            if (hasThinking) {
+                event.put("content", reason.getThinking());
+            }
+            if (reason.getResponse() != null) {
                 putUsage(event, reason.getResponse().getUsage(), "model_call");
             }
-        } else if (chunk instanceof ReActChunk react) {
-            // HITL 会暂时把 Trace 标记为 abnormal，并用 pendingReason 作为本段
-            // finalAnswer；这不是运行错误，真正的交互状态由随后 hitl 事件承载。
-            // 若映射为 error，前端会出现一个批准后仍残留的红色错误框。
-            event.put("type", react.getResponse().getSession().isPending()
-                    ? "run_pending"
-                    : react.isAbnormal() ? "error" : "done");
         } else {
             event.put("chunkType", type);
         }
 
-        if (chunk.hasContent()
-                && !(chunk instanceof ReasonChunk reason && reason.isError())
-                && !(chunk instanceof ReActChunk react
-                && react.getResponse().getSession().isPending())) {
-            event.put("content", chunk.getContent());
+        if (!event.containsKey("content")
+                && agentEvent.hasText()
+                && !(agentEvent instanceof RunEndEvent)) {
+            event.put("content", agentEvent.getText());
         }
         return ONode.serialize(event);
     }
@@ -195,13 +200,13 @@ public final class StreamEventMapper {
         }
     }
 
-    private static Map<String, Object> base(String type, AgentChunk chunk) {
+    private static Map<String, Object> base(String type, AgentEvent agentEvent) {
         Map<String, Object> event = new LinkedHashMap<>();
         event.put("type", type);
         event.put("timestamp", System.currentTimeMillis());
-        if (chunk != null) {
-            event.put("runId", chunk.getRunId());
-            event.put("agentName", chunk.getAgentName());
+        if (agentEvent != null) {
+            event.put("runId", agentEvent.getRunId());
+            event.put("agentName", agentEvent.getAgentName());
         }
         return event;
     }

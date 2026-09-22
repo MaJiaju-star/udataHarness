@@ -24,7 +24,8 @@ SolonCode、Solon Harness 和 `D:\code\dev-agent` 实现。
 - Solon AI 支持的模型端点
 
 项目跟随本仓库 `solon-ai-main` / `soloncode-main`，使用
-`4.0.4-SNAPSHOT`。首次构建需访问 Sonatype Snapshot 仓库。
+Solon Framework 使用 `4.1.0`，Solon AI 使用 `4.1.0-SNAPSHOT`。首次构建
+Solon AI 依赖时需访问 Sonatype Snapshot 仓库。
 
 ## Configure
 

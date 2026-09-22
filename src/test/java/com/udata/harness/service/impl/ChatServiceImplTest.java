@@ -3,8 +3,8 @@ package com.udata.harness.service.impl;
 import org.junit.jupiter.api.Test;
 import org.noear.solon.ai.agent.react.intercept.HITLTask;
 import org.noear.solon.ai.agent.react.ReActTrace;
-import org.noear.solon.ai.agent.react.task.ActionChunk;
-import org.noear.solon.ai.agent.react.task.ObservationChunk;
+import org.noear.solon.ai.agent.react.task.ToolCallEndEvent;
+import org.noear.solon.ai.agent.react.task.ToolCallStartEvent;
 import org.noear.solon.ai.agent.session.InMemoryAgentSession;
 import org.noear.solon.ai.chat.message.ChatMessage;
 import org.junit.jupiter.api.io.TempDir;
@@ -89,8 +89,8 @@ class ChatServiceImplTest {
     private void track(ChatServiceImpl service, InMemoryAgentSession session, ReActTrace trace,
                        String callId, String toolName, String filePath) {
         Map<String, Object> args = Map.of("file_path", filePath);
-        service.trackFileActivity(tempDir, session, new ActionChunk(trace, callId, toolName, args));
-        service.trackFileActivity(tempDir, session, new ObservationChunk(
+        service.trackFileActivity(tempDir, session, new ToolCallStartEvent(trace, callId, toolName, args));
+        service.trackFileActivity(tempDir, session, new ToolCallEndEvent(
                 trace, callId, toolName, args, ChatMessage.ofTool("ok", toolName, callId), null, 10));
     }
 

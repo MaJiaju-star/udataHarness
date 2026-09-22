@@ -202,7 +202,7 @@ public class UserHarnessEngineServiceImpl implements UserHarnessEngineService {
                 .compressionThreshold(compressionMaxMessages, compressionMaxContextRatio)
                 .sessionProvider(sessionRepository)
                 .toolsAdd(Arrays.asList(ToolName.TOOL_ALL_PUBLIC.getName(), ToolName.TOOL_HITL.getName()))
-                .extensionAdd((agentName, agentBuilder) -> {
+                .extensionAdd((engine, agentName, agentBuilder) -> {
                     agentBuilder.defaultToolAdd(CHART_TOOL);
                     agentBuilder.defaultToolAdd(ANTV_CHART_TOOL);
                 })

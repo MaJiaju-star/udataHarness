@@ -10,13 +10,13 @@ import com.udata.harness.service.ChatService;
 import com.udata.harness.service.UserHarnessEngineService;
 import com.udata.harness.service.UserWorkspaceService;
 import org.noear.solon.ai.agent.AgentSession;
-import org.noear.solon.ai.agent.AgentChunk;
+import org.noear.solon.ai.agent.AgentEvent;
 import org.noear.solon.ai.agent.react.ReActTrace;
 import org.noear.solon.ai.agent.react.intercept.HITL;
 import org.noear.solon.ai.agent.react.intercept.HITLDecision;
 import org.noear.solon.ai.agent.react.intercept.HITLTask;
-import org.noear.solon.ai.agent.react.task.ActionChunk;
-import org.noear.solon.ai.agent.react.task.ObservationChunk;
+import org.noear.solon.ai.agent.react.task.ToolCallEndEvent;
+import org.noear.solon.ai.agent.react.task.ToolCallStartEvent;
 import org.noear.solon.ai.harness.HarnessEngine;
 import org.noear.solon.ai.chat.ChatRole;
 import org.noear.solon.ai.chat.message.ChatMessage;
@@ -197,7 +197,7 @@ public class ChatServiceImpl implements ChatService {
      * 共享，全局开关会让同一用户的其他标准权限会话也绕过审批。</p>
      */
     /**
-     * 执行当前分段并把 AgentChunk 映射成稳定 SSE JSON。
+     * 执行当前分段并把 AgentEvent 映射成稳定 SSE JSON。
      *
      * <p>遇到 HITL 时只记录挂起任务并结束当前段；审批接口随后携带 decision 恢复同一
      * 会话。完整权限模式会自动批准，但通过计数上限防止模型无限工具循环。</p>
@@ -453,9 +453,9 @@ public class ChatServiceImpl implements ChatService {
      * 被拒绝或执行失败的工具展示成已完成文件变更。</p>
      */
     @SuppressWarnings("unchecked")
-    void trackFileActivity(Path workspace, AgentSession session, AgentChunk chunk) {
+    void trackFileActivity(Path workspace, AgentSession session, AgentEvent event) {
         //1. Action 阶段识别文件工具，并暂存 callId 对应的活动记录。
-        if (chunk instanceof ActionChunk action) {
+        if (event instanceof ToolCallStartEvent action) {
             String name = action.getToolName() == null ? "" : action.getToolName().toLowerCase();
             if (!("read".equals(name) || "write".equals(name) || "edit".equals(name))) {
                 return;
@@ -485,12 +485,12 @@ public class ChatServiceImpl implements ChatService {
         }
 
         //2. Observation 阶段仅持久化成功操作，并按类型和路径去重。
-        if (chunk instanceof ObservationChunk observation) {
+        if (event instanceof ToolCallEndEvent observation) {
             Map<String, Map<String, String>> pending = (Map<String, Map<String, String>>)
                     session.getContext().get(PENDING_FILE_ACTIVITIES_KEY);
             if (pending == null) return;
             Map<String, String> record = pending.remove(observation.getCallId());
-            String output = observation.getContent();
+            String output = observation.getText();
             if (record == null || observation.getError() != null
                     || (output != null && output.matches("(?s).*(错误|失败|not found|cannot ).*"))) {
                 return;

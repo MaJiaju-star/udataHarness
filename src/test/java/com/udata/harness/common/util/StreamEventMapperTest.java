@@ -5,12 +5,12 @@ import org.noear.snack4.ONode;
 import org.noear.solon.ai.AiUsage;
 import org.noear.solon.ai.agent.AgentSession;
 import org.noear.solon.ai.agent.session.InMemoryAgentSession;
-import org.noear.solon.ai.agent.react.ReActChunk;
 import org.noear.solon.ai.agent.react.ReActResponse;
 import org.noear.solon.ai.agent.react.ReActTrace;
-import org.noear.solon.ai.agent.react.RunEndChunk;
+import org.noear.solon.ai.agent.react.RunEndEvent;
 import org.noear.solon.ai.agent.react.intercept.HITLTask;
-import org.noear.solon.ai.agent.react.task.ReasonChunk;
+import org.noear.solon.ai.agent.react.task.ReasonEndEvent;
+import org.noear.solon.ai.agent.react.task.ReasonStartEvent;
 import org.noear.solon.ai.chat.ChatResponse;
 import org.noear.solon.ai.chat.message.AssistantMessage;
 import org.noear.solon.ai.chat.message.ChatMessage;
@@ -31,10 +31,7 @@ class StreamEventMapperTest {
     void identifiesOnlyTheSuspendedReasonAsReplay() {
         ReActTrace trace = new ReActTrace();
         String reasonId = trace.getCurrentReasonId();
-        ReasonChunk originalReason = new ReasonChunk(
-                trace,
-                null,
-                ChatMessage.ofAssistant("准备执行删除"));
+        ReasonStartEvent originalReason = new ReasonStartEvent(trace, "system");
 
         assertTrue(StreamEventMapper.isReasonReplay(originalReason, reasonId));
         assertFalse(StreamEventMapper.isReasonReplay(originalReason, "another-reason"));
@@ -42,15 +39,12 @@ class StreamEventMapperTest {
     }
 
     @Test
-    void doesNotExposeInterruptedReasonAsAssistantText() {
-        ReasonChunk interrupted = new ReasonChunk(
-                new ReActTrace(),
-                null,
-                ChatMessage.ofAssistant("高危操作，需要人工介入确认。"));
+    void mapsReasonStartWithoutAssistantText() {
+        ReasonStartEvent reasonStart = new ReasonStartEvent(new ReActTrace(), "system");
 
-        ONode event = ONode.ofJson(StreamEventMapper.map(interrupted));
+        ONode event = ONode.ofJson(StreamEventMapper.map(reasonStart));
 
-        assertEquals("reason_interrupted", event.get("type").getString());
+        assertEquals("reason_start", event.get("type").getString());
         assertFalse(event.hasKey("content"));
     }
 
@@ -67,10 +61,8 @@ class StreamEventMapperTest {
                   }]
                 }
                 """);
-        ReasonChunk toolCallReason = new ReasonChunk(
-                new ReActTrace(),
-                streamingResponse(),
-                toolCallMessage);
+        ReasonEndEvent toolCallReason = new ReasonEndEvent(
+                new ReActTrace(), streamingResponse(), toolCallMessage, 10L);
 
         ONode event = ONode.ofJson(StreamEventMapper.map(toolCallReason));
 
@@ -92,21 +84,19 @@ class StreamEventMapperTest {
                 }
                 """);
         AssistantMessage thinkingWithToolCall = new AssistantMessage(
+                "",
                 "我需要根据第一次工具结果继续分析。",
                 true,
                 null,
                 null,
                 toolCallMessage.getToolCalls(),
                 null);
-        ReasonChunk reason = new ReasonChunk(
-                new ReActTrace(),
-                streamingResponse(),
-                thinkingWithToolCall);
+        ReasonEndEvent reason = new ReasonEndEvent(
+                new ReActTrace(), streamingResponse(), thinkingWithToolCall, 10L);
 
         ONode event = ONode.ofJson(StreamEventMapper.map(reason));
 
         assertTrue(reason.isToolCalls());
-        assertTrue(reason.isThinking());
         assertEquals("thinking", event.get("type").getString());
         assertEquals("我需要根据第一次工具结果继续分析。", event.get("content").getString());
     }
@@ -122,7 +112,7 @@ class StreamEventMapperTest {
                 trace,
                 ChatMessage.ofAssistant("高危操作，需要人工介入确认。"));
 
-        ONode event = ONode.ofJson(StreamEventMapper.map(new ReActChunk(response)));
+        ONode event = ONode.ofJson(StreamEventMapper.map(new RunEndEvent(response)));
 
         assertEquals("run_pending", event.get("type").getString());
         assertFalse(event.hasKey("content"));
@@ -156,8 +146,8 @@ class StreamEventMapperTest {
                     if ("isFinished".equals(method.getName())) return true;
                     return method.getReturnType() == boolean.class ? false : null;
                 });
-        ReasonChunk reason = new ReasonChunk(
-                new ReActTrace(), response, ChatMessage.ofAssistant("完成"));
+        ReasonEndEvent reason = new ReasonEndEvent(
+                new ReActTrace(), response, ChatMessage.ofAssistant("完成"), 10L);
         ONode reasonEvent = ONode.ofJson(StreamEventMapper.map(reason));
 
         assertEquals(100, reasonEvent.get("usage").get("promptTokens").getInt());
@@ -170,7 +160,7 @@ class StreamEventMapperTest {
         runResponse.getMetrics().setCompletionTokens(40);
         runResponse.getMetrics().setTotalTokens(140);
         runResponse.getMetrics().setTotalDuration(2000);
-        ONode runEvent = ONode.ofJson(StreamEventMapper.map(new RunEndChunk(runResponse)));
+        ONode runEvent = ONode.ofJson(StreamEventMapper.map(new RunEndEvent(runResponse)));
 
         assertEquals(2000, runEvent.get("durationMs").getInt());
         assertEquals(20D, runEvent.get("tokensPerSecond").getDouble());
