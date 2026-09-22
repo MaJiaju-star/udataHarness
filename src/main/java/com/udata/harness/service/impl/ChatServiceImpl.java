@@ -40,6 +40,8 @@ import java.util.Set;
 public class ChatServiceImpl implements ChatService {
     private static final int MAX_AUTO_APPROVALS = 100;
     static final String ALWAYS_ALLOWED_TOOLS_KEY = "_udata_always_allowed_tools";
+    static final String SELECTED_MODEL_KEY = "_udata_selected_model";
+    static final String THINKING_DEPTH_KEY = "_udata_thinking_depth";
 
     @Inject
     private UserHarnessEngineService engines;
@@ -75,11 +77,14 @@ public class ChatServiceImpl implements ChatService {
         }
 
         String selectedModel = isBlank(request.getModel()) ? metadata.getModel() : request.getModel().trim();
+        String thinkingDepth = normalizeThinkingDepth(request.getThinkingDepth());
+        rememberRunOptions(session, selectedModel, thinkingDepth);
         return run(
                 userId,
                 session,
                 request.getPrompt().trim(),
                 selectedModel,
+                thinkingDepth,
                 isFullPermission(metadata),
                 null);
     }
@@ -122,7 +127,8 @@ public class ChatServiceImpl implements ChatService {
                     userId,
                     session,
                     null,
-                    metadata.getModel(),
+                    readSessionOption(session, SELECTED_MODEL_KEY, metadata.getModel()),
+                    readSessionOption(session, THINKING_DEPTH_KEY, "auto"),
                     isFullPermission(metadata),
                     suspendedReasonId);
         } catch (RuntimeException e) {
@@ -142,6 +148,7 @@ public class ChatServiceImpl implements ChatService {
             AgentSession session,
             String prompt,
             String selectedModel,
+            String thinkingDepth,
             boolean fullPermission,
             String suspendedReasonId) {
         String sessionId = session.getSessionId();
@@ -158,6 +165,7 @@ public class ChatServiceImpl implements ChatService {
                                 session,
                                 prompt,
                                 selectedModel,
+                                thinkingDepth,
                                 fullPermission,
                                 0,
                                 suspendedReasonId))
@@ -183,6 +191,7 @@ public class ChatServiceImpl implements ChatService {
             AgentSession session,
             String prompt,
             String selectedModel,
+            String thinkingDepth,
             boolean fullPermission,
             int autoApprovalCount,
             String suspendedReasonId) {
@@ -194,6 +203,11 @@ public class ChatServiceImpl implements ChatService {
                     options.toolContextPut(HarnessEngine.ATTR_CWD, workspace.toString());
                     if (!isBlank(selectedModel)) {
                         options.chatModel(engine.getModelOrDefInstance(selectedModel));
+                    }
+                    if ("none".equals(thinkingDepth)) {
+                        options.thinking(false);
+                    } else if (!"auto".equals(thinkingDepth)) {
+                        options.reasoning_effort(thinkingDepth);
                     }
                 })
                 .stream()
@@ -243,6 +257,7 @@ public class ChatServiceImpl implements ChatService {
                     session,
                     null,
                     selectedModel,
+                    thinkingDepth,
                     fullPermission,
                     autoApprovalCount + pendingTasks.size(),
                     nextSuspendedReasonId);
@@ -385,6 +400,28 @@ public class ChatServiceImpl implements ChatService {
 
     private boolean isBlank(String value) {
         return value == null || value.trim().isEmpty();
+    }
+
+    /** 保存本轮模型和思考深度，使 HITL 恢复时继续使用相同推理配置。 */
+    private void rememberRunOptions(AgentSession session, String selectedModel, String thinkingDepth) {
+        session.getContext().put(SELECTED_MODEL_KEY, selectedModel);
+        session.getContext().put(THINKING_DEPTH_KEY, thinkingDepth);
+        session.updateSnapshot();
+    }
+
+    /** 读取会话运行选项，旧会话没有该字段时使用回退值。 */
+    private String readSessionOption(AgentSession session, String key, String fallback) {
+        Object value = session.getContext().get(key);
+        return value == null || String.valueOf(value).isBlank() ? fallback : String.valueOf(value);
+    }
+
+    /** 将前端思考深度归一化为 Solon AI 支持的统一档位。 */
+    String normalizeThinkingDepth(String value) {
+        String normalized = value == null ? "auto" : value.trim().toLowerCase();
+        return switch (normalized) {
+            case "none", "low", "medium", "high", "max" -> normalized;
+            default -> "auto";
+        };
     }
 
     private boolean isFullPermission(SessionMetadata metadata) {

@@ -1,7 +1,9 @@
 package com.udata.harness.common.util;
 
 import org.noear.snack4.ONode;
+import org.noear.solon.ai.AiUsage;
 import org.noear.solon.ai.agent.AgentChunk;
+import org.noear.solon.ai.agent.trace.Metrics;
 import org.noear.solon.ai.agent.react.ReActChunk;
 import org.noear.solon.ai.agent.react.RunEndChunk;
 import org.noear.solon.ai.agent.react.RunStartChunk;
@@ -97,8 +99,9 @@ public final class StreamEventMapper {
 
         if (chunk instanceof RunStartChunk) {
             event.put("type", "run_start");
-        } else if (chunk instanceof RunEndChunk) {
+        } else if (chunk instanceof RunEndChunk runEnd) {
             event.put("type", "run_end");
+            putRunMetrics(event, runEnd.getMetrics());
         } else if (chunk instanceof ActionChunk action) {
             event.put("type", "tool_start");
             event.put("callId", action.getCallId());
@@ -132,6 +135,9 @@ public final class StreamEventMapper {
             event.put("reasonId", reason.getReasonId());
             event.put("finished", reason.isFinished());
             event.put("toolCalls", reason.isToolCalls());
+            if (reason.getResponse() != null && reason.isFinished()) {
+                putUsage(event, reason.getResponse().getUsage(), "model_call");
+            }
         } else if (chunk instanceof ReActChunk react) {
             // HITL 会暂时把 Trace 标记为 abnormal，并用 pendingReason 作为本段
             // finalAnswer；这不是运行错误，真正的交互状态由随后 hitl 事件承载。
@@ -150,6 +156,40 @@ public final class StreamEventMapper {
             event.put("content", chunk.getContent());
         }
         return ONode.serialize(event);
+    }
+
+    /** 将一次模型调用返回的真实 Token 用量写入 SSE 事件。 */
+    private static void putUsage(Map<String, Object> event, AiUsage usage, String scope) {
+        if (usage == null) {
+            return;
+        }
+        Map<String, Object> data = new LinkedHashMap<>();
+        data.put("promptTokens", usage.promptTokens());
+        data.put("thinkTokens", usage.thinkTokens());
+        data.put("completionTokens", usage.completionTokens());
+        data.put("totalTokens", usage.totalTokens());
+        data.put("cacheCreationInputTokens", usage.cacheCreationInputTokens());
+        data.put("cacheReadInputTokens", usage.cacheReadInputTokens());
+        event.put("usageScope", scope);
+        event.put("usage", data);
+    }
+
+    /** 将智能体整轮汇总指标写入结束事件，并计算包含工具耗时的平均输出速度。 */
+    private static void putRunMetrics(Map<String, Object> event, Metrics metrics) {
+        if (metrics == null) {
+            return;
+        }
+        Map<String, Object> data = new LinkedHashMap<>();
+        data.put("promptTokens", metrics.getPromptTokens());
+        data.put("completionTokens", metrics.getCompletionTokens());
+        data.put("totalTokens", metrics.getTotalTokens());
+        event.put("usageScope", "run");
+        event.put("usage", data);
+        event.put("durationMs", metrics.getTotalDuration());
+        if (metrics.getTotalDuration() > 0L) {
+            double tokensPerSecond = metrics.getCompletionTokens() * 1000D / metrics.getTotalDuration();
+            event.put("tokensPerSecond", Math.round(tokensPerSecond * 10D) / 10D);
+        }
     }
 
     private static Map<String, Object> base(String type, AgentChunk chunk) {

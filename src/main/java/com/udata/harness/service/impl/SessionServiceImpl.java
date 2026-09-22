@@ -70,6 +70,7 @@ public class SessionServiceImpl implements SessionService {
             item.put("name", config.getNameOrModel());
             item.put("model", config.getModel());
             item.put("provider", config.getProvider());
+            item.put("contextLength", config.getContextLength());
             models.add(item);
         }
         data.put("models", models);

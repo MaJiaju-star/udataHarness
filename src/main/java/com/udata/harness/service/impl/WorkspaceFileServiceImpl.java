@@ -12,25 +12,20 @@ import java.nio.file.Path;
 import java.nio.file.StandardOpenOption;
 import java.util.ArrayList;
 import java.util.Comparator;
-import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.Set;
 import java.util.stream.Stream;
 
 /**
  * 文件面板服务实现。
  *
- * <p>限制文件大小、树深度和搜索结果数量，跳过构建目录与符号链接；任何请求路径
+ * <p>限制文件大小、树深度和搜索结果数量，仅跳过符号链接；任何请求路径
  * 都会标准化并验证仍在用户根目录内。</p>
  */
 @Component
 public class WorkspaceFileServiceImpl implements WorkspaceFileService {
     private static final long MAX_FILE_SIZE = 2L * 1024 * 1024;
-    private static final Set<String> EXCLUDED = new HashSet<>(
-            java.util.Arrays.asList(".git", ".idea", "node_modules", "target", "build", ".gradle"));
-
     @Inject
     private UserWorkspaceService workspaces;
 
@@ -136,7 +131,7 @@ public class WorkspaceFileServiceImpl implements WorkspaceFileService {
     /**
      * 在可见文本文件中执行大小受限的关键字搜索。
      *
-     * <p>构建产物、版本控制目录和依赖目录会被排除，控制响应体与磁盘扫描成本。</p>
+     * <p>不按目录名称过滤结果，版本控制目录、依赖目录和构建产物均可被搜索。</p>
      */
     public List<Map<String, Object>> search(String userId, String keyword) {
         if (keyword == null || keyword.trim().isEmpty()) {
@@ -147,7 +142,6 @@ public class WorkspaceFileServiceImpl implements WorkspaceFileService {
         List<Map<String, Object>> result = new ArrayList<>();
         try (Stream<Path> paths = Files.walk(root, 20)) {
             paths.filter(path -> !path.equals(root))
-                    .filter(path -> !hasExcludedSegment(root, path))
                     .filter(path -> !Files.isSymbolicLink(path))
                     .filter(path -> relative(root, path).toLowerCase().contains(needle))
                     .limit(200)
@@ -161,9 +155,7 @@ public class WorkspaceFileServiceImpl implements WorkspaceFileService {
     private List<Map<String, Object>> buildTree(Path root, Path directory, int maxDepth, int currentDepth) {
         List<Map<String, Object>> result = new ArrayList<>();
         try (Stream<Path> paths = Files.list(directory)) {
-            paths.filter(path -> !path.getFileName().toString().startsWith("."))
-                    .filter(path -> !EXCLUDED.contains(path.getFileName().toString()))
-                    .filter(path -> !Files.isSymbolicLink(path))
+            paths.filter(path -> !Files.isSymbolicLink(path))
                     .sorted(Comparator.comparing((Path path) -> !Files.isDirectory(path))
                             .thenComparing(path -> path.getFileName().toString().toLowerCase()))
                     .forEach(path -> {
@@ -213,15 +205,6 @@ public class WorkspaceFileServiceImpl implements WorkspaceFileService {
             throw new IllegalArgumentException("Path not found");
         }
         return target;
-    }
-
-    private boolean hasExcludedSegment(Path root, Path path) {
-        for (Path segment : root.relativize(path)) {
-            if (EXCLUDED.contains(segment.toString()) || segment.toString().startsWith(".")) {
-                return true;
-            }
-        }
-        return false;
     }
 
     private String relative(Path root, Path path) {

@@ -5,7 +5,7 @@ import ChartCard, {chartSpecFromTool} from "./ChartCard.jsx";
 import {useWorkspaceStore} from "./workspaceStore.js";
 import {
     Activity, ArrowLeft, Bot, Box, BrainCircuit, Check, ChevronDown, ChevronRight, CircleStop,
-    File, FileCode2, FilePlus2, Files, Folder, FolderOpen, HardDrive, Menu, MessageSquare,
+    File, FileCode2, FilePlus2, Files, Folder, FolderOpen, HardDrive, Link2, Menu, MessageSquare,
     MoreHorizontal, Network, PanelLeftClose, PanelLeftOpen, Pencil, Plus, RefreshCw,
     Save, Search, Send, Settings2, ShieldCheck, Sparkles, SquareTerminal, Trash2,
     Upload, UserRound, X, Zap
@@ -15,12 +15,43 @@ const navItems = [
     {id: "files", label: "文件", icon: Files},
     {id: "sessions", label: "会话", icon: MessageSquare}
 ];
+const thinkingDepthOptions = [
+    {value: "auto", label: "自动"},
+    {value: "none", label: "关闭思考"},
+    {value: "low", label: "低"},
+    {value: "medium", label: "中"},
+    {value: "high", label: "高"},
+    {value: "max", label: "极高"}
+];
 
 const EChartCard = lazy(() => import("./EChartCard.jsx"));
 const AntVChartCard = lazy(() => import("./AntVChartCard.jsx"));
 const MonacoEditor = lazy(() => import("./MonacoEditor.jsx"));
 
 const uid = () => `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+const emptyTokenUsage = () => ({
+    promptTokens: 0,
+    thinkTokens: 0,
+    completionTokens: 0,
+    totalTokens: 0,
+    cacheCreationInputTokens: 0,
+    cacheReadInputTokens: 0,
+    tokensPerSecond: 0,
+    durationMs: 0
+});
+const formatTokens = value => new Intl.NumberFormat("zh-CN", {
+    notation: Number(value || 0) >= 10000 ? "compact" : "standard",
+    maximumFractionDigits: 1
+}).format(Number(value || 0));
+
+function cacheHitRate(usage, provider) {
+    const cached = Number(usage.cacheReadInputTokens || 0);
+    const prompt = Number(usage.promptTokens || 0);
+    const created = Number(usage.cacheCreationInputTokens || 0);
+    const separateCacheAccounting = String(provider || "").toLowerCase().includes("anthropic");
+    const eligible = separateCacheAccounting ? prompt + cached + created : prompt;
+    return eligible > 0 ? cached * 100 / eligible : null;
+}
 const formatTime = value => value
     ? new Date(value).toLocaleString("zh-CN", {month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit"})
     : "—";
@@ -239,15 +270,19 @@ function App() {
     const [notice, setNotice] = useState("");
     const [page, setPage] = useState(() => window.location.hash === "#/admin" ? "admin" : "workspace");
     const [workspacePickerOpen, setWorkspacePickerOpen] = useState(false);
+    const [tokenUsage, setTokenUsage] = useState(emptyTokenUsage);
+    const [selectedModel, setSelectedModel] = useState("");
+    const [thinkingDepth, setThinkingDepth] = useState(
+        () => localStorage.getItem("udataThinkingDepth") || "auto");
     const leftTab = useWorkspaceStore(state => state.leftTab);
     const setLeftTab = useWorkspaceStore(state => state.setLeftTab);
     const leftWidth = useWorkspaceStore(state => state.leftWidth);
-    const chatWidth = useWorkspaceStore(state => state.chatWidth);
+    const editorWidth = useWorkspaceStore(state => state.editorWidth);
     const leftCollapsed = useWorkspaceStore(state => state.leftCollapsed);
     const mobilePane = useWorkspaceStore(state => state.mobilePane);
     const toggleLeft = useWorkspaceStore(state => state.toggleLeft);
     const setLeftWidth = useWorkspaceStore(state => state.setLeftWidth);
-    const setChatWidth = useWorkspaceStore(state => state.setChatWidth);
+    const setEditorWidth = useWorkspaceStore(state => state.setEditorWidth);
     const setMobilePane = useWorkspaceStore(state => state.setMobilePane);
     const openEditorFile = useWorkspaceStore(state => state.openFile);
     const resetEditor = useWorkspaceStore(state => state.resetEditor);
@@ -257,6 +292,34 @@ function App() {
         setNotice(message);
         window.clearTimeout(window.__udataNotice);
         window.__udataNotice = window.setTimeout(() => setNotice(""), 3200);
+    }, []);
+
+    const trackTokenUsage = useCallback(event => {
+        if (!event?.usage) return;
+        const usage = event.usage;
+        setTokenUsage(currentUsage => {
+            if (event.usageScope === "run") {
+                return {
+                    ...currentUsage,
+                    promptTokens: Number(usage.promptTokens || currentUsage.promptTokens),
+                    completionTokens: Number(usage.completionTokens || currentUsage.completionTokens),
+                    totalTokens: Number(usage.totalTokens || currentUsage.totalTokens),
+                    tokensPerSecond: Number(event.tokensPerSecond || 0),
+                    durationMs: Number(event.durationMs || 0)
+                };
+            }
+            return {
+                ...currentUsage,
+                promptTokens: currentUsage.promptTokens + Number(usage.promptTokens || 0),
+                thinkTokens: currentUsage.thinkTokens + Number(usage.thinkTokens || 0),
+                completionTokens: currentUsage.completionTokens + Number(usage.completionTokens || 0),
+                totalTokens: currentUsage.totalTokens + Number(usage.totalTokens || 0),
+                cacheCreationInputTokens: currentUsage.cacheCreationInputTokens
+                    + Number(usage.cacheCreationInputTokens || 0),
+                cacheReadInputTokens: currentUsage.cacheReadInputTokens
+                    + Number(usage.cacheReadInputTokens || 0)
+            };
+        });
     }, []);
 
     const api = useCallback(async (path, options = {}) => {
@@ -295,6 +358,8 @@ function App() {
             .then(([metaData, sessionData]) => {
                 setMeta(metaData);
                 setSessions(sessionData || []);
+                setSelectedModel(value => (metaData.models || []).some(item => item.name === value)
+                    ? value : metaData.defaultModel || metaData.models?.[0]?.name || "");
             })
             .catch(error => notify(error.message));
     }, [userId, api, notify]);
@@ -311,6 +376,8 @@ function App() {
     async function chooseSession(session) {
         if (running) return;
         setCurrent(session);
+        setSelectedModel(session.model || meta?.defaultModel || "");
+        setTokenUsage(emptyTokenUsage());
         if (mobile) useWorkspaceStore.getState().setMobilePane("chat");
         const history = await api(`/api/sessions/messages?sessionId=${encodeURIComponent(session.sessionId)}`);
         setMessages((history || []).map(item => ({
@@ -348,8 +415,10 @@ function App() {
         const [metaData, sessionData] = await Promise.all([api("/api/meta"), api("/api/sessions")]);
         setMeta(metaData);
         setSessions(sessionData || []);
+        setSelectedModel(metaData.defaultModel || metaData.models?.[0]?.name || "");
         setCurrent(null);
         setMessages([]);
+        setTokenUsage(emptyTokenUsage());
         resetEditor();
         setWorkspacePickerOpen(false);
         notify(`已打开 ${metaData.activeWorkspace?.name || "工作区"}`);
@@ -358,7 +427,7 @@ function App() {
     async function createSession() {
         const created = await api("/api/sessions", {
             method: "POST",
-            body: JSON.stringify({title: "新的编码任务", model: meta?.defaultModel})
+            body: JSON.stringify({title: "新的编码任务", model: selectedModel || meta?.defaultModel})
         });
         await loadSessions();
         await chooseSession(created);
@@ -462,11 +531,15 @@ function App() {
             body: JSON.stringify(body)
         });
         if (!response.ok || !response.body) throw new Error(await response.text() || "流式连接不可用");
-        await readEventStream(response.body, event => mutateAssistant(messageId, event));
+        await readEventStream(response.body, event => {
+            trackTokenUsage(event);
+            mutateAssistant(messageId, event);
+        });
     }
 
     async function sendPrompt(text) {
         if (!current || running || !text.trim()) return;
+        setTokenUsage(emptyTokenUsage());
         const assistantId = uid();
         setMessages(items => [
             ...items,
@@ -486,7 +559,8 @@ function App() {
             await stream("/api/chat/stream", {
                 sessionId: current.sessionId,
                 prompt: text.trim(),
-                model: current.model
+                model: selectedModel || current.model,
+                thinkingDepth
             }, assistantId);
         } catch (error) {
             mutateAssistant(assistantId, {type: "error", message: error.message});
@@ -545,6 +619,8 @@ function App() {
         setUserId(value);
         setCurrent(null);
         setMessages([]);
+        setTokenUsage(emptyTokenUsage());
+        setSelectedModel("");
         setMeta(null);
     }
 
@@ -563,10 +639,12 @@ function App() {
 
     const title = current?.title || "开始一个新的任务";
     const sidebarOpen = !leftCollapsed;
+    const activeModel = meta?.models?.find(item => item.name === selectedModel)
+        || meta?.models?.[0];
 
     return (
         <div className={`app-shell workbench pane-${mobilePane} ${sidebarOpen ? "" : "sidebar-collapsed"} ${mobile ? "mobile-shell" : ""}`}
-             style={{"--left-width": `${leftWidth}px`, "--chat-width": `${chatWidth}px`}}>
+             style={{"--left-width": `${leftWidth}px`, "--editor-width": `${editorWidth}px`}}>
             <Sidebar
                 open={sidebarOpen}
                 view={leftTab}
@@ -595,7 +673,9 @@ function App() {
                 }}
                 onClose={toggleLeft}
             />
-            <ResizeHandle axis="left" onResize={delta => setLeftWidth(Math.max(220, Math.min(420, leftWidth + delta)))}/>
+            <ResizeHandle axis="left"
+                          onResize={delta => setLeftWidth(Math.max(220, Math.min(420, leftWidth + delta)))}
+                          onReset={() => setLeftWidth(260)}/>
             <main className="workspace-shell">
                 <header className="app-header">
                     <button className="icon-button sidebar-toggle" onClick={toggleLeft}
@@ -618,19 +698,32 @@ function App() {
                             <button className="stop-button" onClick={() => stopRun().catch(error => notify(error.message))}>
                                 <CircleStop size={16}/> 停止
                             </button>}
-                        <div className="model-chip"><Zap size={14}/>{meta?.defaultModel || "model"}</div>
+                        <TokenMeter usage={tokenUsage}
+                                    contextLength={activeModel?.contextLength || 1000000}
+                                    provider={activeModel?.provider}
+                                    running={running}/>
+                        <div className="model-chip"><Zap size={14}/>{selectedModel || meta?.defaultModel || "model"}</div>
                     </div>
                 </header>
 
                 <section className="content-shell">
                     <ChatView api={api} current={current} messages={messages} running={running}
+                              models={meta?.models || []} selectedModel={selectedModel}
+                              thinkingDepth={thinkingDepth}
+                              onModelChange={setSelectedModel}
+                              onThinkingDepthChange={value => {
+                                  setThinkingDepth(value);
+                                  localStorage.setItem("udataThinkingDepth", value);
+                              }}
                               onSend={sendPrompt} onCreate={() => createSession().catch(error => notify(error.message))}
                               onDecide={decideHitl}
                               onPermissionMode={mode => changePermissionMode(mode)
                                   .catch(error => notify(error.message))}/>
                 </section>
             </main>
-            <ResizeHandle axis="chat" onResize={delta => setChatWidth(Math.max(380, Math.min(760, chatWidth + delta)))}/>
+            <ResizeHandle axis="editor"
+                          onResize={delta => setEditorWidth(Math.max(320, Math.min(680, editorWidth - delta)))}
+                          onReset={() => setEditorWidth(420)}/>
             <EditorPanel api={api} notify={notify}/>
             {workspacePickerOpen && <WorkspacePicker
                 api={api}
@@ -800,13 +893,27 @@ function findCompletionTrigger(value, cursor) {
     };
 }
 
-function ChatView({api, current, messages, running, onSend, onCreate, onDecide, onPermissionMode}) {
+function activeFileReference(path, selection) {
+    if (!path) return "";
+    if (!selection || selection.empty) return `@${path}`;
+    return `@${path}#L${selection.startLine}-L${selection.endLine}`;
+}
+
+function ChatView({api, current, messages, running, models, selectedModel, thinkingDepth,
+                      onModelChange, onThinkingDepthChange, onSend, onCreate, onDecide, onPermissionMode}) {
     const [prompt, setPrompt] = useState("");
     const [completionSources, setCompletionSources] = useState({skills: [], files: [], agents: []});
     const [completion, setCompletion] = useState(null);
     const [activeCompletion, setActiveCompletion] = useState(0);
     const textareaRef = useRef(null);
     const endRef = useRef(null);
+    const activePath = useWorkspaceStore(state => state.activePath);
+    const selections = useWorkspaceStore(state => state.selections);
+    const referenceEnabled = useWorkspaceStore(state => state.referenceEnabled);
+    const toggleReference = useWorkspaceStore(state => state.toggleReference);
+    const fileReference = referenceEnabled
+        ? activeFileReference(activePath, selections[activePath])
+        : "";
     useEffect(() => {
         // 使用块函数确保 effect 返回 undefined。表达式写法可能把宿主环境中
         // scrollIntoView 的返回值注册成清理函数，下一次流式更新时会触发白屏。
@@ -893,7 +1000,9 @@ function ChatView({api, current, messages, running, onSend, onCreate, onDecide, 
 
     const submit = () => {
         if (!prompt.trim() || !current || running) return;
-        const value = prompt;
+        const value = fileReference
+            ? `${fileReference}\n\n${prompt.trim()}`
+            : prompt;
         setPrompt("");
         setCompletion(null);
         onSend(value);
@@ -994,6 +1103,29 @@ function ChatView({api, current, messages, running, onSend, onCreate, onDecide, 
                     </div>
                 </div>}
                 <div className={`composer-box ${running ? "running" : ""}`}>
+                    <div className="composer-config-bar">
+                        <label>
+                            <Bot size={13}/><span>模型</span>
+                            <select value={selectedModel} disabled={running}
+                                    onChange={event => onModelChange(event.target.value)}>
+                                {models.map(item => <option key={item.name} value={item.name}>
+                                    {item.name}
+                                </option>)}
+                            </select>
+                        </label>
+                        <label>
+                            <BrainCircuit size={13}/><span>思考</span>
+                            <select value={thinkingDepth} disabled={running}
+                                    onChange={event => onThinkingDepthChange(event.target.value)}>
+                                {thinkingDepthOptions.map(item => <option key={item.value} value={item.value}>
+                                    {item.label}
+                                </option>)}
+                            </select>
+                        </label>
+                    </div>
+                    {fileReference && <div className="context-reference" title={fileReference}>
+                        <FileCode2 size={14}/><code>{fileReference}</code>
+                    </div>}
                     <textarea ref={textareaRef} value={prompt} disabled={running}
                               placeholder="输入任务，使用 / Skill、@ 文件或目录、# SubAgent…"
                               onBlur={() => window.setTimeout(() => setCompletion(null), 120)}
@@ -1029,7 +1161,16 @@ function ChatView({api, current, messages, running, onSend, onCreate, onDecide, 
                                   }
                               }}/>
                     <div className="composer-footer">
-                        <span><Activity size={14}/>{running ? "正在执行任务" : "/ Skill · @ 文件/目录 · # SubAgent"}</span>
+                        <div className="composer-tools">
+                            <button className={`reference-toggle ${referenceEnabled ? "active" : ""}`}
+                                    type="button"
+                                    aria-pressed={referenceEnabled}
+                                    title={referenceEnabled ? "关闭自动引用" : "开启自动引用"}
+                                    onClick={toggleReference}>
+                                <Link2 size={13}/>引用
+                            </button>
+                            <span><Activity size={14}/>{running ? "正在执行任务" : "/ Skill · @ 文件/目录 · # SubAgent"}</span>
+                        </div>
                         <button className="send-button" onClick={submit} disabled={!prompt.trim() || running}>
                             <Send size={17}/>
                         </button>
@@ -1043,6 +1184,35 @@ function ChatView({api, current, messages, running, onSend, onCreate, onDecide, 
 
 function Feature({icon: Icon, title, text}) {
     return <div className="feature-card"><Icon size={19}/><div><b>{title}</b><span>{text}</span></div></div>;
+}
+
+function TokenMeter({usage, contextLength, provider, running}) {
+    const cacheTokens = usage.cacheReadInputTokens + usage.cacheCreationInputTokens;
+    const hitRate = cacheHitRate(usage, provider);
+    const hitRateText = hitRate == null ? "—" : `${hitRate.toFixed(1)}%`;
+    const hitRateFormula = String(provider || "").toLowerCase().includes("anthropic")
+        ? "缓存读取 ÷（输入 + 缓存读取 + 缓存创建）"
+        : "缓存读取 ÷ 输入";
+    const speed = usage.tokensPerSecond > 0 ? `${usage.tokensPerSecond.toFixed(1)} tok/s` : "— tok/s";
+    const details = [
+        `输入 ${formatTokens(usage.promptTokens)}`,
+        `思考 ${formatTokens(usage.thinkTokens)}`,
+        `输出 ${formatTokens(usage.completionTokens)}`,
+        `缓存读取 ${formatTokens(usage.cacheReadInputTokens)}`,
+        `缓存创建 ${formatTokens(usage.cacheCreationInputTokens)}`,
+        `缓存命中率 ${hitRateText}`,
+        `命中率口径 ${hitRateFormula}`,
+        `平均速度 ${speed}`,
+        `模型上下文 ${formatTokens(contextLength)}`
+    ].join(" · ");
+    return <div className={`token-meter ${running ? "running" : ""}`} role="status" title={details}>
+        <Activity size={15}/>
+        <span>
+            <b>本轮 {formatTokens(usage.totalTokens)} · 命中 {hitRateText}</b>
+            <small>缓存 {formatTokens(cacheTokens)} · 平均 {speed}</small>
+        </span>
+        <i>{formatTokens(contextLength)}</i>
+    </div>;
 }
 
 function Message({message, onDecide}) {
@@ -1186,14 +1356,28 @@ function PanelHeader({eyebrow, title, description, actions}) {
     </div>;
 }
 
+function replaceTreeChildren(items, path, children) {
+    return (items || []).map(item => {
+        if (item.path === path) return {...item, children};
+        if (!item.children) return item;
+        return {...item, children: replaceTreeChildren(item.children, path, children)};
+    });
+}
+
 function ExplorerPanel({api, notify, onOpenFile}) {
     const [tree, setTree] = useState([]);
     const [query, setQuery] = useState("");
     const [loading, setLoading] = useState(true);
+    const [expandedPaths, setExpandedPaths] = useState(() => new Set());
+    const [loadingPaths, setLoadingPaths] = useState(() => new Set());
+    const activePath = useWorkspaceStore(state => state.activePath);
 
     const loadTree = useCallback(async () => {
         setLoading(true);
-        try { setTree(await api("/api/files/tree?depth=5")); }
+        try {
+            setTree(await api("/api/files/tree?depth=1"));
+            setExpandedPaths(new Set());
+        }
         finally { setLoading(false); }
     }, [api]);
     useEffect(() => { loadTree().catch(error => notify(error.message)); }, [loadTree, notify]);
@@ -1201,6 +1385,36 @@ function ExplorerPanel({api, notify, onOpenFile}) {
     async function search() {
         if (!query.trim()) return loadTree();
         setTree(await api(`/api/files/search?keyword=${encodeURIComponent(query.trim())}`));
+        setExpandedPaths(new Set());
+    }
+
+    async function toggleDirectory(item) {
+        if (loadingPaths.has(item.path)) return;
+        if (expandedPaths.has(item.path)) {
+            setExpandedPaths(paths => {
+                const next = new Set(paths);
+                next.delete(item.path);
+                return next;
+            });
+            return;
+        }
+        if (!Array.isArray(item.children)) {
+            setLoadingPaths(paths => new Set(paths).add(item.path));
+            try {
+                const children = await api(`/api/files/tree?path=${encodeURIComponent(item.path)}&depth=1`);
+                setTree(items => replaceTreeChildren(items, item.path, children || []));
+            } catch (error) {
+                notify(error.message);
+                return;
+            } finally {
+                setLoadingPaths(paths => {
+                    const next = new Set(paths);
+                    next.delete(item.path);
+                    return next;
+                });
+            }
+        }
+        setExpandedPaths(paths => new Set(paths).add(item.path));
     }
     async function create() {
         const path = window.prompt("新文件的相对路径", "src/new-file.txt");
@@ -1219,20 +1433,54 @@ function ExplorerPanel({api, notify, onOpenFile}) {
         <div className="search-box"><Search size={15}/><input value={query} placeholder="搜索文件"
             onChange={event => setQuery(event.target.value)}
             onKeyDown={event => event.key === "Enter" && search().catch(error => notify(error.message))}/></div>
-        <div className="tree-scroll">
-            {loading ? <PanelLoading/> : <FileTree items={tree || []} onOpen={onOpenFile}/>}
+        <div className="tree-scroll" role="tree" aria-label="工作区文件">
+            {loading ? <PanelLoading/> : <FileTree items={tree || []}
+                onOpen={onOpenFile}
+                onToggle={toggleDirectory}
+                expandedPaths={expandedPaths}
+                loadingPaths={loadingPaths}
+                activePath={activePath}/>}
         </div>
     </div>;
 }
 
-function FileTree({items, onOpen, depth = 0}) {
-    return items.map(item => <div key={item.path}>
-        <button className="tree-node" style={{paddingLeft: 12 + depth * 16}}
-                onClick={() => item.type === "file" && onOpen(item.path)}>
-            {item.type === "directory" ? <Folder size={16}/> : <File size={15}/>}<span>{item.name}</span>
+function FileTree({items, onOpen, onToggle, expandedPaths, loadingPaths, activePath, depth = 0}) {
+    return items.map(item => {
+        const directory = item.type === "directory";
+        const expanded = directory && expandedPaths.has(item.path);
+        const loading = directory && loadingPaths.has(item.path);
+        return <div key={item.path} role="none">
+        <button className={`tree-node ${directory ? "directory" : "file"} ${activePath === item.path ? "active" : ""}`}
+                style={{paddingLeft: 6 + depth * 16}}
+                role="treeitem"
+                aria-level={depth + 1}
+                aria-expanded={directory ? expanded : undefined}
+                onKeyDown={event => {
+                    if (!directory) return;
+                    if ((event.key === "ArrowRight" && !expanded)
+                            || (event.key === "ArrowLeft" && expanded)) {
+                        event.preventDefault();
+                        onToggle(item);
+                    }
+                }}
+                onClick={() => directory ? onToggle(item) : onOpen(item.path)}>
+            <span className="tree-chevron">
+                {directory && (loading ? <RefreshCw className="spin" size={12}/>
+                    : expanded ? <ChevronDown size={13}/> : <ChevronRight size={13}/>)}
+            </span>
+            {directory
+                ? expanded ? <FolderOpen size={16}/> : <Folder size={16}/>
+                : <File size={15}/>}<span className="tree-label">{item.name}</span>
         </button>
-        {item.children && <FileTree items={item.children} onOpen={onOpen} depth={depth + 1}/>}
-    </div>);
+        {expanded && item.children && <div role="group"><FileTree items={item.children}
+            onOpen={onOpen}
+            onToggle={onToggle}
+            expandedPaths={expandedPaths}
+            loadingPaths={loadingPaths}
+            activePath={activePath}
+            depth={depth + 1}/></div>}
+    </div>;
+    });
 }
 
 function EditorPanel({api, notify}) {
@@ -1241,6 +1489,7 @@ function EditorPanel({api, notify}) {
     const buffers = useWorkspaceStore(state => state.buffers);
     const activateFile = useWorkspaceStore(state => state.activateFile);
     const updateBuffer = useWorkspaceStore(state => state.updateBuffer);
+    const setEditorSelection = useWorkspaceStore(state => state.setEditorSelection);
     const markSaved = useWorkspaceStore(state => state.markSaved);
     const closeFile = useWorkspaceStore(state => state.closeFile);
     const active = activePath ? buffers[activePath] : null;
@@ -1287,7 +1536,8 @@ function EditorPanel({api, notify}) {
                     path={active.path}
                     value={active.content}
                     language={editorLanguage(active.path)}
-                    onChange={value => updateBuffer(active.path, value || "")}/></Suspense>
+                    onChange={value => updateBuffer(active.path, value || "")}
+                    onSelectionChange={selection => setEditorSelection(active.path, selection)}/></Suspense>
                 : <div className="editor-empty"><FileCode2 size={36}/><b>打开文件开始编辑</b><span>从左侧文件树选择一个文本文件</span></div>}
         </div>
     </section>;
@@ -1300,9 +1550,18 @@ function editorLanguage(path = "") {
         xml: "xml", sql: "sql", py: "python", sh: "shell"})[extension] || "plaintext";
 }
 
-function ResizeHandle({axis, onResize}) {
+function ResizeHandle({axis, onResize, onReset}) {
     const start = useRef(0);
     return <div className={`resize-handle ${axis}`} role="separator" aria-orientation="vertical"
+                aria-label={axis === "left" ? "调整侧栏宽度" : "调整编辑器宽度"}
+                tabIndex={0}
+                title="拖动调整宽度，双击恢复默认"
+                onDoubleClick={onReset}
+                onKeyDown={event => {
+                    if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
+                    event.preventDefault();
+                    onResize(event.key === "ArrowLeft" ? -16 : 16);
+                }}
                 onPointerDown={event => {
                     start.current = event.clientX;
                     event.currentTarget.setPointerCapture(event.pointerId);

@@ -7,6 +7,7 @@ import org.noear.solon.ai.agent.session.InMemoryAgentSession;
 import java.util.List;
 import java.util.Map;
 
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -40,6 +41,19 @@ class ChatServiceImplTest {
         assertFalse(service.areAllToolsAlwaysAllowed(session, List.of(bash, chart)));
         service.rememberAlwaysAllowedTools(session, List.of(chart));
         assertTrue(service.areAllToolsAlwaysAllowed(session, List.of(bash, chart)));
+    }
+
+    @Test
+    void normalizesSupportedThinkingDepths() {
+        ChatServiceImpl service = new ChatServiceImpl();
+
+        assertEquals("auto", service.normalizeThinkingDepth(null));
+        assertEquals("none", service.normalizeThinkingDepth("NONE"));
+        assertEquals("low", service.normalizeThinkingDepth("low"));
+        assertEquals("medium", service.normalizeThinkingDepth("medium"));
+        assertEquals("high", service.normalizeThinkingDepth("high"));
+        assertEquals("max", service.normalizeThinkingDepth("max"));
+        assertEquals("auto", service.normalizeThinkingDepth("unsupported"));
     }
 
     private static HITLTask task(String callUuid, String toolName) {

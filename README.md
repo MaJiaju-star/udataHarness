@@ -34,10 +34,11 @@ $env:AGENT_DATA_DIR='D:\agent-data'
 $env:AGENT_API_URL='https://api.deepseek.com'
 $env:AGENT_API_KEY='<your-deepseek-key>'
 $env:AGENT_PROVIDER='openai'
-$env:AGENT_MODEL='deepseek-v4-flash'
 ```
 
-默认通过 OpenAI 兼容协议连接 DeepSeek，模型为 `deepseek-v4-flash`。
+默认通过 OpenAI 兼容协议连接 DeepSeek。前端模型列表由 `app.yml` 中的
+`agent.model.models` 配置，`agent.model.default` 指定默认项；每个列表项可覆盖
+`api-url`、`api-key`、`provider` 和 `context-length`。
 `AGENT_API_KEY` 没有默认值；必须通过进程环境或密钥管理服务注入。不要将密钥
 提交到仓库或写入配置文件。
 

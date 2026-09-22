@@ -2,11 +2,13 @@ package com.udata.harness.common.util;
 
 import org.junit.jupiter.api.Test;
 import org.noear.snack4.ONode;
+import org.noear.solon.ai.AiUsage;
 import org.noear.solon.ai.agent.AgentSession;
 import org.noear.solon.ai.agent.session.InMemoryAgentSession;
 import org.noear.solon.ai.agent.react.ReActChunk;
 import org.noear.solon.ai.agent.react.ReActResponse;
 import org.noear.solon.ai.agent.react.ReActTrace;
+import org.noear.solon.ai.agent.react.RunEndChunk;
 import org.noear.solon.ai.agent.react.intercept.HITLTask;
 import org.noear.solon.ai.agent.react.task.ReasonChunk;
 import org.noear.solon.ai.chat.ChatResponse;
@@ -141,6 +143,37 @@ class StreamEventMapperTest {
         assertEquals("call-1", event.get("tasks").get(0).get("callUuid").getString());
         assertEquals("call-2", event.get("tasks").get(1).get("callUuid").getString());
         assertEquals("bash", event.get("tasks").get(1).get("toolName").getString());
+    }
+
+    @Test
+    void mapsModelUsageAndRunThroughput() {
+        AiUsage usage = new AiUsage(100, 20, 40, 160, 8, 60, null);
+        ChatResponse response = (ChatResponse) Proxy.newProxyInstance(
+                ChatResponse.class.getClassLoader(),
+                new Class<?>[]{ChatResponse.class},
+                (proxy, method, args) -> {
+                    if ("getUsage".equals(method.getName())) return usage;
+                    if ("isFinished".equals(method.getName())) return true;
+                    return method.getReturnType() == boolean.class ? false : null;
+                });
+        ReasonChunk reason = new ReasonChunk(
+                new ReActTrace(), response, ChatMessage.ofAssistant("完成"));
+        ONode reasonEvent = ONode.ofJson(StreamEventMapper.map(reason));
+
+        assertEquals(100, reasonEvent.get("usage").get("promptTokens").getInt());
+        assertEquals(60, reasonEvent.get("usage").get("cacheReadInputTokens").getInt());
+
+        AgentSession session = InMemoryAgentSession.of("metrics-session");
+        ReActResponse runResponse = new ReActResponse(
+                session, new ReActTrace(), ChatMessage.ofAssistant("完成"));
+        runResponse.getMetrics().setPromptTokens(100);
+        runResponse.getMetrics().setCompletionTokens(40);
+        runResponse.getMetrics().setTotalTokens(140);
+        runResponse.getMetrics().setTotalDuration(2000);
+        ONode runEvent = ONode.ofJson(StreamEventMapper.map(new RunEndChunk(runResponse)));
+
+        assertEquals(2000, runEvent.get("durationMs").getInt());
+        assertEquals(20D, runEvent.get("tokensPerSecond").getDouble());
     }
 
     private ChatResponse streamingResponse() {

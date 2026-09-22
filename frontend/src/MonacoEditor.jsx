@@ -1,3 +1,4 @@
+import {useEffect, useRef} from "react";
 import Editor, {loader} from "@monaco-editor/react";
 import * as monaco from "monaco-editor";
 import editorWorker from "../node_modules/monaco-editor/esm/vs/editor/editor.worker.js?worker";
@@ -17,13 +18,31 @@ self.MonacoEnvironment = {
 };
 loader.config({monaco});
 
-export default function MonacoEditor({path, value, language, onChange}) {
+export default function MonacoEditor({path, value, language, onChange, onSelectionChange}) {
+    const selectionListener = useRef(onSelectionChange);
+    useEffect(() => {
+        selectionListener.current = onSelectionChange;
+    }, [onSelectionChange]);
+
     return <Editor
         path={path}
         value={value}
         language={language}
-        theme="vs-dark"
+        theme="vs"
         onChange={onChange}
+        onMount={editor => editor.onDidChangeCursorSelection(event => {
+            const selection = event.selection;
+            let endLine = selection.endLineNumber;
+            if (!selection.isEmpty() && selection.endColumn === 1
+                    && endLine > selection.startLineNumber) {
+                endLine--;
+            }
+            selectionListener.current?.({
+                empty: selection.isEmpty(),
+                startLine: selection.startLineNumber,
+                endLine
+            });
+        })}
         options={{
             fontSize: 13,
             minimap: {enabled: false},

@@ -5,19 +5,25 @@ const fileName = path => path?.split(/[\\/]/).pop() || path;
 
 export const useWorkspaceStore = create(persist((set, get) => ({
     leftTab: "files",
-    leftWidth: 280,
-    chatWidth: 520,
+    leftWidth: 260,
+    editorWidth: 420,
     leftCollapsed: false,
     mobilePane: "chat",
     openedPaths: [],
     activePath: null,
     buffers: {},
+    selections: {},
+    referenceEnabled: true,
 
     setLeftTab: leftTab => set({leftTab, leftCollapsed: false}),
     setLeftWidth: leftWidth => set({leftWidth}),
-    setChatWidth: chatWidth => set({chatWidth}),
+    setEditorWidth: editorWidth => set({editorWidth}),
     toggleLeft: () => set(state => ({leftCollapsed: !state.leftCollapsed})),
     setMobilePane: mobilePane => set({mobilePane}),
+    toggleReference: () => set(state => ({referenceEnabled: !state.referenceEnabled})),
+    setEditorSelection: (path, selection) => set(state => ({
+        selections: {...state.selections, [path]: selection}
+    })),
 
     openFile: file => set(state => ({
         openedPaths: state.openedPaths.includes(file.path)
@@ -67,23 +73,26 @@ export const useWorkspaceStore = create(persist((set, get) => ({
     closeFile: path => set(state => {
         const openedPaths = state.openedPaths.filter(item => item !== path);
         const buffers = {...state.buffers};
+        const selections = {...state.selections};
         delete buffers[path];
+        delete selections[path];
         let activePath = state.activePath;
         if (activePath === path) {
             const index = state.openedPaths.indexOf(path);
             activePath = openedPaths[Math.min(index, openedPaths.length - 1)] || null;
         }
-        return {openedPaths, buffers, activePath};
+        return {openedPaths, buffers, selections, activePath};
     }),
 
-    resetEditor: () => set({openedPaths: [], activePath: null, buffers: {}}),
+    resetEditor: () => set({openedPaths: [], activePath: null, buffers: {}, selections: {}}),
     hasDirtyFiles: () => Object.values(get().buffers).some(buffer => buffer.dirty)
 }), {
     name: "udata-workbench",
     partialize: state => ({
         leftTab: state.leftTab,
         leftWidth: state.leftWidth,
-        chatWidth: state.chatWidth,
-        leftCollapsed: state.leftCollapsed
+        editorWidth: state.editorWidth,
+        leftCollapsed: state.leftCollapsed,
+        referenceEnabled: state.referenceEnabled
     })
 }));

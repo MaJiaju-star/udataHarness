@@ -3,11 +3,14 @@ package com.udata.harness.service.impl;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
+import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.List;
 import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class WorkspaceFileServiceImplTest {
     @TempDir
@@ -24,5 +27,24 @@ class WorkspaceFileServiceImplTest {
         assertEquals("alice-only", aliceFile.get("content"));
         assertThrows(IllegalArgumentException.class, () -> files.read("bob", "notes/task.txt"));
         assertThrows(IllegalArgumentException.class, () -> files.save("alice", "../escape.txt", "bad"));
+    }
+
+    @Test
+    void includesDotFilesAndAllInternalDirectories() throws Exception {
+        UserWorkspaceServiceImpl workspaces = new UserWorkspaceServiceImpl(tempDir);
+        WorkspaceFileServiceImpl files = new WorkspaceFileServiceImpl(workspaces);
+        Path workspace = workspaces.getOrCreate("alice");
+        Files.createDirectories(workspace.resolve(".opencode"));
+        Files.writeString(workspace.resolve(".opencode/config.json"), "{}");
+        Files.writeString(workspace.resolve(".env.example"), "TOKEN=");
+        Files.createDirectories(workspace.resolve(".git"));
+
+        List<Map<String, Object>> tree = files.tree("alice", "", 3);
+        List<String> names = tree.stream().map(item -> String.valueOf(item.get("name"))).toList();
+
+        assertTrue(names.contains(".opencode"));
+        assertTrue(names.contains(".env.example"));
+        assertTrue(names.contains(".git"));
+        assertEquals(1, files.search("alice", ".env").size());
     }
 }

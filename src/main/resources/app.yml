@@ -31,11 +31,16 @@ agent:
     Work only inside the configured workspace. Inspect before editing, preserve user changes,
     explain material decisions, and verify changes with relevant builds or tests.
   model:
-    name: "${AGENT_MODEL_NAME:deepseek}"
+    default: "deepseek-flash"
     api-url: "${AGENT_API_URL:https://api.deepseek.com}"
-    api-key: "${AGENT_API_KEY:}"
+    api-key: "${AGENT_API_KEY:sk-216497bffef942c09b250555bb4ac5ac}"
     provider: "${AGENT_PROVIDER:openai}"
-    model: "${AGENT_MODEL:deepseek-v4-flash}"
     # Declared model context window. The framework reserves 20K tokens for the
     # system prompt, then starts compression at 75% of the effective budget.
-    context-length: 200000
+    context-length: 1000000
+    # Add or remove list items to control the models exposed by the composer.
+    models:
+      - name: "deepseek-flash"
+        model: "deepseek-v4-flash"
+      - name: "deepseek-pro"
+        model: "deepseek-v4-pro"

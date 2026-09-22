@@ -5,6 +5,7 @@ import com.udata.harness.common.support.ChartTool;
 import com.udata.harness.repository.SessionRepository;
 import com.udata.harness.service.UserHarnessEngineService;
 import com.udata.harness.service.UserWorkspaceService;
+import org.noear.solon.Solon;
 import org.noear.solon.ai.chat.ChatConfig;
 import org.noear.solon.ai.harness.HarnessEngine;
 import org.noear.solon.ai.harness.agent.ToolName;
@@ -14,13 +15,16 @@ import org.noear.solon.ai.talents.mount.MountDir;
 import org.noear.solon.ai.talents.mount.MountType;
 import org.noear.solon.annotation.Component;
 import org.noear.solon.annotation.Inject;
+import org.noear.solon.core.Props;
 
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.Arrays;
+import java.util.ArrayList;
 import java.util.Collection;
+import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 
@@ -74,10 +78,10 @@ public class UserHarnessEngineServiceImpl implements UserHarnessEngineService {
     private double compressionMaxContextRatio;
 
     /** 模型声明的物理上下文窗口，用于让压缩器按模型能力计算安全余量。 */
-    @Inject("${agent.model.context-length:200000}")
+    @Inject("${agent.model.context-length:1000000}")
     private long modelContextLength;
 
-    @Inject("${agent.model.name:deepseek}")
+    @Inject("${agent.model.default:deepseek-flash}")
     private String modelName;
 
     @Inject("${agent.model.api-url:https://api.deepseek.com}")
@@ -184,17 +188,9 @@ public class UserHarnessEngineServiceImpl implements UserHarnessEngineService {
             throw new IllegalStateException("Cannot create Harness capability directories", e);
         }
 
-        ChatConfig chatConfig = new ChatConfig();
-        chatConfig.setName(modelName);
-        chatConfig.setApiUrl(apiUrl);
-        chatConfig.setApiKey(apiKey);
-        chatConfig.setProvider(provider);
-        chatConfig.setModel(model);
-        chatConfig.setContextLength(modelContextLength);
-
-        // 工具、沙箱、HITL 和 Subagent 在引擎创建时一次性启用；会话级 cwd
+        //1. 工具、沙箱、HITL 和 Subagent 在引擎创建时一次性启用；会话级 cwd
         // 仍由 ChatService 每次运行时写入 toolContext。
-        HarnessEngine engine = HarnessEngine.of(workspace.toString(), harnessHome)
+        HarnessEngine.Builder builder = HarnessEngine.of(workspace.toString(), harnessHome)
                 .systemPrompt(systemPrompt)
                 .maxTurns(maxTurns)
                 .sessionWindowSize(sessionWindowSize)
@@ -213,12 +209,19 @@ public class UserHarnessEngineServiceImpl implements UserHarnessEngineService {
                 .permissionRuleAdd(PermissionRule.ask("bash"))
                 .hitlEnabled(true)
                 .subagentEnabled(true)
-                .bashAsyncEnabled(true)
-                .modelAdd(chatConfig)
-                .defaultModel(modelName)
-                .build();
+                .bashAsyncEnabled(true);
 
-        // 用户技能使用独立可写挂载，共享 Agent 使用服务级只读语义目录。
+        //2. 从 app.yml 注册模型列表；未配置列表时保留旧单模型配置兼容性。
+        List<ChatConfig> modelConfigs = loadModelConfigs();
+        for (ChatConfig chatConfig : modelConfigs) {
+            builder.modelAdd(chatConfig);
+        }
+        String defaultModel = modelConfigs.stream()
+                .anyMatch(item -> modelName.equals(item.getNameOrModel()))
+                ? modelName : modelConfigs.get(0).getNameOrModel();
+        HarnessEngine engine = builder.defaultModel(defaultModel).build();
+
+        //3. 用户技能使用独立可写挂载，共享 Agent 使用服务级只读语义目录。
         engine.addMount(MountDir.builder()
                 .alias("@workspace-skills")
                 .description("Activated Skills for " + userId)
@@ -237,5 +240,47 @@ public class UserHarnessEngineServiceImpl implements UserHarnessEngineService {
                 .build());
         mcpServers.forEach(engine::addMcpServer);
         return engine;
+    }
+
+    /**
+     * 从 {@code agent.model.models} 读取模型列表，并让每项继承公共连接配置。
+     *
+     * <p>列表项支持 name、model、api-url、api-key、provider 和 context-length；其中只有
+     * name/model 通常需要逐项配置。</p>
+     */
+    private List<ChatConfig> loadModelConfigs() {
+        return loadModelConfigs(Solon.cfg());
+    }
+
+    /** 使用给定属性集构建模型配置，供启动配置加载和单元测试复用。 */
+    List<ChatConfig> loadModelConfigs(Props rootProps) {
+        List<ChatConfig> result = new ArrayList<>();
+        if (rootProps != null) {
+            for (Props props : rootProps.getListedProp("agent.model.models")) {
+                String configuredModel = props.get("model");
+                if (configuredModel == null || configuredModel.isBlank()) {
+                    continue;
+                }
+                ChatConfig config = new ChatConfig();
+                config.setName(props.get("name", configuredModel));
+                config.setApiUrl(props.get("api-url", apiUrl));
+                config.setApiKey(props.get("api-key", apiKey));
+                config.setProvider(props.get("provider", provider));
+                config.setModel(configuredModel);
+                config.setContextLength(props.getLong("context-length", modelContextLength));
+                result.add(config);
+            }
+        }
+        if (result.isEmpty()) {
+            ChatConfig config = new ChatConfig();
+            config.setName(modelName);
+            config.setApiUrl(apiUrl);
+            config.setApiKey(apiKey);
+            config.setProvider(provider);
+            config.setModel(model);
+            config.setContextLength(modelContextLength);
+            result.add(config);
+        }
+        return result;
     }
 }
