@@ -1384,7 +1384,27 @@ button, input, textarea, select { outline: none; }
     background: #29312f;
 }
 .send-button:hover { background: var(--accent-dark); }
-.disclaimer { display: block; margin-top: 7px; color: #a4a9ae; font-size: 9px; text-align: center; }
+.composer-token-meter {
+    display: flex;
+    width: 100%;
+    min-height: 27px;
+    align-items: center;
+    gap: 8px;
+    margin-top: 6px;
+    padding: 4px 9px;
+    overflow: hidden;
+    border: 1px solid #e1e7e5;
+    border-radius: 8px;
+    color: #87918e;
+    background: #f8faf9;
+    font-size: 8.5px;
+    white-space: nowrap;
+}
+.composer-token-meter > svg { flex: 0 0 auto; color: var(--accent); }
+.composer-token-meter.running > svg { animation: pulse 1.4s infinite; }
+.composer-token-meter b { color: #4b5b56; font-size: 9px; font-weight: 650; }
+.composer-token-meter > span { padding-left: 8px; border-left: 1px solid #dde4e1; }
+.composer-token-meter i { margin-left: auto; padding: 2px 5px; border-radius: 5px; color: #537268; background: #eaf4f0; font-size: 8px; font-style: normal; font-weight: 650; }
 
 .panel-page { height: 100%; padding: 30px 34px 34px; overflow: auto; }
 .panel-header { display: flex; align-items: flex-end; justify-content: space-between; gap: 20px; max-width: 1400px; margin: 0 auto 24px; }
@@ -1783,6 +1803,8 @@ button, input, textarea, select { outline: none; }
     .composer-config-bar select { max-width: 132px; }
     .send-button { width: 40px; height: 40px; }
     .disclaimer { display: none; }
+    .composer-token-meter { min-height: 25px; gap: 6px; margin-top: 4px; padding-inline: 8px; }
+    .composer-token-meter > span:nth-of-type(-n+3), .composer-token-meter > i { display: none; }
     .panel-page { padding: 19px 12px calc(24px + env(safe-area-inset-bottom, 0px)); }
     .panel-header { align-items: flex-start; flex-direction: column; }
     .panel-header { gap: 14px; margin-bottom: 17px; }

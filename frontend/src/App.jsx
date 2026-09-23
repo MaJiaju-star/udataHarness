@@ -895,10 +895,6 @@ function App() {
                             <button className="stop-button" onClick={() => stopRun().catch(error => notify(error.message))}>
                                 <CircleStop size={16}/> 停止
                             </button>}
-                        <TokenMeter usage={tokenUsage}
-                                    contextLength={activeModel?.contextLength || 1000000}
-                                    provider={activeModel?.provider}
-                                    running={running}/>
                         <div className="model-chip"><Zap size={14}/>{selectedModel || meta?.defaultModel || "model"}</div>
                     </div>
                 </header>
@@ -907,6 +903,9 @@ function App() {
                     <ChatView api={api} current={current} messages={messages} running={running}
                               models={meta?.models || []} selectedModel={selectedModel}
                               thinkingDepth={thinkingDepth}
+                              tokenUsage={tokenUsage}
+                              contextLength={activeModel?.contextLength || 1000000}
+                              provider={activeModel?.provider}
                               onModelChange={setSelectedModel}
                               onThinkingDepthChange={value => {
                                   setThinkingDepth(value);
@@ -1101,6 +1100,7 @@ function activeFileReference(path, selection) {
 }
 
 function ChatView({api, current, messages, running, models, selectedModel, thinkingDepth,
+                      tokenUsage, contextLength, provider,
                       onModelChange, onThinkingDepthChange, onSend, onCreate, onDecide,
                       onPermissionMode, onOpenFile}) {
     const [prompt, setPrompt] = useState("");
@@ -1380,7 +1380,8 @@ function ChatView({api, current, messages, running, models, selectedModel, think
                     </div>
                 </div>
             </div>
-            <small className="disclaimer">智能体可能出错，请检查重要的代码改动和命令结果。</small>
+            <TokenMeter usage={tokenUsage} contextLength={contextLength}
+                        provider={provider} running={running}/>
         </div>
     </div>;
 }
@@ -1408,13 +1409,15 @@ function TokenMeter({usage, contextLength, provider, running}) {
         `平均速度 ${speed}`,
         `模型上下文 ${formatTokens(contextLength)}`
     ].join(" · ");
-    return <div className={`token-meter ${running ? "running" : ""}`} role="status" title={details}>
+    return <div className={`composer-token-meter ${running ? "running" : ""}`} role="status" title={details}>
         <Activity size={15}/>
-        <span>
-            <b>本轮 {formatTokens(usage.totalTokens)} · 命中 {hitRateText}</b>
-            <small>缓存 {formatTokens(cacheTokens)} · 平均 {speed}</small>
-        </span>
-        <i>{formatTokens(contextLength)}</i>
+        <b>本轮 {formatTokens(usage.totalTokens)} tokens</b>
+        <span>输入 {formatTokens(usage.promptTokens)}</span>
+        <span>输出 {formatTokens(usage.completionTokens)}</span>
+        <span>缓存 {formatTokens(cacheTokens)}</span>
+        <span>命中 {hitRateText}</span>
+        <span>{speed}</span>
+        <i>上下文 {formatTokens(contextLength)}</i>
     </div>;
 }
 
