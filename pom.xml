@@ -22,7 +22,7 @@
     <properties>
         <java.version>17</java.version>
         <maven.compiler.release>17</maven.compiler.release>
-        <solon-ai.version>4.1.0-SNAPSHOT</solon-ai.version>
+        <solon-ai.version>4.1.0</solon-ai.version>
     </properties>
 
     <repositories>
