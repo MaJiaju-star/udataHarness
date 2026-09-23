@@ -1137,6 +1137,8 @@ function ChatView({api, current, messages, running, models, selectedModel, think
     const selections = useWorkspaceStore(state => state.selections);
     const referenceEnabled = useWorkspaceStore(state => state.referenceEnabled);
     const toggleReference = useWorkspaceStore(state => state.toggleReference);
+    const promptInsertion = useWorkspaceStore(state => state.promptInsertion);
+    const consumePromptInsertion = useWorkspaceStore(state => state.consumePromptInsertion);
     const fileReference = referenceEnabled
         ? activeFileReference(activePath, selections[activePath])
         : "";
@@ -1145,6 +1147,16 @@ function ChatView({api, current, messages, running, models, selectedModel, think
         // scrollIntoView 的返回值注册成清理函数，下一次流式更新时会触发白屏。
         endRef.current?.scrollIntoView({behavior: "smooth"});
     }, [messages]);
+
+    useEffect(() => {
+        if (!promptInsertion) return;
+        setPrompt(current => {
+            const separator = current && !/\s$/.test(current) ? " " : "";
+            return `${current}${separator}${promptInsertion.text} `;
+        });
+        consumePromptInsertion(promptInsertion.id);
+        window.requestAnimationFrame(() => textareaRef.current?.focus());
+    }, [promptInsertion, consumePromptInsertion]);
 
     useEffect(() => {
         let cancelled = false;
@@ -1226,7 +1238,8 @@ function ChatView({api, current, messages, running, models, selectedModel, think
 
     const submit = () => {
         if (!prompt.trim() || !current || running) return;
-        const value = fileReference
+        const alreadyReferencesActiveFile = activePath && prompt.includes(`@${activePath}`);
+        const value = fileReference && !alreadyReferencesActiveFile
             ? `${fileReference}\n\n${prompt.trim()}`
             : prompt;
         setPrompt("");
@@ -1701,6 +1714,7 @@ function ExplorerPanel({api, notify, onOpenFile}) {
     const uploadDirectoryRef = useRef("");
     const activePath = useWorkspaceStore(state => state.activePath);
     const removeEditorPath = useWorkspaceStore(state => state.removePath);
+    const insertPromptReference = useWorkspaceStore(state => state.insertPromptReference);
     const treeRefreshVersion = useWorkspaceStore(state => state.treeRefreshVersion);
 
     const loadTree = useCallback(async () => {
@@ -1822,10 +1836,16 @@ function ExplorerPanel({api, notify, onOpenFile}) {
         setContextMenu({x: event.clientX, y: event.clientY, item});
     }
 
+    function referenceTreeItem(item) {
+        insertPromptReference(`@${item.path}`);
+        notify(`已引用 ${item.path}`);
+    }
+
     function treeMenuItems(item) {
         if (item?.type === "file") {
             return [
                 {id: "open", label: "打开", icon: FileCode2, action: () => onOpenFile(item.path)},
+                {id: "reference", label: "引用", icon: Link2, action: () => referenceTreeItem(item)},
                 {id: "download", label: "下载", icon: Download,
                     action: () => downloadFile(item).catch(error => notify(error.message))},
                 {id: "copy-path", label: "复制路径", icon: Copy,
@@ -1838,6 +1858,8 @@ function ExplorerPanel({api, notify, onOpenFile}) {
         }
         const directory = item?.path || "";
         return [
+            ...(item ? [{id: "reference", label: "引用", icon: Link2,
+                action: () => referenceTreeItem(item)}] : []),
             {id: "upload", label: "上传文件", icon: Upload,
                 action: () => openUploadPicker(directory, false)},
             {id: "batch-upload", label: "批量上传", icon: Files,
