@@ -184,11 +184,15 @@ class StreamEventMapperTest {
         runResponse.getMetrics().setPromptTokens(100);
         runResponse.getMetrics().setCompletionTokens(40);
         runResponse.getMetrics().setTotalTokens(140);
+        runResponse.getMetrics().setCacheCreationInputTokens(5);
+        runResponse.getMetrics().setCacheReadInputTokens(60);
         runResponse.getMetrics().setTotalDuration(2000);
         ONode runEvent = ONode.ofJson(StreamEventMapper.map(new RunEndEvent(runResponse)));
 
         assertEquals(2000, runEvent.get("durationMs").getInt());
         assertEquals(20D, runEvent.get("tokensPerSecond").getDouble());
+        assertEquals(5, runEvent.get("usage").get("cacheCreationInputTokens").getInt());
+        assertEquals(60, runEvent.get("usage").get("cacheReadInputTokens").getInt());
     }
 
     private ChatResponse streamingResponse() {

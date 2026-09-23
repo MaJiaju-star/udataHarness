@@ -37,6 +37,7 @@ const emptyTokenUsage = () => ({
     totalTokens: 0,
     cacheCreationInputTokens: 0,
     cacheReadInputTokens: 0,
+    modelCallCount: 0,
     tokensPerSecond: 0,
     durationMs: 0
 });
@@ -51,7 +52,8 @@ function cacheHitRate(usage, provider) {
     const created = Number(usage.cacheCreationInputTokens || 0);
     const separateCacheAccounting = String(provider || "").toLowerCase().includes("anthropic");
     const eligible = separateCacheAccounting ? prompt + cached + created : prompt;
-    return eligible > 0 ? cached * 100 / eligible : null;
+    if (eligible <= 0) return null;
+    return Math.min(100, Math.max(0, cached * 100 / eligible));
 }
 const formatTime = value => value
     ? new Date(value).toLocaleString("zh-CN", {month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit"})
@@ -350,11 +352,21 @@ function App() {
         const usage = event.usage;
         setTokenUsage(currentUsage => {
             if (event.usageScope === "run") {
+                const hasModelCallUsage = currentUsage.modelCallCount > 0;
                 return {
                     ...currentUsage,
-                    promptTokens: Number(usage.promptTokens || currentUsage.promptTokens),
-                    completionTokens: Number(usage.completionTokens || currentUsage.completionTokens),
-                    totalTokens: Number(usage.totalTokens || currentUsage.totalTokens),
+                    promptTokens: hasModelCallUsage
+                        ? currentUsage.promptTokens : Number(usage.promptTokens ?? 0),
+                    completionTokens: hasModelCallUsage
+                        ? currentUsage.completionTokens : Number(usage.completionTokens ?? 0),
+                    totalTokens: hasModelCallUsage
+                        ? currentUsage.totalTokens : Number(usage.totalTokens ?? 0),
+                    cacheCreationInputTokens: hasModelCallUsage
+                        ? currentUsage.cacheCreationInputTokens
+                        : Number(usage.cacheCreationInputTokens ?? 0),
+                    cacheReadInputTokens: hasModelCallUsage
+                        ? currentUsage.cacheReadInputTokens
+                        : Number(usage.cacheReadInputTokens ?? 0),
                     tokensPerSecond: Number(event.tokensPerSecond || 0),
                     durationMs: Number(event.durationMs || 0)
                 };
@@ -368,7 +380,8 @@ function App() {
                 cacheCreationInputTokens: currentUsage.cacheCreationInputTokens
                     + Number(usage.cacheCreationInputTokens || 0),
                 cacheReadInputTokens: currentUsage.cacheReadInputTokens
-                    + Number(usage.cacheReadInputTokens || 0)
+                    + Number(usage.cacheReadInputTokens || 0),
+                modelCallCount: currentUsage.modelCallCount + 1
             };
         });
     }, []);

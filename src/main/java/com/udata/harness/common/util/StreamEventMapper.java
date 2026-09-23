@@ -195,6 +195,8 @@ public final class StreamEventMapper {
         data.put("promptTokens", metrics.getPromptTokens());
         data.put("completionTokens", metrics.getCompletionTokens());
         data.put("totalTokens", metrics.getTotalTokens());
+        data.put("cacheCreationInputTokens", metrics.getCacheCreationInputTokens());
+        data.put("cacheReadInputTokens", metrics.getCacheReadInputTokens());
         event.put("usageScope", "run");
         event.put("usage", data);
         event.put("durationMs", metrics.getTotalDuration());

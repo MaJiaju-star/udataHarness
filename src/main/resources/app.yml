@@ -37,15 +37,28 @@ agent:
       max-attempts: 3
       # Base delay for exponential backoff with full jitter.
       initial-delay-ms: 1000
-    api-url: "${AGENT_API_URL:https://api.deepseek.com}"
-    api-key: "${AGENT_API_KEY:sk-216497bffef942c09b250555bb4ac5ac}"
+    api-url: "${AGENT_API_URL:https://api.xiaomimimo.com/v1}"
+    api-key: "${AGENT_API_KEY:sk-cig9xy7xloij1x8y68qywdo358forx0aj6296y37cew2mkft}"
     provider: "${AGENT_PROVIDER:openai}"
     # Declared model context window. The framework reserves 20K tokens for the
     # system prompt, then starts compression at 75% of the effective budget.
     context-length: 1000000
     # Add or remove list items to control the models exposed by the composer.
     models:
-      - name: "deepseek-flash"
-        model: "deepseek-v4-flash"
-      - name: "deepseek-pro"
-        model: "deepseek-v4-pro"
+      - name: "mimo-v2.6-flash"
+        model: "mimo-v2.6-flash"
+      - name: "mimo-v2.6-pro"
+        model: "mimo-v2.6-pro"
+#
+#    api-url: "${AGENT_API_URL:https://api.deepseek.com}"
+#    api-key: "${AGENT_API_KEY:sk-216497bffef942c09b250555bb4ac5ac}"
+#    provider: "${AGENT_PROVIDER:openai}"
+#    # Declared model context window. The framework reserves 20K tokens for the
+#    # system prompt, then starts compression at 75% of the effective budget.
+#    context-length: 1000000
+#    # Add or remove list items to control the models exposed by the composer.
+#    models:
+#      - name: "deepseek-flash"
+#        model: "deepseek-v4-flash"
+#      - name: "deepseek-pro"
+#        model: "deepseek-v4-pro"
