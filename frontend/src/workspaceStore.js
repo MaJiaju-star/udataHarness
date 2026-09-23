@@ -116,7 +116,8 @@ export const useWorkspaceStore = create(persist((set, get) => ({
                 revision: `${file.modifiedAt || 0}-${file.size || 0}`,
                 dirty: false
             }
-        }
+        },
+        externalChanges: state.externalChanges.filter(item => item.path !== file.path)
     })),
 
     queueExternalChanges: changes => set(state => ({
@@ -161,6 +162,24 @@ export const useWorkspaceStore = create(persist((set, get) => ({
             activePath = openedPaths[Math.min(index, openedPaths.length - 1)] || null;
         }
         const externalChanges = state.externalChanges.filter(item => item.path !== path);
+        return {openedPaths, buffers, selections, revealLocations, activePath, externalChanges};
+    }),
+
+    closeFiles: paths => set(state => {
+        const targets = new Set(paths);
+        const openedPaths = state.openedPaths.filter(path => !targets.has(path));
+        const buffers = {...state.buffers};
+        const selections = {...state.selections};
+        const revealLocations = {...state.revealLocations};
+        targets.forEach(path => {
+            delete buffers[path];
+            delete selections[path];
+            delete revealLocations[path];
+        });
+        const activePath = state.activePath && targets.has(state.activePath)
+            ? openedPaths.at(-1) || null
+            : state.activePath;
+        const externalChanges = state.externalChanges.filter(item => !targets.has(item.path));
         return {openedPaths, buffers, selections, revealLocations, activePath, externalChanges};
     }),
 

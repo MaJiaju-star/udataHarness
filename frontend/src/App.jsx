@@ -9,7 +9,7 @@ import {
     Activity, ArrowLeft, Bot, Box, BrainCircuit, Check, ChevronDown, ChevronRight, CircleStop, Code2,
     ClipboardPaste, Copy, Download, File, FileCode2, FilePlus2, Files, Folder, FolderOpen,
     Eye, Film, GitCompareArrows, HardDrive, Image as ImageIcon, Link2, Menu, MessageSquare,
-    MoreHorizontal, Network, PanelLeftClose, PanelLeftOpen, Pencil, Plus, RefreshCw,
+    MoreHorizontal, Network, PanelLeftClose, PanelLeftOpen, PanelRightClose, Pencil, Plus, RefreshCw,
     Save, Scissors, Search, Send, Settings2, ShieldCheck, Sparkles, SquareTerminal, Trash2,
     Upload, UserRound, X, Zap
 } from "lucide-react";
@@ -1936,8 +1936,10 @@ function EditorPanel({api, notify, editorTheme}) {
     const updateBuffer = useWorkspaceStore(state => state.updateBuffer);
     const setEditorSelection = useWorkspaceStore(state => state.setEditorSelection);
     const markSaved = useWorkspaceStore(state => state.markSaved);
+    const applyExternalFile = useWorkspaceStore(state => state.applyExternalFile);
     const setFileViewMode = useWorkspaceStore(state => state.setFileViewMode);
     const closeFile = useWorkspaceStore(state => state.closeFile);
+    const closeFiles = useWorkspaceStore(state => state.closeFiles);
     const selections = useWorkspaceStore(state => state.selections);
     const revealLocations = useWorkspaceStore(state => state.revealLocations);
     const enableReference = useWorkspaceStore(state => state.enableReference);
@@ -1945,6 +1947,8 @@ function EditorPanel({api, notify, editorTheme}) {
     const externalChangeCount = useWorkspaceStore(state => state.externalChanges.length);
     const resolveExternalChange = useWorkspaceStore(state => state.resolveExternalChange);
     const [contextMenu, setContextMenu] = useState(null);
+    const [tabContextMenu, setTabContextMenu] = useState(null);
+    const [refreshing, setRefreshing] = useState(false);
     const editorRef = useRef(null);
     const active = activePath ? buffers[activePath] : null;
 
@@ -1958,10 +1962,48 @@ function EditorPanel({api, notify, editorTheme}) {
         notify(`已保存 ${active.path}`);
     }
 
+    async function refreshFromDisk() {
+        if (!active || refreshing) return;
+        if (active.dirty && !window.confirm(`“${active.name}”包含未保存修改。重新读取会使用磁盘版本覆盖这些修改，是否继续？`)) {
+            return;
+        }
+        setRefreshing(true);
+        try {
+            const file = await api(`/api/files/read?path=${encodeURIComponent(active.path)}`);
+            applyExternalFile(file);
+            notify(`已从磁盘刷新 ${active.path}`);
+        } finally {
+            setRefreshing(false);
+        }
+    }
+
     function close(event, path) {
         event.stopPropagation();
         if (buffers[path]?.dirty && !window.confirm(`“${buffers[path].name}”尚未保存，仍要关闭吗？`)) return;
         closeFile(path);
+    }
+
+    function closeMany(paths) {
+        if (paths.length === 0) return;
+        const dirtyCount = paths.filter(path => buffers[path]?.dirty).length;
+        if (dirtyCount > 0 && !window.confirm(
+            `${dirtyCount} 个待关闭文件包含未保存修改，仍要继续吗？`
+        )) return;
+        closeFiles(paths);
+    }
+
+    function tabMenuItems(path) {
+        const index = openedPaths.indexOf(path);
+        const left = openedPaths.slice(0, index);
+        const right = openedPaths.slice(index + 1);
+        return [
+            {id: "close-all", label: "关闭所有标签", icon: X,
+                action: () => closeMany(openedPaths)},
+            {id: "close-left", label: "关闭左侧标签", icon: PanelLeftClose,
+                disabled: left.length === 0, action: () => closeMany(left)},
+            {id: "close-right", label: "关闭右侧标签", icon: PanelRightClose,
+                disabled: right.length === 0, action: () => closeMany(right)}
+        ];
     }
 
     async function copySelection(cut = false) {
@@ -2018,7 +2060,12 @@ function EditorPanel({api, notify, editorTheme}) {
                     }}>
         <div className="editor-tabs" role="tablist" aria-label="已打开文件">
             {openedPaths.map(path => <button key={path} role="tab" aria-selected={path === activePath}
-                className={path === activePath ? "active" : ""} onClick={() => activateFile(path)} title={path}>
+                className={path === activePath ? "active" : ""} onClick={() => activateFile(path)} title={path}
+                onContextMenu={event => {
+                    event.preventDefault();
+                    event.stopPropagation();
+                    setTabContextMenu({x: event.clientX, y: event.clientY, path});
+                }}>
                 {buffers[path]?.previewType === "image" ? <ImageIcon size={14}/>
                     : buffers[path]?.previewType === "video" ? <Film size={14}/>
                         : <FileCode2 size={14}/>}<span>{buffers[path]?.name || path}</span>
@@ -2039,6 +2086,10 @@ function EditorPanel({api, notify, editorTheme}) {
                         <Code2 size={13}/>编辑
                     </button>
                 </div>}
+                <button disabled={!active || refreshing}
+                        onClick={() => refreshFromDisk().catch(error => notify(error.message))}>
+                    <RefreshCw className={refreshing ? "spin" : ""} size={14}/>刷新
+                </button>
                 <button disabled={!active || !active.dirty || active.previewType === "image" || active.previewType === "video"}
                         onClick={() => save().catch(error => notify(error.message))}>
                     <Save size={14}/>保存
@@ -2066,6 +2117,8 @@ function EditorPanel({api, notify, editorTheme}) {
         </div>
         {contextMenu && <ContextMenu x={contextMenu.x} y={contextMenu.y}
             items={editorMenuItems(contextMenu.hasSelection)} onClose={() => setContextMenu(null)}/>}
+        {tabContextMenu && <ContextMenu x={tabContextMenu.x} y={tabContextMenu.y}
+            items={tabMenuItems(tabContextMenu.path)} onClose={() => setTabContextMenu(null)}/>}
         {externalChange && <ExternalChangeDialog key={`${externalChange.path}-${externalChange.disk.modifiedAt}`}
             change={externalChange}
             count={externalChangeCount}
