@@ -3,6 +3,7 @@ import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import ChartCard, {chartSpecFromTool} from "./ChartCard.jsx";
 import GlobalSearchDialog from "./GlobalSearchDialog.jsx";
+import ThemePicker from "./ThemePicker.jsx";
 import {useWorkspaceStore} from "./workspaceStore.js";
 import {
     Activity, ArrowLeft, Bot, Box, BrainCircuit, Check, ChevronDown, ChevronRight, CircleStop, Code2,
@@ -343,6 +344,12 @@ function App() {
     const openEditorFile = useWorkspaceStore(state => state.openFile);
     const resetEditor = useWorkspaceStore(state => state.resetEditor);
     const hasDirtyFiles = useWorkspaceStore(state => state.hasDirtyFiles);
+    const themeMode = useWorkspaceStore(state => state.themeMode);
+    const colorTheme = useWorkspaceStore(state => state.colorTheme);
+    const setResolvedTheme = useWorkspaceStore(state => state.setResolvedTheme);
+    const [systemDark, setSystemDark] = useState(
+        () => window.matchMedia("(prefers-color-scheme: dark)").matches);
+    const resolvedTheme = themeMode === "system" ? (systemDark ? "dark" : "light") : themeMode;
 
     const notify = useCallback(message => {
         setNotice(message);
@@ -482,6 +489,22 @@ function App() {
         media.addEventListener("change", onChange);
         return () => media.removeEventListener("change", onChange);
     }, []);
+
+    useEffect(() => {
+        const media = window.matchMedia("(prefers-color-scheme: dark)");
+        const onChange = event => setSystemDark(event.matches);
+        setSystemDark(media.matches);
+        media.addEventListener("change", onChange);
+        return () => media.removeEventListener("change", onChange);
+    }, []);
+
+    useEffect(() => {
+        document.documentElement.dataset.mode = resolvedTheme;
+        document.documentElement.dataset.palette = colorTheme;
+        setResolvedTheme(resolvedTheme);
+        const color = getComputedStyle(document.documentElement).getPropertyValue("--app-bg").trim();
+        document.querySelector('meta[name="theme-color"]')?.setAttribute("content", color);
+    }, [resolvedTheme, colorTheme, setResolvedTheme]);
 
     useEffect(() => {
         const openGlobalSearch = event => {
@@ -921,7 +944,7 @@ function App() {
             <ResizeHandle axis="editor"
                           onResize={delta => setEditorWidth(Math.max(320, Math.min(680, editorWidth - delta)))}
                           onReset={() => setEditorWidth(420)}/>
-            <EditorPanel api={api} notify={notify}/>
+            <EditorPanel api={api} notify={notify} editorTheme={resolvedTheme === "dark" ? "vs-dark" : "vs"}/>
             {globalSearch && <GlobalSearchDialog api={api} initialMode={globalSearch.mode}
                 onClose={() => setGlobalSearch(null)}
                 onOpenFile={openFile}/>}
@@ -1041,6 +1064,7 @@ function Sidebar({open, view, setView, sessions, current, userId, workspace, api
                                     onSelect={onSelect} onRename={onRename} onDelete={onDelete}/>}
             </div>}
             <div className="sidebar-footer">
+                <ThemePicker expanded={open}/>
                 <button className="sidebar-tool" onClick={onOpenAdmin} title="后台管理"><Settings2 size={17}/>{open && <span>后台管理</span>}</button>
                 <button className="profile-card" onClick={onChangeUser} title="切换用户">
                     <span className="avatar">{userId.slice(0, 1).toUpperCase()}</span>
@@ -1904,7 +1928,7 @@ function FileTree({items, onOpen, onToggle, onContextMenu, expandedPaths, loadin
     });
 }
 
-function EditorPanel({api, notify}) {
+function EditorPanel({api, notify, editorTheme}) {
     const openedPaths = useWorkspaceStore(state => state.openedPaths);
     const activePath = useWorkspaceStore(state => state.activePath);
     const buffers = useWorkspaceStore(state => state.buffers);
@@ -2034,6 +2058,7 @@ function EditorPanel({api, notify}) {
         }}>
             {active ? <FileContentView active={active} api={api}
                     location={revealLocations[active.path]}
+                    editorTheme={editorTheme}
                     onChange={value => updateBuffer(active.path, value || "")}
                     onSelectionChange={selection => setEditorSelection(active.path, selection)}
                     onEditorReady={editor => { editorRef.current = editor; }}/>
@@ -2044,11 +2069,12 @@ function EditorPanel({api, notify}) {
         {externalChange && <ExternalChangeDialog key={`${externalChange.path}-${externalChange.disk.modifiedAt}`}
             change={externalChange}
             count={externalChangeCount}
+            editorTheme={editorTheme}
             onResolve={content => resolveExternalChange(externalChange.path, content)}/>}
     </section>;
 }
 
-function FileContentView({active, api, location, onChange, onSelectionChange, onEditorReady}) {
+function FileContentView({active, api, location, editorTheme, onChange, onSelectionChange, onEditorReady}) {
     if (active.previewType === "image" || active.previewType === "video") {
         return <BlobMediaPreview file={active} api={api}/>;
     }
@@ -2067,6 +2093,7 @@ function FileContentView({active, api, location, onChange, onSelectionChange, on
         value={active.content}
         language={editorLanguage(active.path)}
         location={location}
+        theme={editorTheme}
         onChange={onChange}
         onSelectionChange={onSelectionChange}
         onEditorReady={onEditorReady}/></Suspense>;
@@ -2104,7 +2131,7 @@ function BlobMediaPreview({file, api}) {
     </div>;
 }
 
-function ExternalChangeDialog({change, count, onResolve}) {
+function ExternalChangeDialog({change, count, editorTheme, onResolve}) {
     const [draft, setDraft] = useState(change.disk.content || "");
     useEffect(() => {
         const onKeyDown = event => {
@@ -2129,6 +2156,7 @@ function ExternalChangeDialog({change, count, onResolve}) {
                     original={change.browserContent}
                     modified={draft}
                     language={editorLanguage(change.path)}
+                    theme={editorTheme}
                     onChange={setDraft}/></Suspense>
             </div>
             <footer>

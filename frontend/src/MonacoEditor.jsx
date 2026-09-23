@@ -31,7 +31,7 @@ function applyEditorLocation(editor, location, appliedLocation) {
     appliedLocation.current = location.requestId;
 }
 
-export default function MonacoEditor({path, value, language, location, onChange, onSelectionChange, onEditorReady}) {
+export default function MonacoEditor({path, value, language, location, theme = "vs", onChange, onSelectionChange, onEditorReady}) {
     const selectionListener = useRef(onSelectionChange);
     const editorInstance = useRef(null);
     const appliedLocation = useRef(null);
@@ -46,7 +46,7 @@ export default function MonacoEditor({path, value, language, location, onChange,
         path={path}
         value={value}
         language={language}
-        theme="vs"
+        theme={theme}
         onChange={onChange}
         onMount={editor => {
             editorInstance.current = editor;
@@ -76,14 +76,14 @@ export default function MonacoEditor({path, value, language, location, onChange,
         }}/>
 }
 
-export function MonacoDiffEditor({path, original, modified, language, onChange}) {
+export function MonacoDiffEditor({path, original, modified, language, theme = "vs", onChange}) {
     return <DiffEditor
         original={original}
         modified={modified}
         language={language}
         originalModelPath={`browser://${path}`}
         modifiedModelPath={`disk://${path}`}
-        theme="vs"
+        theme={theme}
         onMount={editor => {
             const modifiedEditor = editor.getModifiedEditor();
             modifiedEditor.onDidChangeModelContent(() => onChange(modifiedEditor.getValue()));

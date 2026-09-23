@@ -10,6 +10,7 @@ import {
     VisualMapComponent
 } from "echarts/components";
 import {CanvasRenderer} from "echarts/renderers";
+import {useWorkspaceStore} from "./workspaceStore.js";
 
 echarts.use([
     BarChart, FunnelChart, GaugeChart, HeatmapChart, LineChart, PieChart, RadarChart, ScatterChart,
@@ -27,6 +28,12 @@ const BLOCKED_KEYS = new Set([
     "__proto__", "prototype", "constructor", "formatter", "extracsstext",
     "link", "sublink", "optiontocontent", "onclick", "transform", "reg"
 ]);
+const THEME_COLORS = {
+    emerald: ["#10a37f", "#6c63d9", "#e59b3b", "#3f8fd2", "#dc5f6d"],
+    ocean: ["#2f7de1", "#39a6a3", "#8b6fe8", "#e09a3e", "#dd6474"],
+    violet: ["#7c5ce7", "#3f91d8", "#c47a19", "#3aa184", "#dc5f86"],
+    amber: ["#c47a19", "#4f8fdf", "#4ca886", "#8b6fe8", "#d85f67"]
+};
 
 function parseJson(value) {
     if (typeof value !== "string") return null;
@@ -81,6 +88,8 @@ function optionFromTool(tool) {
 export default function EChartCard({tool}) {
     const containerRef = useRef(null);
     const [runtimeError, setRuntimeError] = useState("");
+    const resolvedTheme = useWorkspaceStore(state => state.resolvedTheme);
+    const colorTheme = useWorkspaceStore(state => state.colorTheme);
     const parsed = useMemo(() => {
         try {
             return {option: optionFromTool(tool), error: ""};
@@ -95,8 +104,9 @@ export default function EChartCard({tool}) {
         let chart;
         let observer;
         try {
-            chart = echarts.init(containerRef.current, null, {renderer: "canvas"});
-            chart.setOption(option, {notMerge: true, lazyUpdate: false});
+            chart = echarts.init(containerRef.current, resolvedTheme === "dark" ? "dark" : null, {renderer: "canvas"});
+            chart.setOption({...option, color: option.color || THEME_COLORS[colorTheme]},
+                {notMerge: true, lazyUpdate: false});
             observer = new ResizeObserver(() => chart?.resize());
             observer.observe(containerRef.current);
             setRuntimeError("");
@@ -107,7 +117,7 @@ export default function EChartCard({tool}) {
             observer?.disconnect();
             chart?.dispose();
         };
-    }, [option]);
+    }, [option, resolvedTheme, colorTheme]);
 
     const title = option?.title?.text || tool?.args?.title || "数据图表";
     const error = parsed.error || runtimeError;

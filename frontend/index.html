@@ -5,6 +5,22 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <meta name="theme-color" content="#f7f8fa">
     <title>UdataBuddy</title>
+    <script>
+        (() => {
+            try {
+                const saved = JSON.parse(localStorage.getItem("udata-workbench") || "{}").state || {};
+                const mode = saved.themeMode || "system";
+                const resolved = mode === "system"
+                    ? (matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light")
+                    : mode;
+                document.documentElement.dataset.mode = resolved;
+                document.documentElement.dataset.palette = saved.colorTheme || "emerald";
+            } catch {
+                document.documentElement.dataset.mode = "light";
+                document.documentElement.dataset.palette = "emerald";
+            }
+        })();
+    </script>
 </head>
 <body>
 <div id="root"></div>

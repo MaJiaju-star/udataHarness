@@ -17,6 +17,9 @@ export const useWorkspaceStore = create(persist((set, get) => ({
     externalChanges: [],
     treeRefreshVersion: 0,
     referenceEnabled: true,
+    themeMode: "system",
+    colorTheme: "emerald",
+    resolvedTheme: "light",
 
     setLeftTab: leftTab => set({leftTab, leftCollapsed: false}),
     setLeftWidth: leftWidth => set({leftWidth}),
@@ -25,6 +28,9 @@ export const useWorkspaceStore = create(persist((set, get) => ({
     setMobilePane: mobilePane => set({mobilePane}),
     toggleReference: () => set(state => ({referenceEnabled: !state.referenceEnabled})),
     enableReference: () => set({referenceEnabled: true}),
+    setThemeMode: themeMode => set({themeMode}),
+    setColorTheme: colorTheme => set({colorTheme}),
+    setResolvedTheme: resolvedTheme => set({resolvedTheme}),
     requestTreeRefresh: () => set(state => ({treeRefreshVersion: state.treeRefreshVersion + 1})),
     setEditorSelection: (path, selection) => set(state => ({
         selections: {...state.selections, [path]: selection}
@@ -188,6 +194,8 @@ export const useWorkspaceStore = create(persist((set, get) => ({
         leftWidth: state.leftWidth,
         editorWidth: state.editorWidth,
         leftCollapsed: state.leftCollapsed,
-        referenceEnabled: state.referenceEnabled
+        referenceEnabled: state.referenceEnabled,
+        themeMode: state.themeMode,
+        colorTheme: state.colorTheme
     })
 }));

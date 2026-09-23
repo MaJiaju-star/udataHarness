@@ -1,5 +1,6 @@
 import {useMemo} from "react";
 import {Area, Bar, Column, Line, Pie, Scatter} from "@ant-design/charts";
+import {useWorkspaceStore} from "./workspaceStore.js";
 
 const CHARTS = {area: Area, bar: Bar, column: Column, line: Line, pie: Pie, scatter: Scatter};
 const ALLOWED_CONFIG = new Set([
@@ -64,6 +65,8 @@ function chartFromTool(tool) {
 }
 
 export default function AntVChartCard({tool}) {
+    const resolvedTheme = useWorkspaceStore(state => state.resolvedTheme);
+    const colorTheme = useWorkspaceStore(state => state.colorTheme);
     const parsed = useMemo(() => {
         try { return {...chartFromTool(tool), error: ""}; }
         catch (cause) { return {error: cause.message || "AntV 图表配置无效"}; }
@@ -77,7 +80,8 @@ export default function AntVChartCard({tool}) {
             <b>交互图表</b>
         </header>
         <div className="antv-canvas" role="img" aria-label={parsed.title}>
-            <Chart {...parsed.config}/>
+            <Chart {...parsed.config} key={`${resolvedTheme}-${colorTheme}`}
+                   theme={parsed.config.theme || (resolvedTheme === "dark" ? "classicDark" : "classic")}/>
         </div>
     </section>;
 }
