@@ -4,6 +4,7 @@ import com.udata.harness.common.domain.SessionMetadata;
 import com.udata.harness.common.request.ChatRequest;
 import com.udata.harness.common.request.HitlDecisionRequest;
 import com.udata.harness.common.support.ActiveRunRegistry;
+import com.udata.harness.common.support.ToolCallStreamInterceptor;
 import com.udata.harness.common.util.StreamEventMapper;
 import com.udata.harness.repository.SessionRepository;
 import com.udata.harness.service.ChatService;
@@ -217,6 +218,7 @@ public class ChatServiceImpl implements ChatService {
                 .session(session)
                 .options(options -> {
                     options.retryConfig(modelMaxAttempts, modelRetryInitialDelayMs);
+                    options.interceptorAdd(new ToolCallStreamInterceptor());
                     options.toolContextPut(HarnessEngine.ATTR_CWD, workspace.toString());
                     if (!isBlank(selectedModel)) {
                         options.chatModel(engine.getModelOrDefInstance(selectedModel));

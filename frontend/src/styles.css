@@ -277,6 +277,11 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, [role="button
     font-size: 11px;
 }
 .context-menu button:hover:not(:disabled), .context-menu button:focus-visible { color: #176f59; background: #edf6f2; }
+.context-menu button.danger { color: #b34a4a; }
+.context-menu button.danger:hover, .context-menu button.danger:focus-visible {
+    color: #9d3030;
+    background: #fff0ef;
+}
 .context-menu button:disabled { color: #b4bab8; }
 .context-menu svg { flex: 0 0 auto; }
 @keyframes contextMenuIn { from { opacity: 0; transform: translateY(-3px) scale(.98); } }
@@ -903,6 +908,11 @@ button, input, textarea, select { outline: none; }
     border-radius: 11px;
     background: #fbfcfc;
 }
+.tool-call.generating {
+    border-color: #b9d9ce;
+    box-shadow: 0 0 0 2px rgba(63, 133, 111, 0.06);
+}
+.tool-call.generating small { color: #3f856f; }
 .tool-call > button {
     display: flex;
     align-items: center;
@@ -937,6 +947,16 @@ button, input, textarea, select { outline: none; }
     background: #1f2327;
     font: 10.5px/1.55 "Cascadia Code", Consolas, monospace;
     white-space: pre-wrap;
+}
+.tool-call pre.streaming-args::after {
+    display: inline-block;
+    width: 5px;
+    height: 12px;
+    margin-left: 2px;
+    background: #72c8a9;
+    content: "";
+    vertical-align: -2px;
+    animation: blink 0.8s steps(1) infinite;
 }
 
 .file-activity-summary {

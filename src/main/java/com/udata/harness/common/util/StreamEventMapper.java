@@ -1,5 +1,6 @@
 package com.udata.harness.common.util;
 
+import com.udata.harness.common.support.ToolCallStreamEvent;
 import org.noear.snack4.ONode;
 import org.noear.solon.ai.AiUsage;
 import org.noear.solon.ai.agent.AgentEvent;
@@ -12,6 +13,7 @@ import org.noear.solon.ai.agent.react.task.ReasonStartEvent;
 import org.noear.solon.ai.agent.react.task.ToolCallEndEvent;
 import org.noear.solon.ai.agent.react.task.ToolCallStartEvent;
 import org.noear.solon.ai.agent.react.intercept.HITLTask;
+import org.noear.solon.ai.chat.event.ChatEventType;
 
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
@@ -118,6 +120,8 @@ public final class StreamEventMapper {
                 event.put("type", "run_end");
             }
             putRunMetrics(event, runEnd.getMetrics());
+        } else if (agentEvent instanceof ToolCallStreamEvent toolStream) {
+            mapToolStreamEvent(event, toolStream);
         } else if (agentEvent instanceof ToolCallStartEvent action) {
             event.put("type", "tool_start");
             event.put("callId", action.getCallId());
@@ -198,6 +202,20 @@ public final class StreamEventMapper {
             double tokensPerSecond = metrics.getCompletionTokens() * 1000D / metrics.getTotalDuration();
             event.put("tokensPerSecond", Math.round(tokensPerSecond * 10D) / 10D);
         }
+    }
+
+    /** 将模型工具参数流映射为前端可增量消费的事件。 */
+    private static void mapToolStreamEvent(Map<String, Object> event, ToolCallStreamEvent toolStream) {
+        if (toolStream.getEventType() == ChatEventType.TOOL_CALL_START) {
+            event.put("type", "tool_args_start");
+        } else if (toolStream.getEventType() == ChatEventType.TOOL_CALL_ARGS_DELTA) {
+            event.put("type", "tool_args_delta");
+        } else {
+            event.put("type", "tool_args_end");
+        }
+        event.put("streamId", toolStream.getStreamId());
+        event.put("callId", toolStream.getCallId());
+        event.put("toolName", toolStream.getToolName());
     }
 
     private static Map<String, Object> base(String type, AgentEvent agentEvent) {

@@ -536,18 +536,86 @@ function App() {
                 next.thinking = mergeStreamText(next.thinking, event.content);
                 next.activities = mergeThinkingActivity(next.activities, event);
             }
+            if (event.type === "tool_args_start") {
+                next.activities = next.activities.map(item =>
+                    item.type === "thinking" && item.active ? {...item, active: false} : item
+                );
+                const existing = next.tools.find(tool => tool.streamId === event.streamId);
+                if (!existing) {
+                    const tool = {
+                        callId: `stream-${event.streamId || uid()}`,
+                        streamId: event.streamId,
+                        name: event.toolName || "正在生成工具调用",
+                        argsText: "",
+                        generating: true,
+                        streamed: true,
+                        running: false
+                    };
+                    next.tools.push(tool);
+                    next.activities.push({id: `tool-${tool.callId}`, type: "tool", callId: tool.callId});
+                }
+            }
+            if (event.type === "tool_args_delta") {
+                let index = next.tools.findIndex(tool => tool.streamId === event.streamId);
+                if (index < 0) {
+                    const callId = `stream-${event.streamId || uid()}`;
+                    next.tools.push({
+                        callId, streamId: event.streamId,
+                        name: event.toolName || "正在生成工具调用",
+                        argsText: "", generating: true, streamed: true, running: false
+                    });
+                    next.activities.push({id: `tool-${callId}`, type: "tool", callId});
+                    index = next.tools.length - 1;
+                }
+                next.tools[index] = {
+                    ...next.tools[index],
+                    name: event.toolName || next.tools[index].name,
+                    argsText: `${next.tools[index].argsText || ""}${asText(event.content)}`,
+                    generating: true
+                };
+            }
+            if (event.type === "tool_args_end") {
+                const index = next.tools.findIndex(tool => tool.streamId === event.streamId);
+                if (index >= 0) next.tools[index] = {
+                    ...next.tools[index],
+                    name: event.toolName || next.tools[index].name,
+                    argsText: asText(event.content) || next.tools[index].argsText,
+                    generating: false
+                };
+            }
             if (event.type === "tool_start") {
                 // 工具开始意味着它之前的模型思考阶段已经结束，即使供应商没有发出
                 // finished=true 的最后一个 thinking 增量，也不能让卡片一直显示推理中。
                 next.activities = next.activities.map(item =>
                     item.type === "thinking" && item.active ? {...item, active: false} : item
                 );
-                const tool = {
-                    callId: event.callId || uid(), name: event.toolName || "tool",
-                    args: event.args || {}, running: true, fileOperation: event.fileOperation
-                };
-                next.tools.push(tool);
-                next.activities.push({id: `tool-${tool.callId}`, type: "tool", callId: tool.callId});
+                const streamedIndex = next.tools.findIndex(tool =>
+                    tool.streamed && !tool.executionStarted
+                    && (!event.toolName || tool.name === event.toolName)
+                );
+                if (streamedIndex >= 0) {
+                    const previousCallId = next.tools[streamedIndex].callId;
+                    const callId = event.callId || previousCallId;
+                    next.tools[streamedIndex] = {
+                        ...next.tools[streamedIndex], callId,
+                        name: event.toolName || next.tools[streamedIndex].name,
+                        args: event.args || {}, generating: false, running: true,
+                        executionStarted: true, fileOperation: event.fileOperation
+                    };
+                    next.activities = next.activities.map(item =>
+                        item.type === "tool" && item.callId === previousCallId
+                            ? {...item, callId}
+                            : item
+                    );
+                } else {
+                    const tool = {
+                        callId: event.callId || uid(), name: event.toolName || "tool",
+                        args: event.args || {}, running: true, executionStarted: true,
+                        fileOperation: event.fileOperation
+                    };
+                    next.tools.push(tool);
+                    next.activities.push({id: `tool-${tool.callId}`, type: "tool", callId: tool.callId});
+                }
             }
             if (event.type === "tool_end") {
                 const index = next.tools.findIndex(tool => event.callId ? tool.callId === event.callId : tool.running);
@@ -1312,7 +1380,7 @@ function Message({message, onDecide, onOpenFile}) {
             {message.role === "assistant" && message.finished &&
                 <FileActivitySummary tools={message.tools} activities={message.fileActivities}
                                      onOpenFile={onOpenFile}/>}
-            {!parsed.visible && !thinking && message.role === "assistant" && !message.error &&
+            {!parsed.visible && !thinking && !message.tools?.length && message.role === "assistant" && !message.error &&
                 <div className="typing-row inline"><span/><span/><span/></div>}
             {message.hitl && <HitlCard event={message.hitl} onDecide={onDecide}/>}
             {message.error && <div className="message-error"><X size={16}/>{message.error}</div>}
@@ -1376,16 +1444,27 @@ function Thinking({content, active = false}) {
 }
 
 function ToolCall({tool}) {
-    const [open, setOpen] = useState(false);
+    const [open, setOpen] = useState(Boolean(tool.generating));
+    useEffect(() => {
+        if (tool.generating) setOpen(true);
+    }, [tool.generating]);
     const chartSpec = chartSpecFromTool(tool);
+    const status = tool.generating ? "参数生成中" : tool.running ? "执行中" : `${tool.durationMs || 0} ms`;
+    const details = tool.executionStarted
+        ? JSON.stringify(tool.args || {}, null, 2)
+        : tool.argsText || "等待参数增量…";
     return <>
-        <div className={`tool-call ${tool.error ? "error" : ""}`}>
+        <div className={`tool-call ${tool.generating ? "generating" : ""} ${tool.error ? "error" : ""}`}>
             <button onClick={() => setOpen(value => !value)}>
-                <span className="tool-icon">{tool.running ? <RefreshCw className="spin" size={15}/> : <Check size={15}/>}</span>
-                <span><b>{tool.name}</b><small>{tool.running ? "执行中" : `${tool.durationMs || 0} ms`}</small></span>
+                <span className="tool-icon">{tool.generating || tool.running
+                    ? <RefreshCw className="spin" size={15}/>
+                    : <Check size={15}/>}</span>
+                <span><b>{tool.name}</b><small>{status}</small></span>
                 {open ? <ChevronDown size={15}/> : <ChevronRight size={15}/>}
             </button>
-            {open && <pre>{JSON.stringify(tool.args || {}, null, 2)}{tool.output ? `\n\n${tool.output}` : ""}</pre>}
+            {open && <pre className={tool.generating ? "streaming-args" : ""}>
+                {details}{tool.output ? `\n\n${tool.output}` : ""}
+            </pre>}
         </div>
         {tool.name === "render_chart" && !tool.running && <ChartCard spec={chartSpec}/>}
         {tool.name === "render_echart" && !tool.running &&
@@ -1455,6 +1534,14 @@ function replaceTreeChildren(items, path, children) {
     });
 }
 
+function removeTreeItem(items, path) {
+    return items
+        .filter(item => item.path !== path)
+        .map(item => item.children
+            ? {...item, children: removeTreeItem(item.children, path)}
+            : item);
+}
+
 function ContextMenu({x, y, items, onClose}) {
     useEffect(() => {
         const close = event => {
@@ -1480,6 +1567,7 @@ function ContextMenu({x, y, items, onClose}) {
         {items.map(item => {
             const Icon = item.icon;
             return <button key={item.id} role="menuitem" disabled={item.disabled}
+                           className={item.danger ? "danger" : ""}
                            onClick={() => {
                                onClose();
                                item.action();
@@ -1501,6 +1589,7 @@ function ExplorerPanel({api, notify, onOpenFile}) {
     const batchUploadInputRef = useRef(null);
     const uploadDirectoryRef = useRef("");
     const activePath = useWorkspaceStore(state => state.activePath);
+    const removeEditorPath = useWorkspaceStore(state => state.removePath);
 
     const loadTree = useCallback(async () => {
         setLoading(true);
@@ -1584,6 +1673,30 @@ function ExplorerPanel({api, notify, onOpenFile}) {
         window.setTimeout(() => URL.revokeObjectURL(url), 1000);
     }
 
+    async function deleteTreeItem(item) {
+        const normalizedPath = item.path.replace(/\\/g, "/");
+        const prefix = `${normalizedPath}/`;
+        const affectedBuffers = Object.values(useWorkspaceStore.getState().buffers)
+            .filter(buffer => {
+                const path = buffer.path.replace(/\\/g, "/");
+                return path === normalizedPath || path.startsWith(prefix);
+            });
+        const dirty = affectedBuffers.some(buffer => buffer.dirty);
+        const description = item.type === "directory"
+            ? `目录“${item.name}”及其中的全部内容`
+            : `文件“${item.name}”`;
+        const dirtyNotice = dirty ? "\n\n其中包含未保存的编辑内容。" : "";
+        if (!window.confirm(`确定删除${description}吗？此操作无法撤销。${dirtyNotice}`)) return;
+
+        await api(`/api/files?path=${encodeURIComponent(item.path)}`, {method: "DELETE"});
+        setTree(items => removeTreeItem(items, item.path));
+        setExpandedPaths(paths => new Set(
+            [...paths].filter(path => path !== normalizedPath && !path.startsWith(prefix))
+        ));
+        removeEditorPath(item.path);
+        notify(`已删除${item.type === "directory" ? "目录" : "文件"} ${item.name}`);
+    }
+
     function openUploadPicker(directory, multiple) {
         uploadDirectoryRef.current = directory || "";
         (multiple ? batchUploadInputRef : uploadInputRef).current?.click();
@@ -1604,7 +1717,9 @@ function ExplorerPanel({api, notify, onOpenFile}) {
                 {id: "copy-path", label: "复制路径", icon: Copy,
                     action: () => navigator.clipboard.writeText(item.path)
                         .then(() => notify("路径已复制"))
-                        .catch(error => notify(error.message))}
+                        .catch(error => notify(error.message))},
+                {id: "delete", label: "删除文件", icon: Trash2, danger: true,
+                    action: () => deleteTreeItem(item).catch(error => notify(error.message))}
             ];
         }
         const directory = item?.path || "";
@@ -1616,7 +1731,9 @@ function ExplorerPanel({api, notify, onOpenFile}) {
             ...(item ? [{id: "copy-path", label: "复制路径", icon: Copy,
                 action: () => navigator.clipboard.writeText(item.path)
                     .then(() => notify("路径已复制"))
-                    .catch(error => notify(error.message))}] : [])
+                    .catch(error => notify(error.message))},
+                {id: "delete", label: "删除目录", icon: Trash2, danger: true,
+                    action: () => deleteTreeItem(item).catch(error => notify(error.message))}] : [])
         ];
     }
 

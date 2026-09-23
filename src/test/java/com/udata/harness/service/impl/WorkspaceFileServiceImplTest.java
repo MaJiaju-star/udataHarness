@@ -68,4 +68,17 @@ class WorkspaceFileServiceImplTest {
         assertArrayEquals(content, download.getContent().readAllBytes());
         download.close();
     }
+
+    @Test
+    void recursivelyDeletesDirectoriesAndProtectsWorkspaceRoot() {
+        WorkspaceFileServiceImpl files =
+                new WorkspaceFileServiceImpl(new UserWorkspaceServiceImpl(tempDir));
+        files.save("alice", "generated/nested/result.txt", "done");
+
+        files.delete("alice", "generated");
+
+        assertThrows(IllegalArgumentException.class,
+                () -> files.read("alice", "generated/nested/result.txt"));
+        assertThrows(IllegalArgumentException.class, () -> files.delete("alice", ""));
+    }
 }

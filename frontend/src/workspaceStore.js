@@ -85,6 +85,24 @@ export const useWorkspaceStore = create(persist((set, get) => ({
         return {openedPaths, buffers, selections, activePath};
     }),
 
+    removePath: path => set(state => {
+        const targetPath = path.replace(/\\/g, "/");
+        const prefix = `${targetPath}/`;
+        const affected = item => {
+            const normalized = item.replace(/\\/g, "/");
+            return normalized === targetPath || normalized.startsWith(prefix);
+        };
+        const openedPaths = state.openedPaths.filter(item => !affected(item));
+        const buffers = {...state.buffers};
+        const selections = {...state.selections};
+        Object.keys(buffers).filter(affected).forEach(item => delete buffers[item]);
+        Object.keys(selections).filter(affected).forEach(item => delete selections[item]);
+        const activePath = state.activePath && affected(state.activePath)
+            ? openedPaths.at(-1) || null
+            : state.activePath;
+        return {openedPaths, buffers, selections, activePath};
+    }),
+
     resetEditor: () => set({openedPaths: [], activePath: null, buffers: {}, selections: {}}),
     hasDirtyFiles: () => Object.values(get().buffers).some(buffer => buffer.dirty)
 }), {

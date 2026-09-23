@@ -1,5 +1,6 @@
 package com.udata.harness.common.util;
 
+import com.udata.harness.common.support.ToolCallStreamEvent;
 import org.junit.jupiter.api.Test;
 import org.noear.snack4.ONode;
 import org.noear.solon.ai.AiUsage;
@@ -12,8 +13,12 @@ import org.noear.solon.ai.agent.react.intercept.HITLTask;
 import org.noear.solon.ai.agent.react.task.ReasonEndEvent;
 import org.noear.solon.ai.agent.react.task.ReasonStartEvent;
 import org.noear.solon.ai.chat.ChatResponse;
+import org.noear.solon.ai.chat.event.ChatEvent;
+import org.noear.solon.ai.chat.event.ChatEventDefault;
+import org.noear.solon.ai.chat.event.ChatEventType;
 import org.noear.solon.ai.chat.message.AssistantMessage;
 import org.noear.solon.ai.chat.message.ChatMessage;
+import org.noear.solon.ai.chat.tool.ToolCall;
 
 import java.lang.reflect.Proxy;
 import java.util.List;
@@ -133,6 +138,26 @@ class StreamEventMapperTest {
         assertEquals("call-1", event.get("tasks").get(0).get("callUuid").getString());
         assertEquals("call-2", event.get("tasks").get(1).get("callUuid").getString());
         assertEquals("bash", event.get("tasks").get(1).get("toolName").getString());
+    }
+
+    @Test
+    void mapsToolArgumentDeltasWithStableStreamId() {
+        ReActTrace trace = new ReActTrace();
+        ToolCall shard = new ToolCall("0", "provider-call", "read", "{\"file_", null);
+        ChatEvent chatEvent = ChatEventDefault.of(ChatEventType.TOOL_CALL_ARGS_DELTA)
+                .responseId("response-1")
+                .step(0)
+                .toolCallId("provider-call")
+                .toolCall(shard)
+                .text("{\"file_")
+                .build();
+
+        ONode event = ONode.ofJson(StreamEventMapper.map(new ToolCallStreamEvent(trace, chatEvent)));
+
+        assertEquals("tool_args_delta", event.get("type").getString());
+        assertEquals("response-1:0:0", event.get("streamId").getString());
+        assertEquals("read", event.get("toolName").getString());
+        assertEquals("{\"file_", event.get("content").getString());
     }
 
     @Test
