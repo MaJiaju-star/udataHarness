@@ -1480,11 +1480,11 @@ function FileActivitySummary({tools, activities, onOpenFile}) {
 function Thinking({content, active = false}) {
     const [open, setOpen] = useState(active);
     useEffect(() => {
-        if (active) setOpen(true);
+        setOpen(active);
     }, [active]);
     const preview = content.replace(/\s+/g, " ").trim().slice(0, 88);
     return <div className={`thinking-card ${active ? "active" : ""}`}>
-        <button onClick={() => setOpen(value => !value)}>
+        <button onClick={() => setOpen(value => !value)} aria-expanded={open}>
             <span className="thinking-icon"><BrainCircuit size={16}/></span>
             <span className="thinking-title">
                 <b>{active ? "正在思考" : "已完成思考"}</b>
@@ -1493,7 +1493,9 @@ function Thinking({content, active = false}) {
             {active && <span className="thinking-status"><i/> 推理中</span>}
             {open ? <ChevronDown size={16}/> : <ChevronRight size={16}/>}
         </button>
-        {open && <div className="thinking-content"><div className="thinking-line"/><pre>{content}</pre></div>}
+        <div className={`thinking-collapse ${open ? "open" : ""}`} aria-hidden={!open}>
+            <div className="thinking-content"><div className="thinking-line"/><pre>{content}</pre></div>
+        </div>
     </div>;
 }
 

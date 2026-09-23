@@ -916,6 +916,15 @@ button, input, textarea, select { outline: none; }
     background: var(--accent);
     animation: pulse 1.25s infinite;
 }
+.thinking-collapse {
+    display: grid;
+    min-height: 0;
+    grid-template-rows: 0fr;
+    opacity: 0;
+    transition: grid-template-rows .22s cubic-bezier(.16, 1, .3, 1), opacity .16s ease;
+}
+.thinking-collapse.open { grid-template-rows: 1fr; opacity: 1; }
+.thinking-collapse > .thinking-content { min-height: 0; overflow: hidden; }
 .thinking-content {
     display: grid;
     grid-template-columns: 2px minmax(0, 1fr);

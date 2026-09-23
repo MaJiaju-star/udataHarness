@@ -10,6 +10,7 @@ import org.noear.solon.ai.agent.react.ReActResponse;
 import org.noear.solon.ai.agent.react.ReActTrace;
 import org.noear.solon.ai.agent.react.RunEndEvent;
 import org.noear.solon.ai.agent.react.intercept.HITLTask;
+import org.noear.solon.ai.agent.react.task.ReasonDeltaEvent;
 import org.noear.solon.ai.agent.react.task.ReasonEndEvent;
 import org.noear.solon.ai.agent.react.task.ReasonStartEvent;
 import org.noear.solon.ai.chat.ChatResponse;
@@ -51,6 +52,17 @@ class StreamEventMapperTest {
 
         assertEquals("reason_start", event.get("type").getString());
         assertFalse(event.hasKey("content"));
+    }
+
+    @Test
+    void marksThinkingEndAsFinished() {
+        ChatEvent thinkingEnd = ChatEventDefault.of(ChatEventType.THINKING_END).build();
+        ReasonDeltaEvent reason = new ReasonDeltaEvent(new ReActTrace(), thinkingEnd);
+
+        ONode event = ONode.ofJson(StreamEventMapper.map(reason));
+
+        assertEquals("thinking", event.get("type").getString());
+        assertTrue(event.get("finished").getBoolean());
     }
 
     @Test

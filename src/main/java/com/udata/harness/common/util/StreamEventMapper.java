@@ -145,7 +145,7 @@ public final class StreamEventMapper {
         } else if (agentEvent instanceof ReasonDeltaEvent reason) {
             event.put("type", reason.isThinking() ? "thinking" : "text");
             event.put("reasonId", reason.getReasonId());
-            event.put("finished", false);
+            event.put("finished", reason.getChatEvent().is(ChatEventType.THINKING_END));
         } else if (agentEvent instanceof ReasonEndEvent reason) {
             boolean hasThinking = reason.getThinking() != null && !reason.getThinking().isBlank();
             event.put("type", hasThinking ? "thinking" : "text_replay");
