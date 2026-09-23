@@ -13,6 +13,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardOpenOption;
 import java.nio.file.StandardCopyOption;
+import java.net.URLConnection;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.LinkedHashMap;
@@ -62,15 +63,22 @@ public class WorkspaceFileServiceImpl implements WorkspaceFileService {
         }
         try {
             long size = Files.size(file);
-            if (size > MAX_FILE_SIZE) {
-                throw new IllegalArgumentException("File too large (max 2MB)");
-            }
+            String contentType = detectContentType(file);
+            String previewType = previewType(file);
             Map<String, Object> result = new LinkedHashMap<>();
             result.put("path", relative(root, file));
             result.put("name", file.getFileName().toString());
             result.put("size", size);
-            result.put("content", Files.readString(file, StandardCharsets.UTF_8));
+            result.put("contentType", contentType);
+            result.put("previewType", previewType);
             result.put("modifiedAt", Files.getLastModifiedTime(file).toMillis());
+            if ("image".equals(previewType) || "video".equals(previewType)) {
+                return result;
+            }
+            if (size > MAX_FILE_SIZE) {
+                throw new IllegalArgumentException("File too large (max 2MB)");
+            }
+            result.put("content", Files.readString(file, StandardCharsets.UTF_8));
             return result;
         } catch (IOException e) {
             throw new IllegalStateException("Cannot read file", e);
@@ -220,6 +228,33 @@ public class WorkspaceFileServiceImpl implements WorkspaceFileService {
         item.put("type", Files.isDirectory(path) ? "directory" : "file");
         item.put("expanded", expanded);
         return item;
+    }
+
+    /** 根据扩展名识别编辑器支持的富媒体预览类型。 */
+    private String previewType(Path file) {
+        String name = file.getFileName().toString().toLowerCase();
+        if (name.matches(".*\\.(png|jpe?g|gif|webp|svg|bmp|ico|avif)$")) {
+            return "image";
+        }
+        if (name.matches(".*\\.(mp4|webm|ogv|mov|m4v)$")) {
+            return "video";
+        }
+        if (name.matches(".*\\.(html?|xhtml)$")) {
+            return "html";
+        }
+        if (name.matches(".*\\.(md|markdown|mdown|mkd)$")) {
+            return "markdown";
+        }
+        return "text";
+    }
+
+    /** 获取浏览器预览使用的 MIME 类型，系统无法识别时按文件名回退。 */
+    private String detectContentType(Path file) throws IOException {
+        String contentType = Files.probeContentType(file);
+        if (contentType == null) {
+            contentType = URLConnection.guessContentTypeFromName(file.getFileName().toString());
+        }
+        return contentType == null ? "application/octet-stream" : contentType;
     }
 
     /**

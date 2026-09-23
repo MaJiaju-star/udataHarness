@@ -1,5 +1,5 @@
 import {useEffect, useRef} from "react";
-import Editor, {loader} from "@monaco-editor/react";
+import Editor, {DiffEditor, loader} from "@monaco-editor/react";
 import * as monaco from "monaco-editor";
 import editorWorker from "../node_modules/monaco-editor/esm/vs/editor/editor.worker.js?worker";
 import jsonWorker from "../node_modules/monaco-editor/esm/vs/language/json/json.worker.js?worker";
@@ -52,6 +52,28 @@ export default function MonacoEditor({path, value, language, onChange, onSelecti
             wordWrap: "on",
             automaticLayout: true,
             padding: {top: 14},
+            scrollBeyondLastLine: false
+        }}/>
+}
+
+export function MonacoDiffEditor({path, original, modified, language, onChange}) {
+    return <DiffEditor
+        original={original}
+        modified={modified}
+        language={language}
+        originalModelPath={`browser://${path}`}
+        modifiedModelPath={`disk://${path}`}
+        theme="vs"
+        onMount={editor => {
+            const modifiedEditor = editor.getModifiedEditor();
+            modifiedEditor.onDidChangeModelContent(() => onChange(modifiedEditor.getValue()));
+        }}
+        options={{
+            fontSize: 13,
+            minimap: {enabled: false},
+            automaticLayout: true,
+            renderSideBySide: true,
+            originalEditable: false,
             scrollBeyondLastLine: false
         }}/>
 }

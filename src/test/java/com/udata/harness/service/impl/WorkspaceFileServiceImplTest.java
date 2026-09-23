@@ -81,4 +81,21 @@ class WorkspaceFileServiceImplTest {
                 () -> files.read("alice", "generated/nested/result.txt"));
         assertThrows(IllegalArgumentException.class, () -> files.delete("alice", ""));
     }
+
+    @Test
+    void returnsPreviewMetadataWithoutDecodingBinaryMedia() throws Exception {
+        UserWorkspaceServiceImpl workspaces = new UserWorkspaceServiceImpl(tempDir);
+        WorkspaceFileServiceImpl files = new WorkspaceFileServiceImpl(workspaces);
+        Path workspace = workspaces.getOrCreate("alice");
+        Files.write(workspace.resolve("preview.png"), new byte[]{(byte) 0x89, 0x50, 0x4e, 0x47});
+        Files.writeString(workspace.resolve("README.md"), "# Preview");
+
+        Map<String, Object> image = files.read("alice", "preview.png");
+        Map<String, Object> markdown = files.read("alice", "README.md");
+
+        assertEquals("image", image.get("previewType"));
+        assertTrue(!image.containsKey("content"));
+        assertEquals("markdown", markdown.get("previewType"));
+        assertEquals("# Preview", markdown.get("content"));
+    }
 }

@@ -4,9 +4,9 @@ import remarkGfm from "remark-gfm";
 import ChartCard, {chartSpecFromTool} from "./ChartCard.jsx";
 import {useWorkspaceStore} from "./workspaceStore.js";
 import {
-    Activity, ArrowLeft, Bot, Box, BrainCircuit, Check, ChevronDown, ChevronRight, CircleStop,
+    Activity, ArrowLeft, Bot, Box, BrainCircuit, Check, ChevronDown, ChevronRight, CircleStop, Code2,
     ClipboardPaste, Copy, Download, File, FileCode2, FilePlus2, Files, Folder, FolderOpen,
-    HardDrive, Link2, Menu, MessageSquare,
+    Eye, Film, GitCompareArrows, HardDrive, Image as ImageIcon, Link2, Menu, MessageSquare,
     MoreHorizontal, Network, PanelLeftClose, PanelLeftOpen, Pencil, Plus, RefreshCw,
     Save, Scissors, Search, Send, Settings2, ShieldCheck, Sparkles, SquareTerminal, Trash2,
     Upload, UserRound, X, Zap
@@ -28,6 +28,7 @@ const thinkingDepthOptions = [
 const EChartCard = lazy(() => import("./EChartCard.jsx"));
 const AntVChartCard = lazy(() => import("./AntVChartCard.jsx"));
 const MonacoEditor = lazy(() => import("./MonacoEditor.jsx"));
+const MonacoDiffEditor = lazy(() => import("./MonacoEditor.jsx").then(module => ({default: module.MonacoDiffEditor})));
 
 const uid = () => `${Date.now()}-${Math.random().toString(36).slice(2)}`;
 const emptyTokenUsage = () => ({
@@ -404,6 +405,46 @@ function App() {
         return body.data === undefined ? body : body.data;
     }, [userId]);
 
+    const refreshWorkspaceFiles = useCallback(async () => {
+        const workspace = useWorkspaceStore.getState();
+        workspace.requestTreeRefresh();
+        const opened = workspace.openedPaths
+            .map(path => workspace.buffers[path])
+            .filter(Boolean);
+        if (opened.length === 0) return;
+
+        const results = await Promise.allSettled(opened.map(buffer =>
+            api(`/api/files/read?path=${encodeURIComponent(buffer.path)}`)));
+        const changes = [];
+        results.forEach((result, index) => {
+            if (result.status !== "fulfilled") return;
+            const disk = result.value;
+            const browser = useWorkspaceStore.getState().buffers[opened[index].path];
+            if (!browser) return;
+            if (disk.previewType === "image" || disk.previewType === "video") {
+                if (disk.modifiedAt !== browser.modifiedAt || disk.size !== browser.size) {
+                    useWorkspaceStore.getState().applyExternalFile(disk);
+                }
+                return;
+            }
+            if ((disk.content || "") !== (browser.content || "")) {
+                changes.push({path: browser.path, browserContent: browser.content || "", disk});
+            } else {
+                useWorkspaceStore.getState().applyExternalFile(disk);
+            }
+        });
+        if (changes.length > 0) {
+            useWorkspaceStore.getState().queueExternalChanges(changes);
+            notify(`${changes.length} 个已打开文件发生外部变更`);
+        }
+    }, [api, notify]);
+
+    async function refreshAfterRun() {
+        const results = await Promise.allSettled([loadSessions(), refreshWorkspaceFiles()]);
+        const failure = results.find(result => result.status === "rejected");
+        if (failure) notify(failure.reason?.message || "刷新工作区失败");
+    }
+
     const loadSessions = useCallback(async () => {
         const data = await api("/api/sessions");
         setSessions(data || []);
@@ -697,7 +738,7 @@ function App() {
             mutateAssistant(assistantId, {type: "error", message: error.message});
         } finally {
             setRunning(false);
-            await loadSessions();
+            await refreshAfterRun();
         }
     }
 
@@ -715,7 +756,7 @@ function App() {
             mutateAssistant(messageId, {type: "error", message: error.message});
         } finally {
             setRunning(false);
-            await loadSessions();
+            await refreshAfterRun();
         }
     }
 
@@ -1603,6 +1644,7 @@ function ExplorerPanel({api, notify, onOpenFile}) {
     const uploadDirectoryRef = useRef("");
     const activePath = useWorkspaceStore(state => state.activePath);
     const removeEditorPath = useWorkspaceStore(state => state.removePath);
+    const treeRefreshVersion = useWorkspaceStore(state => state.treeRefreshVersion);
 
     const loadTree = useCallback(async () => {
         setLoading(true);
@@ -1612,7 +1654,9 @@ function ExplorerPanel({api, notify, onOpenFile}) {
         }
         finally { setLoading(false); }
     }, [api]);
-    useEffect(() => { loadTree().catch(error => notify(error.message)); }, [loadTree, notify]);
+    useEffect(() => {
+        loadTree().catch(error => notify(error.message));
+    }, [loadTree, notify, treeRefreshVersion]);
 
     async function search() {
         if (!query.trim()) return loadTree();
@@ -1835,15 +1879,19 @@ function EditorPanel({api, notify}) {
     const updateBuffer = useWorkspaceStore(state => state.updateBuffer);
     const setEditorSelection = useWorkspaceStore(state => state.setEditorSelection);
     const markSaved = useWorkspaceStore(state => state.markSaved);
+    const setFileViewMode = useWorkspaceStore(state => state.setFileViewMode);
     const closeFile = useWorkspaceStore(state => state.closeFile);
     const selections = useWorkspaceStore(state => state.selections);
     const enableReference = useWorkspaceStore(state => state.enableReference);
+    const externalChange = useWorkspaceStore(state => state.externalChanges[0]);
+    const externalChangeCount = useWorkspaceStore(state => state.externalChanges.length);
+    const resolveExternalChange = useWorkspaceStore(state => state.resolveExternalChange);
     const [contextMenu, setContextMenu] = useState(null);
     const editorRef = useRef(null);
     const active = activePath ? buffers[activePath] : null;
 
     async function save() {
-        if (!active) return;
+        if (!active || active.previewType === "image" || active.previewType === "video") return;
         const file = await api("/api/files/save", {
             method: "POST",
             body: JSON.stringify({path: active.path, content: active.content})
@@ -1899,6 +1947,10 @@ function EditorPanel({api, notify}) {
         ];
     }
 
+    const canPreview = active && ["html", "markdown"].includes(active.previewType);
+    const editable = active && !["image", "video"].includes(active.previewType)
+        && active.viewMode !== "preview";
+
     return <section className="editor-pane" aria-label="文件预览与编辑"
                     onKeyDown={event => {
                         if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "s") {
@@ -1909,18 +1961,34 @@ function EditorPanel({api, notify}) {
         <div className="editor-tabs" role="tablist" aria-label="已打开文件">
             {openedPaths.map(path => <button key={path} role="tab" aria-selected={path === activePath}
                 className={path === activePath ? "active" : ""} onClick={() => activateFile(path)} title={path}>
-                <FileCode2 size={14}/><span>{buffers[path]?.name || path}</span>
+                {buffers[path]?.previewType === "image" ? <ImageIcon size={14}/>
+                    : buffers[path]?.previewType === "video" ? <Film size={14}/>
+                        : <FileCode2 size={14}/>}<span>{buffers[path]?.name || path}</span>
                 {buffers[path]?.dirty && <i/>}
                 <span className="tab-close" role="button" onClick={event => close(event, path)}><X size={13}/></span>
             </button>)}
         </div>
         <div className="editor-toolbar">
             <span title={active?.path}>{active?.path || "文件预览"}</span>
-            <button disabled={!active || !active.dirty} onClick={() => save().catch(error => notify(error.message))}>
-                <Save size={14}/>保存
-            </button>
+            <div>
+                {canPreview && <div className="view-mode-switch" role="group" aria-label="文件显示模式">
+                    <button className={active.viewMode === "preview" ? "active" : ""}
+                            onClick={() => setFileViewMode(active.path, "preview")}>
+                        <Eye size={13}/>预览
+                    </button>
+                    <button className={active.viewMode !== "preview" ? "active" : ""}
+                            onClick={() => setFileViewMode(active.path, "edit")}>
+                        <Code2 size={13}/>编辑
+                    </button>
+                </div>}
+                <button disabled={!active || !active.dirty || active.previewType === "image" || active.previewType === "video"}
+                        onClick={() => save().catch(error => notify(error.message))}>
+                    <Save size={14}/>保存
+                </button>
+            </div>
         </div>
         <div className="editor-surface" onContextMenuCapture={event => {
+            if (!editable) return;
             event.preventDefault();
             event.stopPropagation();
             const selection = editorRef.current?.getSelection();
@@ -1930,18 +1998,113 @@ function EditorPanel({api, notify}) {
                 hasSelection: Boolean(selection && !selection.isEmpty())
             });
         }}>
-            {active ? <Suspense fallback={<PanelLoading/>}><MonacoEditor
-                    path={active.path}
-                    value={active.content}
-                    language={editorLanguage(active.path)}
+            {active ? <FileContentView active={active} api={api}
                     onChange={value => updateBuffer(active.path, value || "")}
                     onSelectionChange={selection => setEditorSelection(active.path, selection)}
-                    onEditorReady={editor => { editorRef.current = editor; }}/></Suspense>
+                    onEditorReady={editor => { editorRef.current = editor; }}/>
                 : <div className="editor-empty"><FileCode2 size={36}/><b>打开文件开始编辑</b><span>从左侧文件树选择一个文本文件</span></div>}
         </div>
         {contextMenu && <ContextMenu x={contextMenu.x} y={contextMenu.y}
             items={editorMenuItems(contextMenu.hasSelection)} onClose={() => setContextMenu(null)}/>}
+        {externalChange && <ExternalChangeDialog key={`${externalChange.path}-${externalChange.disk.modifiedAt}`}
+            change={externalChange}
+            count={externalChangeCount}
+            onResolve={content => resolveExternalChange(externalChange.path, content)}/>}
     </section>;
+}
+
+function FileContentView({active, api, onChange, onSelectionChange, onEditorReady}) {
+    if (active.previewType === "image" || active.previewType === "video") {
+        return <BlobMediaPreview file={active} api={api}/>;
+    }
+    if (active.viewMode === "preview" && active.previewType === "markdown") {
+        return <div className="document-preview markdown-preview markdown-body">
+            <ReactMarkdown remarkPlugins={[remarkGfm]}>{active.content || ""}</ReactMarkdown>
+        </div>;
+    }
+    if (active.viewMode === "preview" && active.previewType === "html") {
+        return <div className="document-preview html-preview">
+            <iframe title={`预览 ${active.name}`} sandbox="allow-scripts" srcDoc={active.content || ""}/>
+        </div>;
+    }
+    return <Suspense fallback={<PanelLoading/>}><MonacoEditor
+        path={active.path}
+        value={active.content}
+        language={editorLanguage(active.path)}
+        onChange={onChange}
+        onSelectionChange={onSelectionChange}
+        onEditorReady={onEditorReady}/></Suspense>;
+}
+
+function BlobMediaPreview({file, api}) {
+    const [url, setUrl] = useState("");
+    const [error, setError] = useState("");
+    useEffect(() => {
+        let objectUrl = "";
+        let active = true;
+        setUrl("");
+        setError("");
+        api(`/api/files/download?path=${encodeURIComponent(file.path)}`, {raw: true})
+            .then(response => response.blob())
+            .then(blob => {
+                if (!active) return;
+                objectUrl = URL.createObjectURL(blob);
+                setUrl(objectUrl);
+            })
+            .catch(reason => active && setError(reason.message));
+        return () => {
+            active = false;
+            if (objectUrl) URL.revokeObjectURL(objectUrl);
+        };
+    }, [api, file.path, file.revision]);
+
+    if (error) return <div className="preview-state error"><X size={22}/><b>无法加载预览</b><span>{error}</span></div>;
+    if (!url) return <PanelLoading/>;
+    return <div className={`media-preview ${file.previewType}`}>
+        {file.previewType === "image"
+            ? <img src={url} alt={file.name}/>
+            : <video src={url} controls preload="metadata">浏览器不支持此视频格式</video>}
+        <span>{file.name} · {formatTokens(file.size)} bytes</span>
+    </div>;
+}
+
+function ExternalChangeDialog({change, count, onResolve}) {
+    const [draft, setDraft] = useState(change.disk.content || "");
+    useEffect(() => {
+        const onKeyDown = event => {
+            if (event.key === "Escape") onResolve(change.browserContent);
+        };
+        window.addEventListener("keydown", onKeyDown);
+        return () => window.removeEventListener("keydown", onKeyDown);
+    }, [change, onResolve]);
+
+    return <div className="modal-backdrop external-change-backdrop" role="presentation">
+        <section className="external-change-dialog" role="dialog" aria-modal="true"
+                 aria-labelledby="external-change-title">
+            <header>
+                <span className="conflict-icon"><GitCompareArrows size={19}/></span>
+                <div><h2 id="external-change-title">文件已被智能体修改</h2>
+                    <p><code>{change.path}</code>{count > 1 && ` · 还有 ${count - 1} 个文件待处理`}</p></div>
+            </header>
+            <div className="diff-labels"><span>浏览器版本</span><span>磁盘版本 · 可编辑</span></div>
+            <div className="external-diff">
+                <Suspense fallback={<PanelLoading/>}><MonacoDiffEditor
+                    path={change.path}
+                    original={change.browserContent}
+                    modified={draft}
+                    language={editorLanguage(change.path)}
+                    onChange={setDraft}/></Suspense>
+            </div>
+            <footer>
+                <span>Esc 保留浏览器版本并标记为未保存</span>
+                <div>
+                    <button onClick={() => onResolve(change.browserContent)}>保留浏览器版本</button>
+                    <button onClick={() => onResolve(change.disk.content || "")}>采用磁盘版本</button>
+                    <button className="primary-button" onClick={() => onResolve(draft)}>采用编辑结果</button>
+                </div>
+            </footer>
+        </section>
+    </div>;
 }
 
 function editorLanguage(path = "") {
