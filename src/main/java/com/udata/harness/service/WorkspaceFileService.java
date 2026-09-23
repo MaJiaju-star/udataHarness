@@ -1,5 +1,7 @@
 package com.udata.harness.service;
 
+import com.udata.harness.common.domain.GlobalSearchResponse;
+import com.udata.harness.common.request.GlobalSearchRequest;
 import org.noear.solon.core.handle.DownloadedFile;
 import org.noear.solon.core.handle.UploadedFile;
 
@@ -30,6 +32,9 @@ public interface WorkspaceFileService {
 
     /** 在安全深度与结果上限内按相对路径关键字搜索。 */
     List<Map<String, Object>> search(String userId, String keyword);
+
+    /** 按文件名称或文本内容执行带扩展名过滤的全局检索。 */
+    GlobalSearchResponse globalSearch(String userId, GlobalSearchRequest request);
 
     /** 将上传文件保存到工作区指定目录，重名文件会被覆盖。 */
     Map<String, Object> upload(String userId, String directory, UploadedFile file);

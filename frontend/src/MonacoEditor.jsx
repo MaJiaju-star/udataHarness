@@ -18,11 +18,29 @@ self.MonacoEnvironment = {
 };
 loader.config({monaco});
 
-export default function MonacoEditor({path, value, language, onChange, onSelectionChange, onEditorReady}) {
+function applyEditorLocation(editor, location, appliedLocation) {
+    if (!editor || !location || appliedLocation.current === location.requestId) return;
+    editor.setSelection({
+        startLineNumber: location.line,
+        startColumn: location.column,
+        endLineNumber: location.line,
+        endColumn: location.endColumn || location.column
+    });
+    editor.revealLineInCenter(location.line);
+    editor.focus();
+    appliedLocation.current = location.requestId;
+}
+
+export default function MonacoEditor({path, value, language, location, onChange, onSelectionChange, onEditorReady}) {
     const selectionListener = useRef(onSelectionChange);
+    const editorInstance = useRef(null);
+    const appliedLocation = useRef(null);
     useEffect(() => {
         selectionListener.current = onSelectionChange;
     }, [onSelectionChange]);
+    useEffect(() => {
+        applyEditorLocation(editorInstance.current, location, appliedLocation);
+    }, [location]);
 
     return <Editor
         path={path}
@@ -31,7 +49,9 @@ export default function MonacoEditor({path, value, language, onChange, onSelecti
         theme="vs"
         onChange={onChange}
         onMount={editor => {
+            editorInstance.current = editor;
             onEditorReady?.(editor);
+            applyEditorLocation(editor, location, appliedLocation);
             editor.onDidChangeCursorSelection(event => {
                 const selection = event.selection;
                 let endLine = selection.endLineNumber;

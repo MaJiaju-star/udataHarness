@@ -1,5 +1,9 @@
 package com.udata.harness.service.impl;
 
+import com.udata.harness.common.domain.GlobalSearchItem;
+import com.udata.harness.common.domain.GlobalSearchResponse;
+import com.udata.harness.common.domain.SearchMatch;
+import com.udata.harness.common.request.GlobalSearchRequest;
 import com.udata.harness.service.UserWorkspaceService;
 import com.udata.harness.service.WorkspaceFileService;
 import org.noear.solon.core.handle.DownloadedFile;
@@ -16,9 +20,13 @@ import java.nio.file.StandardCopyOption;
 import java.net.URLConnection;
 import java.util.ArrayList;
 import java.util.Comparator;
+import java.util.HashSet;
+import java.util.Iterator;
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
+import java.util.Set;
 import java.util.stream.Stream;
 
 /**
@@ -30,6 +38,8 @@ import java.util.stream.Stream;
 @Component
 public class WorkspaceFileServiceImpl implements WorkspaceFileService {
     private static final long MAX_FILE_SIZE = 2L * 1024 * 1024;
+    private static final int MAX_SEARCH_RESULTS = 500;
+    private static final int MAX_MATCHES_PER_FILE = 50;
     @Inject
     private UserWorkspaceService workspaces;
 
@@ -161,6 +171,148 @@ public class WorkspaceFileServiceImpl implements WorkspaceFileService {
             throw new IllegalStateException("Cannot search workspace", e);
         }
         return result;
+    }
+
+    /**
+     * 按文件名称或文本内容执行全局检索。
+     *
+     * <p>不排除隐藏目录；内容模式跳过符号链接、二进制文件和超过 2MB 的文件。</p>
+     */
+    @Override
+    public GlobalSearchResponse globalSearch(String userId, GlobalSearchRequest request) {
+        if (request == null || request.getKeyword() == null || request.getKeyword().trim().isEmpty()) {
+            throw new IllegalArgumentException("keyword is required");
+        }
+        Path root = workspaces.getOrCreate(userId);
+        String keyword = request.getKeyword().trim();
+        String mode = "content".equalsIgnoreCase(request.getMode()) ? "content" : "name";
+        int maxResults = request.getMaxResults() == null
+                ? MAX_SEARCH_RESULTS : Math.max(1, Math.min(request.getMaxResults(), MAX_SEARCH_RESULTS));
+        Set<String> extensions = normalizeExtensions(request.getExtensions());
+
+        //1. 初始化响应并按文件系统顺序扫描普通文件。
+        GlobalSearchResponse response = new GlobalSearchResponse();
+        response.setKeyword(keyword);
+        response.setMode(mode);
+        try (Stream<Path> paths = Files.walk(root)) {
+            Iterator<Path> iterator = paths.iterator();
+            while (iterator.hasNext() && response.getTotalMatches() < maxResults) {
+                Path file = iterator.next();
+                if (!Files.isRegularFile(file) || Files.isSymbolicLink(file)
+                        || !matchesExtension(file, extensions)) {
+                    continue;
+                }
+                if ("content".equals(mode)) {
+                    try {
+                        searchFileContent(root, file, keyword, maxResults, response);
+                    } catch (IOException ignored) {
+                        // 单个不可读文件不应中断整个工作区检索。
+                    }
+                } else {
+                    searchFileName(root, file, keyword, response);
+                }
+            }
+        } catch (IOException e) {
+            throw new IllegalStateException("Cannot search workspace", e);
+        }
+
+        //2. 汇总文件数并标记达到上限的响应，方便前端提示结果已截断。
+        response.setTotalFiles(response.getItems().size());
+        response.setTruncated(response.getTotalMatches() >= maxResults);
+        return response;
+    }
+
+    /** 文件名模式同时匹配文件名和相对于工作区的路径。 */
+    private void searchFileName(Path root, Path file, String keyword, GlobalSearchResponse response) {
+        String path = relative(root, file);
+        if (!path.toLowerCase(Locale.ROOT).contains(keyword.toLowerCase(Locale.ROOT))) {
+            return;
+        }
+        response.getItems().add(new GlobalSearchItem(path, file.getFileName().toString()));
+        response.setTotalMatches(response.getTotalMatches() + 1);
+    }
+
+    /** 读取一个受限文本文件并记录逐行匹配位置。 */
+    private void searchFileContent(Path root, Path file, String keyword, int maxResults,
+                                   GlobalSearchResponse response) throws IOException {
+        if (Files.size(file) > MAX_FILE_SIZE) {
+            return;
+        }
+        byte[] bytes = Files.readAllBytes(file);
+        if (isBinary(bytes)) {
+            return;
+        }
+        String content = new String(bytes, StandardCharsets.UTF_8);
+        String[] lines = content.split("\\R", -1);
+        String needle = keyword.toLowerCase(Locale.ROOT);
+        GlobalSearchItem item = null;
+
+        for (int lineIndex = 0; lineIndex < lines.length
+                && response.getTotalMatches() < maxResults; lineIndex++) {
+            String line = lines[lineIndex];
+            String normalized = line.toLowerCase(Locale.ROOT);
+            int fromIndex = 0;
+            while (fromIndex <= normalized.length()) {
+                int columnIndex = normalized.indexOf(needle, fromIndex);
+                if (columnIndex < 0 || response.getTotalMatches() >= maxResults
+                        || (item != null && item.getMatches().size() >= MAX_MATCHES_PER_FILE)) {
+                    break;
+                }
+                if (item == null) {
+                    item = new GlobalSearchItem(relative(root, file), file.getFileName().toString());
+                    response.getItems().add(item);
+                }
+                item.getMatches().add(new SearchMatch(
+                        lineIndex + 1,
+                        columnIndex + 1,
+                        columnIndex + keyword.length() + 1,
+                        previewLine(line, columnIndex, keyword.length())));
+                response.setTotalMatches(response.getTotalMatches() + 1);
+                fromIndex = columnIndex + Math.max(1, keyword.length());
+            }
+        }
+    }
+
+    /** 将可选扩展名过滤统一转换成不带点的小写集合。 */
+    private Set<String> normalizeExtensions(List<String> values) {
+        Set<String> extensions = new HashSet<>();
+        if (values == null) {
+            return extensions;
+        }
+        for (String value : values) {
+            if (value != null && !value.trim().isEmpty()) {
+                extensions.add(value.trim().toLowerCase(Locale.ROOT).replaceFirst("^\\.", ""));
+            }
+        }
+        return extensions;
+    }
+
+    /** 判断文件扩展名是否满足可选过滤条件。 */
+    private boolean matchesExtension(Path file, Set<String> extensions) {
+        if (extensions.isEmpty()) {
+            return true;
+        }
+        String name = file.getFileName().toString().toLowerCase(Locale.ROOT);
+        int index = name.lastIndexOf('.');
+        String extension = index < 0 ? "" : name.substring(index + 1);
+        return extensions.contains(extension);
+    }
+
+    /** 使用 NUL 字节快速识别不适合文本检索的二进制文件。 */
+    private boolean isBinary(byte[] bytes) {
+        for (byte value : bytes) {
+            if (value == 0) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /** 生成围绕命中位置的单行摘要，避免超长行撑大响应。 */
+    private String previewLine(String line, int columnIndex, int keywordLength) {
+        int start = Math.max(0, columnIndex - 90);
+        int end = Math.min(line.length(), columnIndex + keywordLength + 140);
+        return (start > 0 ? "…" : "") + line.substring(start, end) + (end < line.length() ? "…" : "");
     }
 
     /** 将 multipart 文件流保存到指定相对目录。 */

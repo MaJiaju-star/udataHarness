@@ -13,6 +13,7 @@ export const useWorkspaceStore = create(persist((set, get) => ({
     activePath: null,
     buffers: {},
     selections: {},
+    revealLocations: {},
     externalChanges: [],
     treeRefreshVersion: 0,
     referenceEnabled: true,
@@ -28,15 +29,18 @@ export const useWorkspaceStore = create(persist((set, get) => ({
     setEditorSelection: (path, selection) => set(state => ({
         selections: {...state.selections, [path]: selection}
     })),
+    revealFileLocation: (path, location) => set(state => ({
+        revealLocations: {
+            ...state.revealLocations,
+            [path]: {...location, requestId: Date.now()}
+        }
+    })),
 
-    openFile: file => set(state => ({
-        openedPaths: state.openedPaths.includes(file.path)
-            ? state.openedPaths
-            : [...state.openedPaths, file.path],
-        activePath: file.path,
-        buffers: {
-            ...state.buffers,
-            [file.path]: {
+    openFile: file => set(state => {
+        const existing = state.buffers[file.path];
+        const buffer = existing?.dirty
+            ? existing
+            : {
                 path: file.path,
                 name: file.name || fileName(file.path),
                 content: file.content || "",
@@ -49,10 +53,16 @@ export const useWorkspaceStore = create(persist((set, get) => ({
                     ? "preview" : "edit",
                 revision: `${file.modifiedAt || 0}-${file.size || 0}`,
                 dirty: false
-            }
-        },
-        mobilePane: "editor"
-    })),
+            };
+        return {
+            openedPaths: state.openedPaths.includes(file.path)
+                ? state.openedPaths
+                : [...state.openedPaths, file.path],
+            activePath: file.path,
+            buffers: {...state.buffers, [file.path]: buffer},
+            mobilePane: "editor"
+        };
+    }),
 
     activateFile: activePath => set({activePath, mobilePane: "editor"}),
 
@@ -135,15 +145,17 @@ export const useWorkspaceStore = create(persist((set, get) => ({
         const openedPaths = state.openedPaths.filter(item => item !== path);
         const buffers = {...state.buffers};
         const selections = {...state.selections};
+        const revealLocations = {...state.revealLocations};
         delete buffers[path];
         delete selections[path];
+        delete revealLocations[path];
         let activePath = state.activePath;
         if (activePath === path) {
             const index = state.openedPaths.indexOf(path);
             activePath = openedPaths[Math.min(index, openedPaths.length - 1)] || null;
         }
         const externalChanges = state.externalChanges.filter(item => item.path !== path);
-        return {openedPaths, buffers, selections, activePath, externalChanges};
+        return {openedPaths, buffers, selections, revealLocations, activePath, externalChanges};
     }),
 
     removePath: path => set(state => {
@@ -156,16 +168,18 @@ export const useWorkspaceStore = create(persist((set, get) => ({
         const openedPaths = state.openedPaths.filter(item => !affected(item));
         const buffers = {...state.buffers};
         const selections = {...state.selections};
+        const revealLocations = {...state.revealLocations};
         Object.keys(buffers).filter(affected).forEach(item => delete buffers[item]);
         Object.keys(selections).filter(affected).forEach(item => delete selections[item]);
+        Object.keys(revealLocations).filter(affected).forEach(item => delete revealLocations[item]);
         const activePath = state.activePath && affected(state.activePath)
             ? openedPaths.at(-1) || null
             : state.activePath;
         const externalChanges = state.externalChanges.filter(item => !affected(item.path));
-        return {openedPaths, buffers, selections, activePath, externalChanges};
+        return {openedPaths, buffers, selections, revealLocations, activePath, externalChanges};
     }),
 
-    resetEditor: () => set({openedPaths: [], activePath: null, buffers: {}, selections: {}, externalChanges: []}),
+    resetEditor: () => set({openedPaths: [], activePath: null, buffers: {}, selections: {}, revealLocations: {}, externalChanges: []}),
     hasDirtyFiles: () => Object.values(get().buffers).some(buffer => buffer.dirty)
 }), {
     name: "udata-workbench",

@@ -1,6 +1,8 @@
 package com.udata.harness.controller;
 
+import com.udata.harness.common.domain.GlobalSearchResponse;
 import com.udata.harness.common.request.FileWriteRequest;
+import com.udata.harness.common.request.GlobalSearchRequest;
 import com.udata.harness.service.WorkspaceFileService;
 import org.noear.solon.annotation.Body;
 import org.noear.solon.annotation.Controller;
@@ -123,6 +125,21 @@ public class WorkspaceFileController {
     public Result<List<Map<String, Object>>> search(@Header("X-User-Id") String userId,
                                                     @Param("keyword") String keyword) {
         return Result.succeed(files.search(userId, keyword));
+    }
+
+    /**
+     * 按文件名称或文本内容检索当前工作区。
+     *
+     * @param userId 当前用户标识
+     * @param request 检索词、模式、扩展名过滤和结果上限
+     * @return 按文件分组且包含行列信息的检索结果
+     */
+    @Post
+    @Mapping("/search")
+    public Result<GlobalSearchResponse> globalSearch(
+            @Header("X-User-Id") String userId,
+            @Body GlobalSearchRequest request) {
+        return Result.succeed(files.globalSearch(userId, request));
     }
 
     /** 上传一个文件到指定工作区目录；空 path 表示工作区根目录。 */

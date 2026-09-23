@@ -2,6 +2,7 @@ import {lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState} from 
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import ChartCard, {chartSpecFromTool} from "./ChartCard.jsx";
+import GlobalSearchDialog from "./GlobalSearchDialog.jsx";
 import {useWorkspaceStore} from "./workspaceStore.js";
 import {
     Activity, ArrowLeft, Bot, Box, BrainCircuit, Check, ChevronDown, ChevronRight, CircleStop, Code2,
@@ -324,6 +325,7 @@ function App() {
     const [notice, setNotice] = useState("");
     const [page, setPage] = useState(() => window.location.hash === "#/admin" ? "admin" : "workspace");
     const [workspacePickerOpen, setWorkspacePickerOpen] = useState(false);
+    const [globalSearch, setGlobalSearch] = useState(null);
     const [tokenUsage, setTokenUsage] = useState(emptyTokenUsage);
     const [selectedModel, setSelectedModel] = useState("");
     const [thinkingDepth, setThinkingDepth] = useState(
@@ -481,6 +483,21 @@ function App() {
         return () => media.removeEventListener("change", onChange);
     }, []);
 
+    useEffect(() => {
+        const openGlobalSearch = event => {
+            if (page !== "workspace" || !(event.ctrlKey || event.metaKey)) return;
+            if (event.key.toLowerCase() === "p") {
+                event.preventDefault();
+                setGlobalSearch({mode: "name"});
+            } else if (event.shiftKey && event.key.toLowerCase() === "f") {
+                event.preventDefault();
+                setGlobalSearch({mode: "content"});
+            }
+        };
+        window.addEventListener("keydown", openGlobalSearch);
+        return () => window.removeEventListener("keydown", openGlobalSearch);
+    }, [page]);
+
     async function chooseSession(session) {
         if (running) return;
         setCurrent(session);
@@ -491,9 +508,14 @@ function App() {
         setMessages(restoreHistory(history));
     }
 
-    async function openFile(path) {
+    async function openFile(path, location) {
         const data = await api(`/api/files/read?path=${encodeURIComponent(path)}`);
         openEditorFile(data);
+        if (location?.line) {
+            const workspace = useWorkspaceStore.getState();
+            workspace.setFileViewMode(path, "edit");
+            workspace.revealFileLocation(path, location);
+        }
     }
 
     async function switchWorkspace(workspaceId) {
@@ -861,6 +883,9 @@ function App() {
                                 <><span className="ready-dot"/> {meta?.models?.[0]?.model || "正在连接"}</>}
                         </span>
                     </div>
+                    <button className="global-search-trigger" onClick={() => setGlobalSearch({mode: "content"})}>
+                        <Search size={15}/><span>搜索工作区</span><kbd>Ctrl Shift F</kbd>
+                    </button>
                     <div className="header-actions">
                         <div className="mobile-pane-switch" role="group" aria-label="主面板">
                             <button className={mobilePane === "chat" ? "active" : ""} onClick={() => setMobilePane("chat")}>对话</button>
@@ -898,6 +923,9 @@ function App() {
                           onResize={delta => setEditorWidth(Math.max(320, Math.min(680, editorWidth - delta)))}
                           onReset={() => setEditorWidth(420)}/>
             <EditorPanel api={api} notify={notify}/>
+            {globalSearch && <GlobalSearchDialog api={api} initialMode={globalSearch.mode}
+                onClose={() => setGlobalSearch(null)}
+                onOpenFile={openFile}/>}
             {workspacePickerOpen && <WorkspacePicker
                 api={api}
                 workspaces={meta?.workspaces || []}
@@ -1884,6 +1912,7 @@ function EditorPanel({api, notify}) {
     const setFileViewMode = useWorkspaceStore(state => state.setFileViewMode);
     const closeFile = useWorkspaceStore(state => state.closeFile);
     const selections = useWorkspaceStore(state => state.selections);
+    const revealLocations = useWorkspaceStore(state => state.revealLocations);
     const enableReference = useWorkspaceStore(state => state.enableReference);
     const externalChange = useWorkspaceStore(state => state.externalChanges[0]);
     const externalChangeCount = useWorkspaceStore(state => state.externalChanges.length);
@@ -2001,6 +2030,7 @@ function EditorPanel({api, notify}) {
             });
         }}>
             {active ? <FileContentView active={active} api={api}
+                    location={revealLocations[active.path]}
                     onChange={value => updateBuffer(active.path, value || "")}
                     onSelectionChange={selection => setEditorSelection(active.path, selection)}
                     onEditorReady={editor => { editorRef.current = editor; }}/>
@@ -2015,7 +2045,7 @@ function EditorPanel({api, notify}) {
     </section>;
 }
 
-function FileContentView({active, api, onChange, onSelectionChange, onEditorReady}) {
+function FileContentView({active, api, location, onChange, onSelectionChange, onEditorReady}) {
     if (active.previewType === "image" || active.previewType === "video") {
         return <BlobMediaPreview file={active} api={api}/>;
     }
@@ -2033,6 +2063,7 @@ function FileContentView({active, api, onChange, onSelectionChange, onEditorRead
         path={active.path}
         value={active.content}
         language={editorLanguage(active.path)}
+        location={location}
         onChange={onChange}
         onSelectionChange={onSelectionChange}
         onEditorReady={onEditorReady}/></Suspense>;

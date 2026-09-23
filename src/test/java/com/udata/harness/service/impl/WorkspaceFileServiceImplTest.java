@@ -1,5 +1,7 @@
 package com.udata.harness.service.impl;
 
+import com.udata.harness.common.domain.GlobalSearchResponse;
+import com.udata.harness.common.request.GlobalSearchRequest;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import org.noear.solon.core.handle.DownloadedFile;
@@ -97,5 +99,35 @@ class WorkspaceFileServiceImplTest {
         assertTrue(!image.containsKey("content"));
         assertEquals("markdown", markdown.get("previewType"));
         assertEquals("# Preview", markdown.get("content"));
+    }
+
+    @Test
+    void searchesNamesAndContentsWithOptionalExtensionFilter() {
+        WorkspaceFileServiceImpl files =
+                new WorkspaceFileServiceImpl(new UserWorkspaceServiceImpl(tempDir));
+        files.save("alice", "src/WorkspaceService.java", "first line\nworkspace token\nworkspace again");
+        files.save("alice", ".hidden/workspace.md", "workspace markdown");
+        files.save("alice", "src/other.txt", "workspace text");
+
+        GlobalSearchRequest nameRequest = request("workspace", "name", List.of("java"));
+        GlobalSearchResponse names = files.globalSearch("alice", nameRequest);
+        GlobalSearchRequest contentRequest = request("workspace", "content", List.of("java", "md"));
+        GlobalSearchResponse contents = files.globalSearch("alice", contentRequest);
+
+        assertEquals(1, names.getTotalFiles());
+        assertEquals("src/WorkspaceService.java", names.getItems().get(0).getPath());
+        assertEquals(2, contents.getTotalFiles());
+        assertEquals(3, contents.getTotalMatches());
+        assertEquals(2, contents.getItems().stream()
+                .filter(item -> item.getPath().endsWith("WorkspaceService.java"))
+                .findFirst().orElseThrow().getMatches().get(0).getLine());
+    }
+
+    private GlobalSearchRequest request(String keyword, String mode, List<String> extensions) {
+        GlobalSearchRequest request = new GlobalSearchRequest();
+        request.setKeyword(keyword);
+        request.setMode(mode);
+        request.setExtensions(extensions);
+        return request;
     }
 }

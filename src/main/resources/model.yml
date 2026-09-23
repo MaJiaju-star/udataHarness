@@ -1,0 +1,36 @@
+agent:
+  # Root directory; each user works under <workspace>/<userId>.
+  workspace: "${AGENT_WORKSPACE:./workspace}"
+  # Sessions and automations are stored under <data-dir>/users/<userId>.
+  data-dir: "${AGENT_DATA_DIR:./data}"
+  harness-home: ".soloncode"
+  max-turns: 100
+  context:
+    # Restore at most this many recent persisted messages for each new request.
+    session-window-size: 200
+    # Compress a long-running ReAct trace when either limit is reached.
+    compression-max-messages: 160
+    compression-max-context-ratio: 0.75
+  system-prompt: |
+    You are UData Harness, a careful coding agent.
+    Work only inside the configured workspace. Inspect before editing, preserve user changes,
+    explain material decisions, and verify changes with relevant builds or tests.
+  model:
+    default: "deepseek-flash"
+    retry:
+      # Total attempts, including the first request.
+      max-attempts: 3
+      # Base delay for exponential backoff with full jitter.
+      initial-delay-ms: 1000
+    api-url: "${AGENT_API_URL:https://api.deepseek.com}"
+    api-key: "${AGENT_API_KEY:sk-216497bffef942c09b250555bb4ac5ac}"
+    provider: "${AGENT_PROVIDER:openai}"
+    # Declared model context window. The framework reserves 20K tokens for the
+    # system prompt, then starts compression at 75% of the effective budget.
+    context-length: 1000000
+    # Add or remove list items to control the models exposed by the composer.
+    models:
+      - name: "deepseek-flash"
+        model: "deepseek-v4-flash"
+      - name: "deepseek-pro"
+        model: "deepseek-v4-pro"
