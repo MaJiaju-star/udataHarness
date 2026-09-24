@@ -6,7 +6,7 @@ import GlobalSearchDialog from "./GlobalSearchDialog.jsx";
 import ThemePicker from "./ThemePicker.jsx";
 import {useWorkspaceStore} from "./workspaceStore.js";
 import {
-    Activity, ArrowLeft, Bot, Box, BrainCircuit, Check, ChevronDown, ChevronRight, CircleStop, Code2,
+    Activity, ArrowDown, ArrowLeft, Bot, Box, BrainCircuit, Check, ChevronDown, ChevronRight, CircleStop, Code2,
     ClipboardPaste, Copy, Download, File, FileCode2, FilePlus2, Files, Folder, FolderOpen,
     Eye, Film, GitCompareArrows, HardDrive, Image as ImageIcon, Link2, Menu, MessageSquare,
     MoreHorizontal, Network, PanelLeftClose, PanelLeftOpen, PanelRightClose, Pencil, Plus, RefreshCw,
@@ -1131,8 +1131,13 @@ function ChatView({api, current, messages, running, models, selectedModel, think
     const [completionSources, setCompletionSources] = useState({skills: [], files: [], agents: []});
     const [completion, setCompletion] = useState(null);
     const [activeCompletion, setActiveCompletion] = useState(0);
+    const [showScrollToBottom, setShowScrollToBottom] = useState(false);
     const textareaRef = useRef(null);
     const endRef = useRef(null);
+    const scrollContainerRef = useRef(null);
+    const autoFollowRef = useRef(true);
+    const programmaticScrollRef = useRef(false);
+    const scrollTimerRef = useRef(null);
     const activePath = useWorkspaceStore(state => state.activePath);
     const selections = useWorkspaceStore(state => state.selections);
     const referenceEnabled = useWorkspaceStore(state => state.referenceEnabled);
@@ -1142,11 +1147,58 @@ function ChatView({api, current, messages, running, models, selectedModel, think
     const fileReference = referenceEnabled
         ? activeFileReference(activePath, selections[activePath])
         : "";
+
+    const scrollToBottom = useCallback((behavior = "auto") => {
+        const element = scrollContainerRef.current;
+        if (!element) return;
+        autoFollowRef.current = true;
+        programmaticScrollRef.current = behavior === "smooth";
+        setShowScrollToBottom(false);
+        element.scrollTo({top: element.scrollHeight, behavior});
+        if (scrollTimerRef.current) window.clearTimeout(scrollTimerRef.current);
+        if (behavior === "smooth") {
+            scrollTimerRef.current = window.setTimeout(() => {
+                programmaticScrollRef.current = false;
+            }, 500);
+        }
+    }, []);
+
+    const handleMessageScroll = () => {
+        const element = scrollContainerRef.current;
+        if (!element) return;
+        const nearBottom = element.scrollHeight - element.scrollTop - element.clientHeight <= 60;
+        if (programmaticScrollRef.current) {
+            if (nearBottom) programmaticScrollRef.current = false;
+            return;
+        }
+        autoFollowRef.current = nearBottom;
+        setShowScrollToBottom(!nearBottom);
+    };
+
+    const pauseAutoFollow = () => {
+        programmaticScrollRef.current = false;
+        autoFollowRef.current = false;
+        setShowScrollToBottom(true);
+    };
+
     useEffect(() => {
-        // 使用块函数确保 effect 返回 undefined。表达式写法可能把宿主环境中
-        // scrollIntoView 的返回值注册成清理函数，下一次流式更新时会触发白屏。
-        endRef.current?.scrollIntoView({behavior: "smooth"});
-    }, [messages]);
+        autoFollowRef.current = true;
+        setShowScrollToBottom(false);
+        window.requestAnimationFrame(() => scrollToBottom());
+    }, [current?.sessionId, scrollToBottom]);
+
+    useEffect(() => {
+        if (!autoFollowRef.current) {
+            setShowScrollToBottom(true);
+            return undefined;
+        }
+        const frame = window.requestAnimationFrame(() => scrollToBottom());
+        return () => window.cancelAnimationFrame(frame);
+    }, [messages, running, scrollToBottom]);
+
+    useEffect(() => () => {
+        if (scrollTimerRef.current) window.clearTimeout(scrollTimerRef.current);
+    }, []);
 
     useEffect(() => {
         if (!promptInsertion) return;
@@ -1244,6 +1296,7 @@ function ChatView({api, current, messages, running, models, selectedModel, think
             : prompt;
         setPrompt("");
         setCompletion(null);
+        scrollToBottom();
         onSend(value);
     };
 
@@ -1263,7 +1316,15 @@ function ChatView({api, current, messages, running, models, selectedModel, think
     }
 
     return <div className="chat-layout">
-        <div className="message-scroll">
+        <div className="message-stage">
+        <div ref={scrollContainerRef} className="message-scroll" onScroll={handleMessageScroll}
+             onWheel={event => event.deltaY < 0 && pauseAutoFollow()}
+             onTouchMove={() => {
+                 const element = scrollContainerRef.current;
+                 if (element && element.scrollHeight - element.scrollTop - element.clientHeight > 60) {
+                     pauseAutoFollow();
+                 }
+             }}>
             <div className="message-column">
                 {messages.length === 0 && <div className="conversation-empty">
                     <div className="mini-orb"><Sparkles size={20}/></div>
@@ -1283,6 +1344,12 @@ function ChatView({api, current, messages, running, models, selectedModel, think
                     <div className="typing-row"><span/><span/><span/></div>}
                 <div ref={endRef}/>
             </div>
+        </div>
+        {showScrollToBottom && <button className="scroll-to-bottom" type="button"
+            onClick={() => scrollToBottom("smooth")}
+            aria-label={running ? "回到底部并继续跟随 AI 回复" : "回到底部"}>
+            <ArrowDown size={14}/><span>{running ? "AI 正在回复" : "回到底部"}</span>
+        </button>}
         </div>
         <div className="composer-wrap">
             <div className={`permission-mode-bar ${current.permissionMode === "full" ? "full" : ""}`}>
