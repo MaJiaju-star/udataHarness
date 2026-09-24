@@ -6,9 +6,9 @@ import GlobalSearchDialog from "./GlobalSearchDialog.jsx";
 import ThemePicker from "./ThemePicker.jsx";
 import {useWorkspaceStore} from "./workspaceStore.js";
 import {
-    Activity, ArrowDown, ArrowLeft, Bot, Box, BrainCircuit, Check, ChevronDown, ChevronRight, CircleStop, Code2,
+    Activity, ArrowDown, ArrowLeft, Bot, Box, BrainCircuit, Check, ChevronDown, ChevronRight, Circle, CircleStop, Code2,
     ClipboardPaste, Copy, Download, File, FileCode2, FilePlus2, Files, Folder, FolderOpen,
-    Eye, Film, GitCompareArrows, HardDrive, Image as ImageIcon, Link2, Menu, MessageSquare,
+    Eye, Film, GitCompareArrows, HardDrive, Image as ImageIcon, Link2, ListTodo, Menu, MessageSquare,
     MoreHorizontal, Network, PanelLeftClose, PanelLeftOpen, PanelRightClose, Pencil, Plus, RefreshCw,
     Save, Scissors, Search, Send, Settings2, ShieldCheck, ShieldOff, Sparkles, SquareTerminal, Trash2,
     Upload, UserRound, X, Zap
@@ -388,6 +388,55 @@ function mergeSubagentEvent(subagents, event) {
     return {...(subagents || {}), [subagentId]: next};
 }
 
+function isTodoTool(name) {
+    return name === "todoread" || name === "todowrite";
+}
+
+function parseTodoItems(markdown) {
+    return asText(markdown).split(/\r?\n/).flatMap((line, index) => {
+        const match = line.match(/^\s*[-*]\s*\[([ xX/])]\s*(.+?)\s*$/);
+        if (!match) return [];
+        const mark = match[1].toLowerCase();
+        return [{
+            id: `${index}-${match[2]}`,
+            text: match[2],
+            status: mark === "x" ? "done" : mark === "/" ? "active" : "pending"
+        }];
+    });
+}
+
+function toolArguments(tool) {
+    if (tool?.args && typeof tool.args === "object") return tool.args;
+    try {
+        return JSON.parse(tool?.argsText || "{}");
+    } catch {
+        return {};
+    }
+}
+
+function mergeTodoTool(current, tool) {
+    const name = tool?.name || "todowrite";
+    const args = toolArguments(tool);
+    const source = name === "todowrite" ? args.todos : tool?.output;
+    const parsedItems = parseTodoItems(source);
+    const items = parsedItems.length > 0 ? parsedItems : current?.items || [];
+    return {
+        ...(current || {}),
+        items,
+        toolName: name,
+        updating: Boolean(tool?.generating || tool?.running),
+        error: tool?.error ? asText(tool.output) || "任务计划更新失败" : null
+    };
+}
+
+function restoreTodoFromTools(tools) {
+    let todo = null;
+    for (const tool of tools || []) {
+        if (isTodoTool(tool.name)) todo = mergeTodoTool(todo, tool);
+    }
+    return todo;
+}
+
 function restoreHistory(history = []) {
     const result = [];
     for (const item of history) {
@@ -411,6 +460,14 @@ function restoreHistory(history = []) {
             ];
         } else {
             result.push(message);
+        }
+    }
+    for (const message of result) {
+        if (message.role !== "assistant") continue;
+        const todo = restoreTodoFromTools(message.tools);
+        if (todo) {
+            message.todo = todo;
+            message.activities = [{id: `todo-${message.id}`, type: "todo"}];
         }
     }
     return result;
@@ -807,7 +864,17 @@ function App() {
                 activities: [...(message.activities || [])],
                 reasonBuffers: {...(message.reasonBuffers || {})},
                 subagents: {...(message.subagents || {})},
-                runtimeChunks: {...(message.runtimeChunks || {})}
+                runtimeChunks: {...(message.runtimeChunks || {})},
+                todo: message.todo ? {...message.todo} : null
+            };
+            const ensureTodoActivity = callId => {
+                if (callId) {
+                    next.activities = next.activities.filter(item =>
+                        !(item.type === "tool" && item.callId === callId));
+                }
+                if (!next.activities.some(item => item.type === "todo")) {
+                    next.activities.push({id: `todo-${messageId}`, type: "todo"});
+                }
             };
             if (event.type === "text" || event.type === "text_replay") {
                 const merged = mergeReasonContentActivities(
@@ -841,7 +908,12 @@ function App() {
                         running: false
                     };
                     next.tools.push(tool);
-                    next.activities.push({id: `tool-${tool.callId}`, type: "tool", callId: tool.callId});
+                    if (isTodoTool(tool.name)) {
+                        ensureTodoActivity(tool.callId);
+                        next.todo = mergeTodoTool(next.todo, tool);
+                    } else {
+                        next.activities.push({id: `tool-${tool.callId}`, type: "tool", callId: tool.callId});
+                    }
                 }
             }
             if (event.type === "tool_args_delta") {
@@ -853,7 +925,9 @@ function App() {
                         name: event.toolName || "正在生成工具调用",
                         argsText: "", generating: true, streamed: true, running: false
                     });
-                    next.activities.push({id: `tool-${callId}`, type: "tool", callId});
+                    if (!isTodoTool(event.toolName)) {
+                        next.activities.push({id: `tool-${callId}`, type: "tool", callId});
+                    }
                     index = next.tools.length - 1;
                 }
                 next.tools[index] = {
@@ -862,6 +936,10 @@ function App() {
                     argsText: `${next.tools[index].argsText || ""}${asText(event.content)}`,
                     generating: true
                 };
+                if (isTodoTool(next.tools[index].name)) {
+                    ensureTodoActivity(next.tools[index].callId);
+                    next.todo = mergeTodoTool(next.todo, next.tools[index]);
+                }
             }
             if (event.type === "tool_args_end") {
                 const index = next.tools.findIndex(tool => tool.streamId === event.streamId);
@@ -871,6 +949,10 @@ function App() {
                     argsText: asText(event.content) || next.tools[index].argsText,
                     generating: false
                 };
+                if (index >= 0 && isTodoTool(next.tools[index].name)) {
+                    ensureTodoActivity(next.tools[index].callId);
+                    next.todo = mergeTodoTool(next.todo, next.tools[index]);
+                }
             }
             if (event.type === "tool_start") {
                 // 工具开始意味着它之前的模型思考阶段已经结束，即使供应商没有发出
@@ -903,7 +985,14 @@ function App() {
                         fileOperation: event.fileOperation
                     };
                     next.tools.push(tool);
-                    next.activities.push({id: `tool-${tool.callId}`, type: "tool", callId: tool.callId});
+                    if (isTodoTool(tool.name)) ensureTodoActivity(tool.callId);
+                    else next.activities.push({id: `tool-${tool.callId}`, type: "tool", callId: tool.callId});
+                }
+                const startedTool = next.tools.find(tool => tool.callId === event.callId)
+                    || next.tools.find(tool => tool.running && tool.name === event.toolName);
+                if (startedTool && isTodoTool(startedTool.name)) {
+                    ensureTodoActivity(startedTool.callId);
+                    next.todo = mergeTodoTool(next.todo, startedTool);
                 }
             }
             if (event.type === "tool_end") {
@@ -912,6 +1001,10 @@ function App() {
                     ...next.tools[index], running: false, durationMs: event.durationMs,
                     output: event.error || event.content, error: Boolean(event.error)
                 };
+                if (index >= 0 && isTodoTool(next.tools[index].name)) {
+                    ensureTodoActivity(next.tools[index].callId);
+                    next.todo = mergeTodoTool(next.todo, next.tools[index]);
+                }
             }
             if (event.type === "subagent_event") {
                 const subagentId = subagentEventId(event);
@@ -982,6 +1075,7 @@ function App() {
                 reasonBuffers: {},
                 subagents: {},
                 runtimeChunks: {},
+                todo: null,
                 finished: false
             }
         ]);
@@ -1791,6 +1885,9 @@ function Message({message, onDecide, onOpenFile}) {
                     const tool = message.tools?.find(item => item.callId === activity.callId);
                     return tool ? <ToolCall key={tool.callId} tool={tool}/> : null;
                 }
+                if (activity.type === "todo") {
+                    return message.todo ? <TodoCard key={activity.id} todo={message.todo}/> : null;
+                }
                 if (activity.type === "subagent") {
                     const subagent = message.subagents?.[activity.subagentId];
                     return subagent ? <SubagentCard key={activity.id} subagent={subagent}/> : null;
@@ -1806,7 +1903,7 @@ function Message({message, onDecide, onOpenFile}) {
                 }
                 return null;
             })}
-            {message.tools?.filter(tool => !activityToolIds.has(tool.callId))
+            {message.tools?.filter(tool => !activityToolIds.has(tool.callId) && !isTodoTool(tool.name))
                 .map(tool => <ToolCall key={tool.callId} tool={tool}/>)}
             {!hasTextActivities && parsed.visible && <div className={`markdown-body ${message.role}`}>
                 {message.role === "assistant"
@@ -1825,6 +1922,49 @@ function Message({message, onDecide, onOpenFile}) {
             {message.error && <div className="message-error"><X size={16}/>{message.error}</div>}
         </div>
     </article>;
+}
+
+function TodoCard({todo}) {
+    const items = todo.items || [];
+    const done = items.filter(item => item.status === "done").length;
+    const active = items.find(item => item.status === "active");
+    const complete = items.length > 0 && done === items.length;
+    const [open, setOpen] = useState(!complete);
+    const wasComplete = useRef(complete);
+    useEffect(() => {
+        if (!wasComplete.current && complete) setOpen(false);
+        wasComplete.current = complete;
+    }, [complete]);
+    const percent = items.length > 0 ? Math.round(done * 100 / items.length) : 0;
+    const summary = todo.updating ? "正在更新任务计划"
+        : complete ? "全部任务已完成"
+            : active?.text || (items.length ? "等待推进下一项任务" : "正在生成任务计划");
+    return <section className={`todo-card ${complete ? "complete" : ""} ${todo.error ? "error" : ""}`}
+                    aria-label="任务进度">
+        <button className="todo-heading" onClick={() => setOpen(value => !value)} aria-expanded={open}>
+            <span className="todo-icon">{todo.updating
+                ? <RefreshCw className="spin" size={15}/>
+                : complete ? <Check size={15}/> : <ListTodo size={15}/>}</span>
+            <span className="todo-title"><b>任务进度</b><small>{summary}</small></span>
+            {items.length > 0 && <strong>{done}/{items.length} · {percent}%</strong>}
+            {open ? <ChevronDown size={15}/> : <ChevronRight size={15}/>}
+        </button>
+        {items.length > 0 && <div className="todo-progress" role="progressbar"
+            aria-label="任务完成进度" aria-valuemin={0} aria-valuemax={100} aria-valuenow={percent}>
+            <i style={{width: `${percent}%`}}/>
+        </div>}
+        {open && <div className="todo-body">
+            {items.length > 0 ? <ol>{items.map(item => <li className={item.status} key={item.id}>
+                <span>{item.status === "done" ? <Check size={12}/>
+                    : item.status === "active" ? <RefreshCw className="spin" size={12}/>
+                        : <Circle size={11}/>}</span>
+                <p>{item.text}</p>
+                {item.status === "active" && <small>进行中</small>}
+            </li>)}</ol> : <div className="todo-empty">
+                {todo.error || "模型正在整理任务步骤…"}
+            </div>}
+        </div>}
+    </section>;
 }
 
 function FileActivitySummary({tools, activities, onOpenFile}) {
@@ -1959,6 +2099,9 @@ function ToolCall({tool}) {
     useEffect(() => {
         if (tool.generating) setOpen(true);
     }, [tool.generating]);
+    if (isTodoTool(tool.name)) {
+        return <TodoCard todo={mergeTodoTool(null, tool)}/>;
+    }
     const chartSpec = chartSpecFromTool(tool);
     const status = tool.generating ? "参数生成中" : tool.running ? "执行中" : `${tool.durationMs || 0} ms`;
     const details = tool.executionStarted

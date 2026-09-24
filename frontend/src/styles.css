@@ -1199,6 +1199,64 @@ button, input, textarea, select { outline: none; }
 .runtime-chunk-card small { overflow: hidden; color: var(--text-secondary); font-size: 9px; text-overflow: ellipsis; white-space: nowrap; }
 .runtime-chunk-card > pre { margin: 0 10px 10px; }
 
+.todo-card {
+    max-width: 760px;
+    margin: 10px 0;
+    overflow: hidden;
+    border: 1px solid color-mix(in srgb, var(--accent) 34%, var(--border-default));
+    border-radius: 13px;
+    background: var(--surface-1);
+    box-shadow: 0 4px 16px var(--shadow-color);
+}
+.todo-card.complete { border-color: var(--border-default); }
+.todo-card.error { border-color: color-mix(in srgb, var(--danger) 45%, var(--border-default)); }
+.todo-heading {
+    display: flex;
+    width: 100%;
+    min-height: 50px;
+    align-items: center;
+    gap: 9px;
+    padding: 8px 11px;
+    border: 0;
+    color: var(--text-primary);
+    background: transparent;
+    text-align: left;
+}
+.todo-heading:hover { background: var(--surface-2); }
+.todo-icon {
+    display: grid;
+    width: 30px;
+    height: 30px;
+    flex: 0 0 30px;
+    place-items: center;
+    border-radius: 9px;
+    color: var(--accent-dark);
+    background: var(--accent-soft);
+}
+.todo-card.complete .todo-icon { color: var(--text-secondary); background: var(--surface-2); }
+.todo-card.error .todo-icon { color: var(--danger); background: color-mix(in srgb, var(--danger) 10%, transparent); }
+.todo-title { min-width: 0; flex: 1; }
+.todo-title b, .todo-title small { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.todo-title b { font-size: 11.5px; }
+.todo-title small { margin-top: 2px; color: var(--text-secondary); font-size: 9.5px; }
+.todo-heading strong { flex: 0 0 auto; color: var(--accent-dark); font-size: 9.5px; }
+.todo-card.complete .todo-heading strong { color: var(--text-secondary); }
+.todo-progress { height: 3px; background: var(--surface-2); }
+.todo-progress i { display: block; height: 100%; border-radius: 0 3px 3px 0; background: var(--accent); transition: width .22s ease-out; }
+.todo-body { padding: 7px 11px 11px 49px; border-top: 1px solid var(--border-default); }
+.todo-body ol { display: grid; gap: 4px; margin: 0; padding: 0; list-style: none; }
+.todo-body li { display: flex; min-height: 29px; align-items: center; gap: 8px; padding: 4px 7px; border-radius: 8px; color: var(--text-secondary); }
+.todo-body li > span { display: grid; width: 18px; height: 18px; flex: 0 0 18px; place-items: center; border-radius: 6px; }
+.todo-body li p { min-width: 0; flex: 1; margin: 0; font-size: 10.5px; line-height: 1.45; }
+.todo-body li small { flex: 0 0 auto; color: var(--accent-dark); font-size: 8.5px; }
+.todo-body li.done { color: var(--text-subtle); }
+.todo-body li.done p { text-decoration: line-through; text-decoration-thickness: 1px; }
+.todo-body li.done > span { color: var(--accent-dark); background: var(--accent-soft); }
+.todo-body li.active { color: var(--text-primary); background: var(--accent-soft); }
+.todo-body li.active > span { color: var(--accent-dark); }
+.todo-body li.pending > span { color: var(--text-subtle); }
+.todo-empty { padding: 8px; color: var(--text-secondary); font-size: 10px; }
+
 .file-activity-summary {
     max-width: 760px;
     margin: 16px 0 4px;
@@ -1925,11 +1983,13 @@ button, input, textarea, select { outline: none; }
     .markdown-body { font-size: 13px; line-height: 1.68; }
     .markdown-body pre { max-width: calc(100vw - 58px); font-size: 10.5px; }
     .markdown-body table { display: block; overflow-x: auto; white-space: nowrap; }
-    .tool-call, .thinking-card, .hitl-card, .subagent-card, .runtime-chunk-card { max-width: 100%; }
+    .tool-call, .thinking-card, .hitl-card, .subagent-card, .runtime-chunk-card, .todo-card { max-width: 100%; }
     .thinking-card > button { padding: 9px; }
     .subagent-heading { gap: 7px; padding-inline: 8px; }
     .subagent-content { padding: 0 8px 8px; }
     .subagent-status { display: none; }
+    .todo-body { padding: 7px 8px 9px; }
+    .todo-heading { padding-inline: 8px; }
     .thinking-title small { max-width: 46vw; }
     .thinking-content { margin-left: 18px; }
     .thinking-content pre { max-height: 190px; font-size: 10.5px; }
