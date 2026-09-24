@@ -1,10 +1,27 @@
 package com.udata.harness.common.request;
 
-/** 对话请求：已有会话、用户提示词、可选模型和思考深度。 */
+/**
+ * 对话请求：已有会话、用户提示词、可选模型和思考深度。
+ */
 public class ChatRequest {
+    /**
+     * 目标会话标识。
+     */
     private String sessionId;
+
+    /**
+     * 用户提示词。
+     */
     private String prompt;
+
+    /**
+     * 可选模型名；为空时使用会话/引擎默认模型。
+     */
     private String model;
+
+    /**
+     * 可选思考深度档位：auto/none/low/medium/high/max。
+     */
     private String thinkingDepth;
 
     public String getSessionId() {

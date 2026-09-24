@@ -32,18 +32,36 @@ public final class StreamEventMapper {
     private StreamEventMapper() {
     }
 
+    /**
+     * 构造会话首事件，告知前端本次运行的 sessionId。
+     *
+     * @param sessionId 会话标识
+     * @return 序列化后的 SSE 事件 JSON
+     */
     public static String session(String sessionId) {
         Map<String, Object> event = base("session", null);
         event.put("sessionId", sessionId);
         return ONode.serialize(event);
     }
 
+    /**
+     * 构造错误事件。
+     *
+     * @param message 错误描述
+     * @return 序列化后的 SSE 事件 JSON
+     */
     public static String error(String message) {
         Map<String, Object> event = base("error", null);
         event.put("message", message);
         return ONode.serialize(event);
     }
 
+    /**
+     * 将单个挂起任务包装为审批事件。
+     *
+     * @param task 待审批任务
+     * @return 序列化后的 SSE 事件 JSON
+     */
     public static String hitl(HITLTask task) {
         return hitl(Utils.asList(task));
     }
@@ -53,6 +71,9 @@ public final class StreamEventMapper {
      *
      * <p>顶层保留第一项的旧字段以兼容已有前端；新前端应读取 tasks，并将所有
      * callUuid 一并提交，保证 Harness 恢复前整批调用都已有明确决策。</p>
+     *
+     * @param tasks 同一轮挂起的全部任务
+     * @return 序列化后的 SSE 事件 JSON
      */
     public static String hitl(List<HITLTask> tasks) {
         Map<String, Object> event = base("hitl", null);
@@ -76,6 +97,12 @@ public final class StreamEventMapper {
         return ONode.serialize(event);
     }
 
+    /**
+     * 将单个挂起任务转换为前端字段。
+     *
+     * @param task 待审批任务
+     * @return 含 callUuid/toolName/args/comment 的字段映射
+     */
     private static Map<String, Object> hitlTask(HITLTask task) {
         Map<String, Object> item = new LinkedHashMap<>();
         item.put("callUuid", task.getCallUuid());
@@ -91,6 +118,10 @@ public final class StreamEventMapper {
      * <p>Solon Flow 从 ToolCall 节点恢复时可能再次发射上一 Reason 的事件；
      * {@code reasonId} 保持不变。只过滤 Reason 事件，不影响同一次恢复中新生成的
      * ToolCall 事件和具有新 reasonId 的模型文本。</p>
+     *
+     * @param event 当前事件
+     * @param suspendedReasonId 挂起前的 reasonId，为空表示无挂起
+     * @return 属于重放时返回 true
      */
     public static boolean isReasonReplay(AgentEvent event, String suspendedReasonId) {
         if (suspendedReasonId == null) {
@@ -108,16 +139,29 @@ public final class StreamEventMapper {
                 && suspendedReasonId.equals(((ReasonEndEvent) event).getReasonId());
     }
 
+    /**
+     * 将框架事件映射为前端事件 JSON。
+     *
+     * @param agentEvent 框架事件
+     * @return 序列化后的 SSE 事件 JSON
+     */
     public static String map(AgentEvent agentEvent) {
         return ONode.serialize(mapEvent(agentEvent));
     }
 
-    /** 将框架事件映射为可继续补充上下文字段的结构化对象。 */
+    /**
+     * 将框架事件映射为可继续补充上下文字段的结构化对象。
+     *
+     * @param agentEvent 框架事件
+     * @return 结构化事件字段映射
+     */
     private static Map<String, Object> mapEvent(AgentEvent agentEvent) {
+        //1. 子智能体事件先解包子事件，再叠加 task 上下文。
         if (agentEvent instanceof TaskWrapEvent) {
             return mapTaskEvent((TaskWrapEvent) agentEvent);
         }
 
+        //2. 按具体事件类型分派映射规则；未知类型降级为通用 chunk。
         String type = agentEvent.getClass().getSimpleName();
         Map<String, Object> event = base("chunk", agentEvent);
 
@@ -181,6 +225,7 @@ public final class StreamEventMapper {
             event.put("chunkType", type);
         }
 
+        //3. 未显式设置 content 的事件统一回填文本，便于前端统一渲染。
         if (!event.containsKey("content")
                 && agentEvent.hasText()
                 && !(agentEvent instanceof RunEndEvent)) {
@@ -194,6 +239,9 @@ public final class StreamEventMapper {
      *
      * <p>前端以 taskId 聚合并行输出，subtype 则复用主智能体已有的文本、思考和
      * 工具事件语义，避免把多个子智能体的流式内容混成一段文本。</p>
+     *
+     * @param taskEvent 子智能体包装事件
+     * @return 含父/子任务标识与 subtype 的事件字段映射
      */
     private static Map<String, Object> mapTaskEvent(TaskWrapEvent taskEvent) {
         Map<String, Object> event = mapEvent(taskEvent.getRealEvent());
@@ -215,7 +263,13 @@ public final class StreamEventMapper {
         return event;
     }
 
-    /** 将一次模型调用返回的真实 Token 用量写入 SSE 事件。 */
+    /**
+     * 将一次模型调用返回的真实 Token 用量写入 SSE 事件。
+     *
+     * @param event 目标事件字段映射
+     * @param usage Token 用量；为空时不做写入
+     * @param scope 用量作用域标识（如 model_call）
+     */
     private static void putUsage(Map<String, Object> event, AiUsage usage, String scope) {
         if (usage == null) {
             return;
@@ -231,7 +285,12 @@ public final class StreamEventMapper {
         event.put("usage", data);
     }
 
-    /** 将智能体整轮汇总指标写入结束事件，并计算包含工具耗时的平均输出速度。 */
+    /**
+     * 将智能体整轮汇总指标写入结束事件，并计算包含工具耗时的平均输出速度。
+     *
+     * @param event 目标事件字段映射
+     * @param metrics 运行指标；为空时不做写入
+     */
     private static void putRunMetrics(Map<String, Object> event, Metrics metrics) {
         if (metrics == null) {
             return;
@@ -251,7 +310,12 @@ public final class StreamEventMapper {
         }
     }
 
-    /** 将模型工具参数流映射为前端可增量消费的事件。 */
+    /**
+     * 将模型工具参数流映射为前端可增量消费的事件。
+     *
+     * @param event 目标事件字段映射
+     * @param toolStream 工具参数流事件
+     */
     private static void mapToolStreamEvent(Map<String, Object> event, ToolCallStreamEvent toolStream) {
         if (toolStream.getEventType() == ChatEventType.TOOL_CALL_START) {
             event.put("type", "tool_args_start");
@@ -265,6 +329,13 @@ public final class StreamEventMapper {
         event.put("toolName", toolStream.getToolName());
     }
 
+    /**
+     * 构造事件公共字段（type、timestamp、runId、agentName）。
+     *
+     * @param type 事件类型
+     * @param agentEvent 源事件，可为 null
+     * @return 已填充公共字段的事件映射
+     */
     private static Map<String, Object> base(String type, AgentEvent agentEvent) {
         Map<String, Object> event = new LinkedHashMap<>();
         event.put("type", type);

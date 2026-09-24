@@ -1,7 +1,12 @@
 package com.udata.harness.common.request;
 
-/** 修改当前用户工作区级沙箱开关。 */
+/**
+ * 修改当前用户工作区级沙箱开关。
+ */
 public class SandboxSettingsRequest {
+    /**
+     * 是否启用沙箱。
+     */
     private boolean enabled;
 
     public boolean isEnabled() {

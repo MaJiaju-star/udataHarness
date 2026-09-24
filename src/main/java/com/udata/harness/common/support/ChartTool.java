@@ -17,22 +17,43 @@ import java.util.Map;
 import java.util.Set;
 
 /**
- * Validates a declarative Apache ECharts option for rendering by the Web UI.
+ * Solon AI Tool：校验并返回声明式 Apache ECharts 配置供 Web UI 渲染。
  *
- * <p>No JavaScript source or callbacks cross this boundary. The returned option
- * is a detached, size-limited value tree containing JSON-compatible values only.</p>
+ * <p>跨越该边界的只有纯 JSON 兼容值：不传输 JavaScript 源代码或回调，返回的 option
+ * 是经过深拷贝与大小限制的独立值树。</p>
  */
 public class ChartTool extends AbsToolProvider {
+    /**
+     * option 树允许的最大嵌套深度，超出即拒绝。
+     */
     private static final int MAX_DEPTH = 12;
+
+    /**
+     * 单次清洗允许处理的最大节点数，防止超大配置拖垮服务。
+     */
     private static final int MAX_VALUES = 12_000;
+
+    /**
+     * 序列化后 JSON 的最大长度（字符数），超出即拒绝。
+     */
     private static final int MAX_JSON_LENGTH = 256_000;
 
+    /**
+     * 允许透传到前端的 ECharts 顶层配置键白名单，其余项一律剥离。
+     */
     private static final Set<String> ALLOWED_TOP_LEVEL = Collections.unmodifiableSet(Utils.asSet(
             "title", "legend", "grid", "dataset", "xAxis", "yAxis", "series",
             "tooltip", "dataZoom", "visualMap", "radar", "color", "backgroundColor",
             "animation", "animationDuration", "aria"));
+    /**
+     * 支持的 series 类型白名单，杜绝未知的任意图表类型。
+     */
     private static final Set<String> ALLOWED_SERIES_TYPES = Collections.unmodifiableSet(Utils.asSet(
             "line", "bar", "pie", "scatter", "radar", "heatmap", "funnel", "gauge"));
+
+    /**
+     * 命中即丢弃的键黑名单，覆盖原型污染键、回调与 HTML/URL 注入面。
+     */
     private static final Set<String> BLOCKED_KEYS = Collections.unmodifiableSet(Utils.asSet(
             "__proto__", "prototype", "constructor", "formatter", "extracsstext",
             "link", "sublink", "optiontocontent", "onclick", "transform", "reg"));
@@ -59,6 +80,7 @@ public class ChartTool extends AbsToolProvider {
             throw new IllegalArgumentException("option is required");
         }
 
+        //1. 顶层字段白名单筛选，剥离 ECharts 未知/危险顶层项。
         Map<String, Object> selected = new LinkedHashMap<>();
         for (Map.Entry<String, Object> entry : option.entrySet()) {
             if (ALLOWED_TOP_LEVEL.contains(entry.getKey())) {
@@ -72,14 +94,17 @@ public class ChartTool extends AbsToolProvider {
         Budget budget = new Budget();
         @SuppressWarnings("unchecked")
         Map<String, Object> safeOption = (Map<String, Object>) sanitizeValue(null, selected, 0, budget);
+        //2. 递归清洗后校验 series 类型，并强制 tooltip 使用安全渲染模式。
         validateSeries(safeOption.get("series"));
         normalizeTooltip(safeOption);
+        //3. 补齐默认标题、动画与无障碍配置。
         if (!safeOption.containsKey("title") && Utils.isNotBlank(title)) {
             safeOption.put("title", Utils.asMap("text", title.trim()));
         }
         safeOption.putIfAbsent("animationDuration", 450);
         safeOption.putIfAbsent("aria", Utils.asMap("enabled", true));
 
+        //4. 序列化并做最终长度限制。
         Map<String, Object> result = new LinkedHashMap<>();
         result.put("version", 1);
         result.put("engine", "echarts");
@@ -97,6 +122,12 @@ public class ChartTool extends AbsToolProvider {
      * <p>{@code depth} 防止恶意深层嵌套耗尽栈，{@link Budget} 对整个对象图统一计数，
      * 避免攻击者用大量短数组绕过最终字符串长度限制。Map 键会过滤原型链、回调、
      * URL 和数据转换相关字段；未知 Java 对象不会被隐式序列化。</p>
+     *
+     * @param key 当前字段名（用于异常定位）
+     * @param value 待清洗值
+     * @param depth 当前嵌套深度
+     * @param budget 全图计数预算
+     * @return 清洗后的纯 JSON 兼容值
      */
     private Object sanitizeValue(String key, Object value, int depth, Budget budget) {
         if (depth > MAX_DEPTH) {
@@ -152,6 +183,9 @@ public class ChartTool extends AbsToolProvider {
      * 校验 series 的结构和类型白名单。
      *
      * <p>series 决定前端需要加载的渲染器，因此这里必须和浏览器端注册的组件集合保持一致。</p>
+     *
+     * @param value option.series 原始值
+     * @throws IllegalArgumentException series 缺失、类型不在白名单或数量超限时抛出
      */
     private void validateSeries(Object value) {
         if (value == null) {
@@ -173,7 +207,11 @@ public class ChartTool extends AbsToolProvider {
         }
     }
 
-    /** 强制 tooltip 使用 richText 渲染，避免 HTML tooltip 接触模型生成的文本。 */
+    /**
+     * 强制 tooltip 使用 richText 渲染，避免 HTML tooltip 接触模型生成的文本。
+     *
+     * @param option 已清洗的 option
+     */
     @SuppressWarnings("unchecked")
     private void normalizeTooltip(Map<String, Object> option) {
         Object tooltip = option.get("tooltip");
@@ -183,7 +221,13 @@ public class ChartTool extends AbsToolProvider {
         }
     }
 
+    /**
+     * 清洗过程中的全局值计数预算。
+     */
     private static final class Budget {
+        /**
+         * 已累计处理的节点数，达到上限即终止清洗。
+         */
         private int values;
     }
 }

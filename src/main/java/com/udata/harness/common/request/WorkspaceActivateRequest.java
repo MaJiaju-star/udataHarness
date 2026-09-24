@@ -1,7 +1,12 @@
 package com.udata.harness.common.request;
 
-/** 激活已注册工作区的请求。 */
+/**
+ * 激活已注册工作区的请求。
+ */
 public class WorkspaceActivateRequest {
+    /**
+     * 目标工作区标识。
+     */
     private String workspaceId;
 
     public String getWorkspaceId() { return workspaceId; }

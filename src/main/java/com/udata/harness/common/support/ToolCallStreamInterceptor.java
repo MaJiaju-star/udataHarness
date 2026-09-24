@@ -12,9 +12,14 @@ import reactor.core.publisher.Flux;
  * 监听 ChatModel 工具参数增量，并将其送入当前 ReAct Agent 流。
  */
 public class ToolCallStreamInterceptor extends AbsReActInterceptor {
+    /**
+     * 当前推理轨迹，供底层聊天流事件回推 Agent 流。
+     */
     private ReActTrace trace;
 
-    /** 保存当前推理轨迹，供底层聊天流事件回推 Agent 流。 */
+    /**
+     * 保存当前推理轨迹，供底层聊天流事件回推 Agent 流。
+     */
     @Override
     public void onReasonStart(ReActTrace trace, StringBuilder systemPromptBuf) {
         this.trace = trace;
@@ -28,7 +33,9 @@ public class ToolCallStreamInterceptor extends AbsReActInterceptor {
         return chain.doIntercept(request).doOnNext(this::forwardToolEvent);
     }
 
-    /** 将工具参数事件推送到当前 Agent 的流式接收端。 */
+    /**
+     * 将工具参数事件推送到当前 Agent 的流式接收端。
+     */
     private void forwardToolEvent(ChatEvent event) {
         if (trace == null || !event.is(
                 ChatEventType.TOOL_CALL_START,

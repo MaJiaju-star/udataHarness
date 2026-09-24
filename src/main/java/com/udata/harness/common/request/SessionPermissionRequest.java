@@ -7,7 +7,14 @@ package com.udata.harness.common.request;
  * 会话中的工具调用。</p>
  */
 public class SessionPermissionRequest {
+    /**
+     * 目标会话标识。
+     */
     private String sessionId;
+
+    /**
+     * 目标权限模式：standard 或 full。
+     */
     private String permissionMode;
 
     public String getSessionId() {

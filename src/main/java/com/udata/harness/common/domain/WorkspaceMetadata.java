@@ -6,10 +6,29 @@ package com.udata.harness.common.domain;
  * <p>工作区只保存目录引用，不拥有目录内容；移除工作区记录不会删除本地文件。</p>
  */
 public class WorkspaceMetadata {
+    /**
+     * 注册表生成的唯一工作区标识。
+     */
     private String workspaceId;
+
+    /**
+     * 展示名称，通常为目录名。
+     */
     private String name;
+
+    /**
+     * 目录绝对路径。
+     */
     private String path;
+
+    /**
+     * 最近打开时间戳（毫秒）。
+     */
     private long lastOpenedAt;
+
+    /**
+     * 是否为当前激活工作区。
+     */
     private boolean active;
 
     public String getWorkspaceId() { return workspaceId; }

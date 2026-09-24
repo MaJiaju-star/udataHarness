@@ -37,18 +37,33 @@ import java.util.stream.Collectors;
  */
 @Component
 public class SessionServiceImpl implements SessionService {
+    /**
+     * 会话仓储，负责会话元数据与消息的读写。
+     */
     @Inject
     private SessionRepository sessionRepository;
 
+    /**
+     * 聊天服务，用于删除会话时终止其正在进行的运行。
+     */
     @Inject
     private ChatService chatService;
 
+    /**
+     * 活动运行注册表，用于校验会话是否仍有运行及执行取消。
+     */
     @Inject
     private ActiveRunRegistry activeRuns;
 
+    /**
+     * 用户引擎服务，用于读取当前用户可用的模型列表与加载状态。
+     */
     @Inject
     private UserHarnessEngineService engines;
 
+    /**
+     * 用户工作区服务，用于校验会话所属工作区与当前激活工作区是否一致。
+     */
     @Inject
     private UserWorkspaceService workspaces;
 
@@ -56,6 +71,9 @@ public class SessionServiceImpl implements SessionService {
      * 返回当前用户可见的运行时元数据。
      *
      * <p>模型列表来自用户引擎而非配置文件快照，确保热更新后 UI 展示的是实际可选模型。</p>
+     *
+     * @param userId 当前用户标识
+     * @return 包含工作区、默认模型、可选模型列表与沙箱状态的元数据
      */
     @Override
     public Map<String, Object> meta(String userId) {
@@ -82,7 +100,12 @@ public class SessionServiceImpl implements SessionService {
         return data;
     }
 
-    /** 列出用户会话，并用进程内运行注册表补充瞬时 active 状态。 */
+    /**
+     * 列出用户会话，并用进程内运行注册表补充瞬时 active 状态。
+     *
+     * @param userId 当前用户标识
+     * @return 当前激活工作区下的会话列表
+     */
     @Override
     public List<SessionMetadata> list(String userId) {
         String workspaceId = workspaces.getActive(userId).getWorkspaceId();
@@ -98,6 +121,10 @@ public class SessionServiceImpl implements SessionService {
      * 创建持久化会话元数据并确保用户工作区存在。
      *
      * <p>请求未指定模型时使用该用户引擎的默认模型，最终选择会固定在会话元数据中。</p>
+     *
+     * @param userId 当前用户标识
+     * @param request 可选标题与模型；为空时全部使用默认值
+     * @return 已持久化的会话元数据
      */
     @Override
     public SessionMetadata create(String userId, CreateSessionRequest request) {
@@ -115,6 +142,12 @@ public class SessionServiceImpl implements SessionService {
      * 修改会话权限模式。
      *
      * <p>运行中的会话禁止切换权限，避免同一轮工具调用前后使用不同授权策略。</p>
+     *
+     * @param userId 当前用户标识
+     * @param request 目标 sessionId 与目标权限模式
+     * @return 更新后的会话元数据
+     * @throws IllegalArgumentException sessionId 为空时抛出
+     * @throws IllegalStateException 会话正在运行时抛出
      */
     @Override
     public SessionMetadata updatePermission(
@@ -137,6 +170,11 @@ public class SessionServiceImpl implements SessionService {
      *
      * <p>同一用户的会话共享 HarnessEngine，因此只要存在运行中的会话就禁止切换，
      * 避免一轮工具执行期间安全边界发生变化。</p>
+     *
+     * @param userId 当前用户标识
+     * @param enabled 是否启用沙箱
+     * @return 后端实际应用的沙箱状态
+     * @throws IllegalStateException 存在运行中会话时抛出
      */
     @Override
     public boolean updateSandbox(String userId, boolean enabled) {
@@ -150,7 +188,13 @@ public class SessionServiceImpl implements SessionService {
         return enabled;
     }
 
-    /** 显式重命名会话，只更新产品元数据。 */
+    /**
+     * 显式重命名会话，只更新产品元数据。
+     *
+     * @param userId 当前用户标识
+     * @param request 目标 sessionId 与新标题
+     * @return 更新后的会话元数据
+     */
     @Override
     public SessionMetadata updateTitle(String userId, SessionTitleRequest request) {
         if (request == null || Utils.isBlank(request.getSessionId())) {
@@ -164,6 +208,9 @@ public class SessionServiceImpl implements SessionService {
 
     /**
      * 删除会话前先取消活动订阅，防止流结束回调在目录删除后再次写入快照。
+     *
+     * @param userId 当前用户标识
+     * @param sessionId 待删除会话标识
      */
     @Override
     public void delete(String userId, String sessionId) {
@@ -172,7 +219,13 @@ public class SessionServiceImpl implements SessionService {
         sessionRepository.delete(userId, sessionId);
     }
 
-    /** 校验会话归属后取消当前运行；返回值表示是否确实找到活动订阅。 */
+    /**
+     * 校验会话归属后取消当前运行。
+     *
+     * @param userId 当前用户标识
+     * @param sessionId 目标会话标识
+     * @return 是否确实找到活动订阅
+     */
     @Override
     public boolean cancel(String userId, String sessionId) {
         sessionRepository.read(userId, sessionId);
@@ -185,15 +238,21 @@ public class SessionServiceImpl implements SessionService {
      * <p>AssistantMessage 中的 ToolCall 先创建工具卡片；后续 ToolMessage 按 callId
      * 回填输出，不再单独生成“助手消息”。因此实时 SSE 与刷新后的历史消息结构一致，
      * {@code render_echart} 的 option 也能从工具结果中恢复。</p>
+     *
+     * @param userId 当前用户标识
+     * @param sessionId 目标会话标识
+     * @return 可展示的消息历史；工具输出已合并进对应 Assistant 消息
      */
     @Override
     public List<Map<String, Object>> messages(String userId, String sessionId) {
         List<Map<String, Object>> result = new ArrayList<>();
         Map<String, Map<String, Object>> pendingTools = new LinkedHashMap<>();
         AgentSession session = sessionRepository.getSession(userId, sessionId);
+        //1. 取出按 runId 归档的文件活动记录，用于在 Assistant 消息上回填文件变更。
         Object storedActivities = session.getContext().get(ChatServiceImpl.FILE_ACTIVITIES_KEY);
         Map<?, ?> activitiesByRun = storedActivities instanceof Map<?, ?>
                 ? (Map<?, ?>) storedActivities : Collections.emptyMap();
+        //2. 顺序遍历历史：ToolMessage 按 callId 回填工具输出，其余消息转为 UI 结构。
         for (ChatMessage message : session.getMessages()) {
             if (message instanceof ToolMessage) {
                 ToolMessage toolMessage = (ToolMessage) message;

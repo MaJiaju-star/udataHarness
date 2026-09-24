@@ -5,17 +5,58 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 
-/** MCP Server 配置，包括传输方式、命令、环境变量和工具过滤规则。 */
+/**
+ * MCP Server 配置，包括传输方式、命令、环境变量和工具过滤规则。
+ */
 public class McpConfigRequest {
+    /**
+     * 唯一名称。
+     */
     private String name;
+
+    /**
+     * 传输方式（如 stdio/sse/streamable）。
+     */
     private String transport;
+
+    /**
+     * 远程服务 URL。
+     */
     private String url;
+
+    /**
+     * 本地启动命令。
+     */
     private String command;
+
+    /**
+     * 命令参数。
+     */
     private List<String> args = new ArrayList<>();
+
+    /**
+     * 请求 Header，可能包含敏感凭据。
+     */
     private Map<String, String> headers = new HashMap<>();
+
+    /**
+     * 进程环境变量，可能包含敏感凭据。
+     */
     private Map<String, String> env = new HashMap<>();
+
+    /**
+     * 允许暴露的工具白名单。
+     */
     private List<String> allowedTools = new ArrayList<>();
+
+    /**
+     * 禁止暴露的工具黑名单。
+     */
     private List<String> disallowedTools = new ArrayList<>();
+
+    /**
+     * 是否启用该 Server。
+     */
     private boolean enabled = true;
 
     public String getName() { return name; }

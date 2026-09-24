@@ -40,11 +40,15 @@ import java.util.Map;
 @Controller
 @Mapping("/api")
 public class SessionController {
-    /** 管理会话元数据、历史记录、权限模式与运行取消。 */
+    /**
+     * 管理会话元数据、历史记录、权限模式与运行取消。
+     */
     @Inject
     private SessionService sessionService;
 
-    /** 执行 Harness 对话并把模型、工具和 HITL 状态转换为 SSE 事件。 */
+    /**
+     * 执行 Harness 对话并把模型、工具和 HITL 状态转换为 SSE 事件。
+     */
     @Inject
     private ChatService chatService;
 
@@ -122,7 +126,13 @@ public class SessionController {
         return Result.succeed(sessionService.updateSandbox(userId, request.isEnabled()));
     }
 
-    /** 显式修改会话标题。 */
+    /**
+     * 显式修改会话标题。
+     *
+     * @param userId 当前用户标识
+     * @param request 目标 sessionId 与新标题
+     * @return 更新后的会话元数据
+     */
     @Post
     @Mapping("/sessions/title")
     public Result<SessionMetadata> updateTitle(

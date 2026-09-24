@@ -13,17 +13,26 @@ import reactor.core.publisher.Flux;
 public interface ChatService {
     /**
      * 在已有会话中提交用户提示词并启动一次 Harness 流式运行。
+     *
+     * @param userId 当前用户标识
+     * @param request 会话标识与用户提示词，可选模型与思考深度
+     * @return 逐事件发射的 SSE 事件 JSON 流
      */
     Flux<String> chat(String userId, ChatRequest request);
 
     /**
      * 将用户决策应用到待审批工具，并从 Harness 暂停点继续运行。
+     *
+     * @param userId 当前用户标识
+     * @param request 审批动作、备注及可选修改参数
+     * @return 审批恢复后的连续 SSE 事件 JSON 流
      */
     Flux<String> decide(String userId, HitlDecisionRequest request);
 
     /**
      * 取消 sessionId 对应的活动订阅。
      *
+     * @param sessionId 目标会话标识
      * @return 找到活动运行并发出取消信号时为 true
      */
     boolean cancel(String sessionId);

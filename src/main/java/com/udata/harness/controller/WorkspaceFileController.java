@@ -33,7 +33,9 @@ import java.util.Map;
 @Controller
 @Mapping("/api/files")
 public class WorkspaceFileController {
-    /** 封装用户目录解析、路径 containment 校验和文件系统操作。 */
+    /**
+     * 封装用户目录解析、路径 containment 校验和文件系统操作。
+     */
     @Inject
     private WorkspaceFileService files;
 
@@ -142,7 +144,14 @@ public class WorkspaceFileController {
         return Result.succeed(files.globalSearch(userId, request));
     }
 
-    /** 上传一个文件到指定工作区目录；空 path 表示工作区根目录。 */
+    /**
+     * 上传一个文件到指定工作区目录。
+     *
+     * @param userId 当前用户标识
+     * @param path 目标相对目录；为空表示工作区根目录
+     * @param file multipart 上传文件
+     * @return 保存后的节点元数据
+     */
     @Post
     @Mapping("/upload")
     public Result<Map<String, Object>> upload(
@@ -152,7 +161,13 @@ public class WorkspaceFileController {
         return Result.succeed(files.upload(userId, path, file));
     }
 
-    /** 下载工作区内的普通文件。 */
+    /**
+     * 下载工作区内的普通文件。
+     *
+     * @param userId 当前用户标识
+     * @param path 文件相对路径
+     * @return 流式下载对象
+     */
     @Get
     @Mapping("/download")
     public DownloadedFile download(

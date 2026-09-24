@@ -30,7 +30,9 @@ import java.util.Map;
 @Controller
 @Mapping("/api/integrations")
 public class IntegrationController {
-    /** 负责配置校验、持久化、脱敏展示和引擎热更新。 */
+    /**
+     * 负责配置校验、持久化、脱敏展示和引擎热更新。
+     */
     @Inject
     private IntegrationService configs;
 

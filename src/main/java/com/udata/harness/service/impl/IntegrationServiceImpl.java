@@ -28,21 +28,38 @@ import java.util.stream.Stream;
  */
 @Component
 public class IntegrationServiceImpl implements IntegrationService {
+    /**
+     * 用户引擎服务，MCP 配置变更后同步到所有已创建引擎。
+     */
     @Inject
     private UserHarnessEngineService engines;
 
+    /**
+     * 应用数据目录，MCP 配置持久化的根路径。
+     */
     @Inject("${agent.data-dir:./data}")
     private String dataDir;
 
+    /**
+     * MCP 配置目录（data/integrations），启动时解析并缓存。
+     */
     private Path configRoot;
+
+    /**
+     * 内存中的 MCP 服务定义，以服务名为键，保证与磁盘文件一致。
+     */
     private final Map<String, McpServerParameters> mcpServers = new LinkedHashMap<>();
 
-    /** 启动时从独立的 MCP 配置目录恢复定义并同步到引擎管理器。 */
+    /**
+     * 启动时从独立的 MCP 配置目录恢复定义并同步到引擎管理器。
+     */
     @Init
     public void init() {
+        //1. 准备配置根目录，确保 mcp 子目录存在。
         configRoot = Paths.get(dataDir).toAbsolutePath().normalize().resolve("integrations");
         try {
             Files.createDirectories(configRoot.resolve("mcp"));
+            //2. 恢复历史配置并同步到引擎管理器。
             loadAll();
         } catch (IOException e) {
             throw new IllegalStateException("Cannot initialize integrations", e);
@@ -53,6 +70,8 @@ public class IntegrationServiceImpl implements IntegrationService {
      * 返回 MCP 配置摘要。
      *
      * <p>Header 与环境变量只暴露 {@code hasSecrets}，不会把具体密钥回传给浏览器。</p>
+     *
+     * @return MCP 配置摘要列表
      */
     public List<Map<String, Object>> listMcp() {
         List<Map<String, Object>> result = new ArrayList<>();
@@ -69,7 +88,12 @@ public class IntegrationServiceImpl implements IntegrationService {
         return result;
     }
 
-    /** 校验、持久化并热更新 MCP 服务；同名配置采用替换语义。 */
+    /**
+     * 校验、持久化并热更新 MCP 服务；同名配置采用替换语义。
+     *
+     * @param request MCP 配置请求
+     * @throws IllegalArgumentException 名称为空或格式非法时抛出
+     */
     public void saveMcp(McpConfigRequest request) {
         String name = requireName(request == null ? null : request.getName());
         McpServerParameters params = toMcp(request);
@@ -78,7 +102,11 @@ public class IntegrationServiceImpl implements IntegrationService {
         write("mcp", name, request);
     }
 
-    /** 同时删除磁盘配置和所有已实例化引擎中的 MCP 客户端。 */
+    /**
+     * 同时删除磁盘配置和所有已实例化引擎中的 MCP 客户端。
+     *
+     * @param name MCP Server 名称
+     */
     public void removeMcp(String name) {
         name = requireName(name);
         mcpServers.remove(name);
@@ -90,6 +118,8 @@ public class IntegrationServiceImpl implements IntegrationService {
      * 恢复全部配置文件。
      *
      * <p>先解析为请求 DTO，再转换成框架参数，确保启动恢复与 HTTP 保存走同一套规则。</p>
+     *
+     * @throws IOException 读取配置目录失败时抛出
      */
     private void loadAll() throws IOException {
         try (Stream<Path> paths = Files.list(configRoot.resolve("mcp"))) {
@@ -108,6 +138,12 @@ public class IntegrationServiceImpl implements IntegrationService {
         }
     }
 
+    /**
+     * 将请求 DTO 转换为框架 MCP 参数。
+     *
+     * @param request MCP 配置请求
+     * @return 框架可用的 MCP 连接参数
+     */
     private McpServerParameters toMcp(McpConfigRequest request) {
         McpServerParameters params = new McpServerParameters();
         params.setTransport(request.getTransport());
@@ -122,6 +158,13 @@ public class IntegrationServiceImpl implements IntegrationService {
         return params;
     }
 
+    /**
+     * 将配置序列化为 JSON 写入磁盘。
+     *
+     * @param type 配置类型目录（如 mcp）
+     * @param name 配置名称
+     * @param value 待序列化对象
+     */
     private void write(String type, String name, Object value) {
         try {
             Files.write(configRoot.resolve(type).resolve(name + ".json"),
@@ -131,6 +174,12 @@ public class IntegrationServiceImpl implements IntegrationService {
         }
     }
 
+    /**
+     * 删除磁盘上的配置文件。
+     *
+     * @param type 配置类型目录
+     * @param name 配置名称
+     */
     private void delete(String type, String name) {
         try {
             Files.deleteIfExists(configRoot.resolve(type).resolve(name + ".json"));
@@ -139,6 +188,13 @@ public class IntegrationServiceImpl implements IntegrationService {
         }
     }
 
+    /**
+     * 校验集成名称并返回原值。
+     *
+     * @param name 原始名称
+     * @return 去除首尾空白后的合法名称
+     * @throws IllegalArgumentException 名称不符合白名单时抛出
+     */
     private String requireName(String name) {
         String value = name == null ? "" : name.trim();
         if (!value.matches("[A-Za-z0-9][A-Za-z0-9._-]{0,63}")) {

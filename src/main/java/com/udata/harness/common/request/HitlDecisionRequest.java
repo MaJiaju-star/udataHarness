@@ -10,11 +10,34 @@ import java.util.List;
  * callUuid 提交，不能只使用 toolName，因为同一批次可能出现多个同名工具调用。</p>
  */
 public class HitlDecisionRequest {
+    /**
+     * 目标会话标识。
+     */
     private String sessionId;
+
+    /**
+     * 审批动作：approve/skip/reject。
+     */
     private String action;
+
+    /**
+     * 可选审批备注。
+     */
     private String comment;
+
+    /**
+     * 是否永久允许本批工具（会话级）。
+     */
     private boolean alwaysAllow;
+
+    /**
+     * 本批待审批工具调用的 callUuid 列表。
+     */
     private List<String> callUuids;
+
+    /**
+     * 可选修改后的工具参数（按 callUuid 对应）。
+     */
     private Map<String, Object> modifiedArgs;
 
     public String getSessionId() {

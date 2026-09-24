@@ -13,28 +13,68 @@ import java.util.Map;
  * userId 拼接磁盘路径。</p>
  */
 public interface UserWorkspaceService {
-    /** 校验 userId，并返回已存在或新创建的用户工作区绝对路径。 */
+    /**
+     * 校验 userId，并返回已存在或新创建的用户工作区绝对路径。
+     *
+     * @param userId 当前用户标识
+     * @return 用户工作区绝对路径
+     */
     Path getOrCreate(String userId);
 
-    /** 返回当前用户已注册的工作区，按最近打开时间倒序排列。 */
+    /**
+     * 返回当前用户已注册的工作区，按最近打开时间倒序排列。
+     *
+     * @param userId 当前用户标识
+     * @return 工作区列表
+     */
     List<WorkspaceMetadata> list(String userId);
 
-    /** 返回当前用户正在使用的工作区。 */
+    /**
+     * 返回当前用户正在使用的工作区。
+     *
+     * @param userId 当前用户标识
+     * @return 当前激活工作区元数据
+     */
     WorkspaceMetadata getActive(String userId);
 
-    /** 注册本地目录并立即将其设为当前工作区。 */
+    /**
+     * 注册本地目录并立即将其设为当前工作区。
+     *
+     * @param userId 当前用户标识
+     * @param path 本地目录绝对路径
+     * @return 注册后的工作区元数据
+     */
     WorkspaceMetadata register(String userId, String path);
 
-    /** 激活已注册的工作区。 */
+    /**
+     * 激活已注册的工作区。
+     *
+     * @param userId 当前用户标识
+     * @param workspaceId 已注册工作区标识
+     * @return 激活后的工作区元数据
+     */
     WorkspaceMetadata activate(String userId, String workspaceId);
 
-    /** 返回后端允许浏览的本地目录根节点。 */
+    /**
+     * 返回后端允许浏览的本地目录根节点。
+     *
+     * @return 根目录节点列表
+     */
     List<Map<String, Object>> roots();
 
-    /** 返回指定本地目录的直接子目录。 */
+    /**
+     * 返回指定本地目录的直接子目录。
+     *
+     * @param path 父目录绝对路径
+     * @return 子目录节点列表
+     */
     List<Map<String, Object>> children(String path);
 
-    /** 返回容纳全部用户目录的应用工作区根路径。 */
+    /**
+     * 返回容纳全部用户目录的应用工作区根路径。
+     *
+     * @return 工作区根路径
+     */
     Path getWorkspaceRoot();
 
     /**

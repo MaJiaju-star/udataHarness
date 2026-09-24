@@ -40,40 +40,84 @@ import java.util.concurrent.ConcurrentHashMap;
  */
 @Component
 public class UserHarnessEngineServiceImpl implements UserHarnessEngineService {
+    /**
+     * 用户设置文件中记录沙箱开关的属性键。
+     */
     private static final String SANDBOX_ENABLED_KEY = "sandboxEnabled";
+
+    /**
+     * 共享的图表渲染工具实例，供各用户引擎注册（无状态，可复用）。
+     */
     private static final ChartTool CHART_TOOL = new ChartTool();
+
+    /**
+     * 共享的 AntV 图表渲染工具实例，供各用户引擎注册（无状态，可复用）。
+     */
     private static final AntVChartTool ANTV_CHART_TOOL = new AntVChartTool();
 
+    /**
+     * 会话仓储，用于按用户装配 SessionProvider 与恢复历史消息。
+     */
     @Inject
     private SessionRepository sessionRepository;
 
+    /**
+     * 用户工作区服务，用于解析用户当前激活的工作目录作为引擎工作区。
+     */
     @Inject
     private UserWorkspaceService workspaces;
 
+    /**
+     * 应用数据目录，用户级数据（设置、MCP 配置等）的根路径。
+     */
     @Inject("${agent.data-dir:./data}")
     private String dataDir;
 
+    /**
+     * 用户工作区内 Solon 约定的配置目录名，技能与设置都置于其下。
+     */
     @Inject("${agent.harness-home:.soloncode}")
     private String harnessHome;
 
+    /**
+     * 引擎系统提示词，可配置以约束智能体行为。
+     */
     @Inject("${agent.system-prompt:You are a careful coding agent. Inspect the workspace, explain material changes, and verify your work.}")
     private String systemPrompt;
 
+    /**
+     * 单次运行的 ReAct 最大轮次上限，防止死循环。
+     */
     @Inject("${agent.max-turns:100}")
     private int maxTurns;
 
+    /**
+     * 沙箱默认开关，用户未显式设置偏好时采用该值。
+     */
     @Inject("${agent.sandbox.enabled:true}")
     private boolean sandboxEnabledByDefault = true;
 
+    /**
+     * Web 工具总开关，关闭后 websearch/codesearch/webfetch 一并禁用（适合内网）。
+     */
     @Inject("${agent.tools.web.enabled:true}")
     private boolean webToolsEnabled = true;
 
+    /**
+     * Web 搜索工具开关。
+     */
     @Inject("${agent.tools.web.websearch-enabled:true}")
     private boolean webSearchEnabled = true;
 
+    /**
+     * 代码检索工具开关。
+     */
     @Inject("${agent.tools.web.codesearch-enabled:true}")
     private boolean codeSearchEnabled = true;
 
+    /**
+     * 网页抓取工具开关。
+     */
     @Inject("${agent.tools.web.webfetch-enabled:true}")
     private boolean webFetchEnabled = true;
 
@@ -93,35 +137,67 @@ public class UserHarnessEngineServiceImpl implements UserHarnessEngineService {
     @Inject("${agent.context.compression-max-messages:160}")
     private int compressionMaxMessages;
 
-    /** 达到模型上下文窗口的该比例时触发压缩，取值范围为 0 到 1。 */
+    /**
+     * 达到模型上下文窗口的该比例时触发压缩，取值范围为 0 到 1。
+     */
     @Inject("${agent.context.compression-max-context-ratio:0.75}")
     private double compressionMaxContextRatio;
 
-    /** 模型声明的物理上下文窗口，用于让压缩器按模型能力计算安全余量。 */
+    /**
+     * 模型声明的物理上下文窗口，用于让压缩器按模型能力计算安全余量。
+     */
     @Inject("${agent.model.context-length:1000000}")
     private long modelContextLength;
 
-    /** 模型请求总尝试次数，包含第一次请求。 */
+    /**
+     * 模型请求总尝试次数，包含第一次请求。
+     */
     @Inject("${agent.model.retry.max-attempts:3}")
     private int modelMaxAttempts;
 
+    /**
+     * 默认模型配置名（用于 UI 展示与选择）。
+     */
     @Inject("${agent.model.default:deepseek-flash}")
     private String modelName;
 
+    /**
+     * 模型 API 基础地址。
+     */
     @Inject("${agent.model.api-url:https://api.deepseek.com}")
     private String apiUrl;
 
+    /**
+     * 模型 API 密钥，优先由环境变量 {@code AGENT_API_KEY} 注入。
+     */
     @Inject("${agent.model.api-key:}")
     private String apiKey;
 
+    /**
+     * 模型提供方协议，默认 OpenAI 兼容。
+     */
     @Inject("${agent.model.provider:openai}")
     private String provider;
 
+    /**
+     * 实际调用的模型标识。
+     */
     @Inject("${agent.model.model:deepseek-v4-flash}")
     private String model;
 
+    /**
+     * 已构建引擎缓存，按用户 Id 隔离，保证同一用户只初始化一次。
+     */
     private final Map<String, HarnessEngine> engines = new ConcurrentHashMap<>();
+
+    /**
+     * 共享的 MCP 服务定义，变更时同步到所有已创建引擎。
+     */
     private final Map<String, McpServerParameters> mcpServers = new ConcurrentHashMap<>();
+
+    /**
+     * 各用户沙箱开关偏好缓存，来源于用户设置文件。
+     */
     private final Map<String, Boolean> sandboxPreferences = new ConcurrentHashMap<>();
 
     /**
@@ -129,20 +205,33 @@ public class UserHarnessEngineServiceImpl implements UserHarnessEngineService {
      *
      * <p>用户标识先经过目录安全校验。缓存键使用规范化后的 userId，保证并发请求不会
      * 为同一用户创建多个 HarnessEngine，也防止跨用户复用会话与工作目录。</p>
+     *
+     * @param userId 原始用户标识
+     * @return 该用户专属的 HarnessEngine（首次调用时创建）
      */
     public HarnessEngine get(String userId) {
         String safeUserId = UserWorkspaceService.requireUserId(userId);
         return engines.computeIfAbsent(safeUserId, this::build);
     }
 
-    /** 返回用户持久化的沙箱设置；首次读取时回退到应用默认值。 */
+    /**
+     * 返回用户持久化的沙箱设置；首次读取时回退到应用默认值。
+     *
+     * @param userId 目标用户标识
+     * @return 该用户当前生效的沙箱开关
+     */
     @Override
     public boolean isSandboxEnabled(String userId) {
         String safeUserId = UserWorkspaceService.requireUserId(userId);
         return sandboxPreferences.computeIfAbsent(safeUserId, this::loadSandboxPreference);
     }
 
-    /** 保存用户沙箱设置，并同步到已经创建的 HarnessEngine。 */
+    /**
+     * 保存用户沙箱设置，并同步到已经创建的 HarnessEngine。
+     *
+     * @param userId 目标用户标识
+     * @param enabled 是否启用沙箱
+     */
     @Override
     public void setSandboxEnabled(String userId, boolean enabled) {
         String safeUserId = UserWorkspaceService.requireUserId(userId);
@@ -154,13 +243,21 @@ public class UserHarnessEngineServiceImpl implements UserHarnessEngineService {
         }
     }
 
-    /** 清除用户引擎缓存；工作区切换后的下一次访问会重新构建。 */
+    /**
+     * 清除用户引擎缓存；工作区切换后的下一次访问会重新构建。
+     *
+     * @param userId 目标用户标识
+     */
     @Override
     public void resetUser(String userId) {
         engines.remove(UserWorkspaceService.requireUserId(userId));
     }
 
-    /** 返回当前进程已经实例化的引擎视图，不会主动为未访问用户创建实例。 */
+    /**
+     * 返回当前进程已经实例化的引擎视图，不会主动为未访问用户创建实例。
+     *
+     * @return 已缓存引擎集合（实时视图）
+     */
     public Collection<HarnessEngine> all() {
         return engines.values();
     }
@@ -169,6 +266,8 @@ public class UserHarnessEngineServiceImpl implements UserHarnessEngineService {
      * 刷新指定用户的 Skill、共享 Agent 挂载和主 Agent。
      *
      * <p>刷新只影响能力定义，不替换用户的 SessionProvider 或工作区。</p>
+     *
+     * @param userId 目标用户标识
      */
     public void refreshUserCapabilities(String userId) {
         HarnessEngine engine = get(userId);
@@ -177,12 +276,20 @@ public class UserHarnessEngineServiceImpl implements UserHarnessEngineService {
         engine.refreshMainAgent();
     }
 
-    /** 判断某个 Skill 是否已经进入该用户当前引擎的有效能力集合。 */
+    /**
+     * 判断某个 Skill 是否已经进入该用户当前引擎的有效能力集合。
+     *
+     * @param userId 目标用户标识
+     * @param skillName 技能名称
+     * @return 已加载时为 true
+     */
     public boolean isSkillLoaded(String userId, String skillName) {
         return get(userId).getSkills().stream().anyMatch(skill -> skillName.equals(skill.getName()));
     }
 
-    /** 共享 Subagent 定义变化后，刷新所有已实例化引擎的 Agent 挂载。 */
+    /**
+     * 共享 Subagent 定义变化后，刷新所有已实例化引擎的 Agent 挂载。
+     */
     public void refreshAgentsForAll() {
         for (HarnessEngine engine : engines.values()) {
             engine.refreshMount("@shared-agents");
@@ -194,6 +301,9 @@ public class UserHarnessEngineServiceImpl implements UserHarnessEngineService {
      * 保存运行时 MCP 定义并热更新所有现存引擎。
      *
      * <p>尚未创建的用户引擎会在 {@link #build(String)} 时读取缓存中的同一份配置。</p>
+     *
+     * @param name MCP Server 名称
+     * @param parameters MCP 连接参数
      */
     public void putMcp(String name, McpServerParameters parameters) {
         mcpServers.put(name, parameters);
@@ -203,7 +313,11 @@ public class UserHarnessEngineServiceImpl implements UserHarnessEngineService {
         }
     }
 
-    /** 从全局缓存和所有已创建引擎中移除指定 MCP 服务。 */
+    /**
+     * 从全局缓存和所有已创建引擎中移除指定 MCP 服务。
+     *
+     * @param name MCP Server 名称
+     */
     public void removeMcp(String name) {
         mcpServers.remove(name);
         engines.values().forEach(engine -> engine.removeMcpServer(name));
@@ -220,6 +334,9 @@ public class UserHarnessEngineServiceImpl implements UserHarnessEngineService {
      *   <li>沙箱禁止访问用户主目录，写操作仍受权限规则约束；</li>
      *   <li>已保存的 MCP 定义在引擎对外可见前全部挂载。</li>
      * </ul>
+     *
+     * @param userId 已校验的目标用户标识
+     * @return 完整初始化的用户级 HarnessEngine
      */
     private HarnessEngine build(String userId) {
         Path workspace = workspaces.getOrCreate(userId);
@@ -288,7 +405,11 @@ public class UserHarnessEngineServiceImpl implements UserHarnessEngineService {
         return engine;
     }
 
-    /** 根据总开关和细粒度开关生成不向模型暴露的网络工具列表。 */
+    /**
+     * 根据总开关和细粒度开关生成不向模型暴露的网络工具列表。
+     *
+     * @return 需要屏蔽的 Web 工具名列表
+     */
     List<String> disabledWebTools() {
         List<String> tools = new ArrayList<>();
         if (!webToolsEnabled || !webSearchEnabled) {
@@ -303,14 +424,24 @@ public class UserHarnessEngineServiceImpl implements UserHarnessEngineService {
         return tools;
     }
 
-    /** 从用户设置文件读取沙箱开关。 */
+    /**
+     * 从用户设置文件读取沙箱开关。
+     *
+     * @param userId 目标用户标识
+     * @return 已保存的开关；未设置时回退应用默认值
+     */
     private boolean loadSandboxPreference(String userId) {
         Properties properties = loadUserSettings(userId);
         return Boolean.parseBoolean(properties.getProperty(
                 SANDBOX_ENABLED_KEY, String.valueOf(sandboxEnabledByDefault)));
     }
 
-    /** 将沙箱开关写入用户设置文件。 */
+    /**
+     * 将沙箱开关写入用户设置文件。
+     *
+     * @param userId 目标用户标识
+     * @param enabled 是否启用沙箱
+     */
     private void saveSandboxPreference(String userId, boolean enabled) {
         Properties properties = loadUserSettings(userId);
         properties.setProperty(SANDBOX_ENABLED_KEY, String.valueOf(enabled));
@@ -325,7 +456,12 @@ public class UserHarnessEngineServiceImpl implements UserHarnessEngineService {
         }
     }
 
-    /** 读取用户设置；文件尚不存在时返回空配置。 */
+    /**
+     * 读取用户设置；文件尚不存在时返回空配置。
+     *
+     * @param userId 目标用户标识
+     * @return 用户设置属性集
+     */
     private Properties loadUserSettings(String userId) {
         Properties properties = new Properties();
         Path file = userSettingsFile(userId);
@@ -340,7 +476,12 @@ public class UserHarnessEngineServiceImpl implements UserHarnessEngineService {
         }
     }
 
-    /** 返回位于应用数据目录内的用户设置文件。 */
+    /**
+     * 返回位于应用数据目录内的用户设置文件。
+     *
+     * @param userId 目标用户标识
+     * @return {@code <data-dir>/users/<userId>/settings.properties} 绝对路径
+     */
     private Path userSettingsFile(String userId) {
         return Paths.get(dataDir).toAbsolutePath().normalize()
                 .resolve("users").resolve(userId).resolve("settings.properties");
@@ -351,15 +492,23 @@ public class UserHarnessEngineServiceImpl implements UserHarnessEngineService {
      *
      * <p>列表项支持 name、model、api-url、api-key、provider 和 context-length；其中只有
      * name/model 通常需要逐项配置。</p>
+     *
+     * @return 从应用配置读取的模型列表
      */
     private List<ChatConfig> loadModelConfigs() {
         return loadModelConfigs(Solon.cfg());
     }
 
-    /** 使用给定属性集构建模型配置，供启动配置加载和单元测试复用。 */
+    /**
+     * 使用给定属性集构建模型配置，供启动配置加载和单元测试复用。
+     *
+     * @param rootProps 模型配置属性源
+     * @return 模型配置列表；未配置列表时回退到单模型配置
+     */
     List<ChatConfig> loadModelConfigs(Props rootProps) {
         List<ChatConfig> result = new ArrayList<>();
         if (rootProps != null) {
+            //1. 逐项读取 agent.model.models 列表，每项继承公共连接配置。
             for (Props props : rootProps.getListedProp("agent.model.models")) {
                 String configuredModel = props.get("model");
                 if (Utils.isBlank(configuredModel)) {
@@ -375,6 +524,7 @@ public class UserHarnessEngineServiceImpl implements UserHarnessEngineService {
                 result.add(config);
             }
         }
+        //2. 列表为空时回退到旧版单模型配置，保证向后兼容。
         if (result.isEmpty()) {
             ChatConfig config = new ChatConfig();
             config.setName(modelName);

@@ -32,7 +32,9 @@ import java.util.Map;
 @Controller
 @Mapping("/api/capabilities")
 public class CapabilityController {
-    /** 能力库、用户激活状态及 Harness 刷新的统一应用服务。 */
+    /**
+     * 能力库、用户激活状态及 Harness 刷新的统一应用服务。
+     */
     @Inject
     private CapabilityService capabilities;
 
