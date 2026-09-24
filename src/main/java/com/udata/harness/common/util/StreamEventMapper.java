@@ -12,6 +12,7 @@ import org.noear.solon.ai.agent.react.task.ReasonEndEvent;
 import org.noear.solon.ai.agent.react.task.ReasonStartEvent;
 import org.noear.solon.ai.agent.react.task.ToolCallEndEvent;
 import org.noear.solon.ai.agent.react.task.ToolCallStartEvent;
+import org.noear.solon.ai.harness.agent.TaskWrapEvent;
 import org.noear.solon.ai.agent.react.intercept.HITLTask;
 import org.noear.solon.ai.chat.event.ChatEventType;
 
@@ -105,6 +106,15 @@ public final class StreamEventMapper {
     }
 
     public static String map(AgentEvent agentEvent) {
+        return ONode.serialize(mapEvent(agentEvent));
+    }
+
+    /** 将框架事件映射为可继续补充上下文字段的结构化对象。 */
+    private static Map<String, Object> mapEvent(AgentEvent agentEvent) {
+        if (agentEvent instanceof TaskWrapEvent taskEvent) {
+            return mapTaskEvent(taskEvent);
+        }
+
         String type = agentEvent.getClass().getSimpleName();
         Map<String, Object> event = base("chunk", agentEvent);
 
@@ -167,7 +177,33 @@ public final class StreamEventMapper {
                 && !(agentEvent instanceof RunEndEvent)) {
             event.put("content", agentEvent.getText());
         }
-        return ONode.serialize(event);
+        return event;
+    }
+
+    /**
+     * 解包子智能体事件，并保留父任务、子任务及内部事件类型。
+     *
+     * <p>前端以 taskId 聚合并行输出，subtype 则复用主智能体已有的文本、思考和
+     * 工具事件语义，避免把多个子智能体的流式内容混成一段文本。</p>
+     */
+    private static Map<String, Object> mapTaskEvent(TaskWrapEvent taskEvent) {
+        Map<String, Object> event = mapEvent(taskEvent.getRealEvent());
+        String subtype = String.valueOf(event.get("type"));
+        String parentRunId = taskEvent.getParentRunId();
+        String taskId = taskEvent.getTaskId();
+        String subagentId = (parentRunId == null ? taskEvent.getRunId() : parentRunId)
+                + ":" + (taskId == null ? taskEvent.getRunId() : taskId);
+        event.put("type", "subagent_event");
+        event.put("subtype", subtype);
+        event.put("parentRunId", parentRunId);
+        event.put("childRunId", taskEvent.getRunId());
+        event.put("taskId", taskId);
+        event.put("subagentId", subagentId);
+        event.put("taskIndex", taskEvent.getTaskIndex());
+        event.put("agentName", taskEvent.getTaskAgentName());
+        event.put("description", taskEvent.getTaskDescription());
+        event.put("multitask", taskEvent.isMultitask());
+        return event;
     }
 
     /** 将一次模型调用返回的真实 Token 用量写入 SSE 事件。 */

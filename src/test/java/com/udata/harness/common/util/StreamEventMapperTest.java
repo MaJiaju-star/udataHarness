@@ -13,6 +13,8 @@ import org.noear.solon.ai.agent.react.intercept.HITLTask;
 import org.noear.solon.ai.agent.react.task.ReasonDeltaEvent;
 import org.noear.solon.ai.agent.react.task.ReasonEndEvent;
 import org.noear.solon.ai.agent.react.task.ReasonStartEvent;
+import org.noear.solon.ai.harness.agent.TaskTalent;
+import org.noear.solon.ai.harness.agent.TaskWrapEvent;
 import org.noear.solon.ai.chat.ChatResponse;
 import org.noear.solon.ai.chat.event.ChatEvent;
 import org.noear.solon.ai.chat.event.ChatEventDefault;
@@ -27,6 +29,7 @@ import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
@@ -170,6 +173,39 @@ class StreamEventMapperTest {
         assertEquals("response-1:0:0", event.get("streamId").getString());
         assertEquals("read", event.get("toolName").getString());
         assertEquals("{\"file_", event.get("content").getString());
+    }
+
+    @Test
+    void mapsWrappedSubagentEventWithTaskContext() {
+        ReActTrace parentTrace = new ReActTrace();
+        ChatEvent textDelta = ChatEventDefault.of(ChatEventType.TEXT_DELTA)
+                .text("正在分析后端模块")
+                .build();
+        ReasonDeltaEvent childEvent = new ReasonDeltaEvent(new ReActTrace(), textDelta);
+        TaskTalent.MultiTaskOp task = new TaskTalent.MultiTaskOp();
+        task.index = 2;
+        task.agent_name = "explore";
+        task.description = "分析后端模块";
+        TaskWrapEvent wrapped = new TaskWrapEvent(
+                parentTrace, "task-2", task, true, childEvent);
+
+        ONode event = ONode.ofJson(StreamEventMapper.map(wrapped));
+
+        assertEquals("subagent_event", event.get("type").getString());
+        assertEquals("text", event.get("subtype").getString());
+        assertEquals("task-2", event.get("taskId").getString());
+        assertEquals(2, event.get("taskIndex").getInt());
+        assertEquals("explore", event.get("agentName").getString());
+        assertEquals("分析后端模块", event.get("description").getString());
+        assertEquals("正在分析后端模块", event.get("content").getString());
+        assertTrue(event.get("multitask").getBoolean());
+
+        TaskWrapEvent sameAgentSecondTask = new TaskWrapEvent(
+                parentTrace, "task-3", task, true, childEvent);
+        ONode secondEvent = ONode.ofJson(StreamEventMapper.map(sameAgentSecondTask));
+        assertNotEquals(
+                event.get("subagentId").getString(),
+                secondEvent.get("subagentId").getString());
     }
 
     @Test

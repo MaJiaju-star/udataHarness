@@ -1128,6 +1128,77 @@ button, input, textarea, select { outline: none; }
     animation: blink 0.8s steps(1) infinite;
 }
 
+.subagent-card, .runtime-chunk-card {
+    overflow: hidden;
+    margin: 10px 0;
+    border: 1px solid var(--border-default);
+    border-radius: 12px;
+    background: var(--surface-1);
+    box-shadow: 0 3px 12px var(--shadow-color);
+}
+.subagent-card.running { border-color: color-mix(in srgb, var(--accent) 52%, var(--border-default)); }
+.subagent-card.error { border-color: color-mix(in srgb, var(--danger) 45%, var(--border-default)); }
+.subagent-heading, .runtime-chunk-card > button {
+    display: flex;
+    width: 100%;
+    min-height: 48px;
+    align-items: center;
+    gap: 9px;
+    padding: 8px 11px;
+    border: 0;
+    color: var(--text-primary);
+    background: transparent;
+    text-align: left;
+}
+.subagent-heading:hover, .runtime-chunk-card > button:hover { background: var(--surface-2); }
+.subagent-icon {
+    display: grid;
+    width: 29px;
+    height: 29px;
+    flex: 0 0 29px;
+    place-items: center;
+    border-radius: 9px;
+    color: var(--accent-dark);
+    background: var(--accent-soft);
+}
+.subagent-card.error .subagent-icon { color: var(--danger); background: color-mix(in srgb, var(--danger) 10%, transparent); }
+.subagent-title { min-width: 0; flex: 1; }
+.subagent-title b, .subagent-title small { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.subagent-title b { font-size: 11.5px; }
+.subagent-title small { margin-top: 2px; color: var(--text-secondary); font-size: 9.5px; }
+.subagent-heading > i {
+    padding: 3px 6px;
+    border-radius: 999px;
+    color: var(--accent-dark);
+    background: var(--accent-soft);
+    font-size: 8.5px;
+    font-style: normal;
+    font-weight: 700;
+}
+.subagent-status { flex: 0 0 auto; color: var(--text-secondary); font-size: 9px; }
+.subagent-card.running .subagent-status { color: var(--accent-dark); }
+.subagent-card.error .subagent-status { color: var(--danger); }
+.subagent-content { padding: 0 10px 10px 49px; }
+.subagent-content .thinking-card, .subagent-content .tool-call { margin-block: 7px; }
+.subagent-stream, .runtime-chunk-card > pre {
+    max-height: 320px;
+    margin: 7px 0 0;
+    overflow: auto;
+    padding: 10px 11px;
+    border-radius: 9px;
+    color: var(--code-text);
+    background: var(--code-bg);
+    font-family: "Cascadia Code", "SFMono-Regular", Consolas, monospace;
+    font-size: 10px;
+    line-height: 1.65;
+    white-space: pre-wrap;
+    word-break: break-word;
+}
+.runtime-chunk-card > button > span { display: flex; min-width: 0; flex: 1; align-items: center; gap: 6px; }
+.runtime-chunk-card b { font-size: 10.5px; }
+.runtime-chunk-card small { overflow: hidden; color: var(--text-secondary); font-size: 9px; text-overflow: ellipsis; white-space: nowrap; }
+.runtime-chunk-card > pre { margin: 0 10px 10px; }
+
 .file-activity-summary {
     max-width: 760px;
     margin: 16px 0 4px;
@@ -1854,8 +1925,11 @@ button, input, textarea, select { outline: none; }
     .markdown-body { font-size: 13px; line-height: 1.68; }
     .markdown-body pre { max-width: calc(100vw - 58px); font-size: 10.5px; }
     .markdown-body table { display: block; overflow-x: auto; white-space: nowrap; }
-    .tool-call, .thinking-card, .hitl-card { max-width: 100%; }
+    .tool-call, .thinking-card, .hitl-card, .subagent-card, .runtime-chunk-card { max-width: 100%; }
     .thinking-card > button { padding: 9px; }
+    .subagent-heading { gap: 7px; padding-inline: 8px; }
+    .subagent-content { padding: 0 8px 8px; }
+    .subagent-status { display: none; }
     .thinking-title small { max-width: 46vw; }
     .thinking-content { margin-left: 18px; }
     .thinking-content pre { max-height: 190px; font-size: 10.5px; }

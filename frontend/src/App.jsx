@@ -126,13 +126,17 @@ function mergeThinkingActivity(activities, event) {
             type: "thinking",
             reasonId: event.reasonId || null,
             content: asText(event.content),
-            active: event.finished !== true
+            active: event.finished !== true,
+            source: "native"
         });
     } else {
         next[index] = {
             ...next[index],
-            content: mergeStreamText(next[index].content, event.content),
-            active: event.finished !== true
+            content: next[index].source === "embedded"
+                ? asText(event.content)
+                : mergeStreamText(next[index].content, event.content),
+            active: event.finished !== true,
+            source: "native"
         };
     }
     return next;
@@ -145,7 +149,7 @@ function mergeThinkingActivity(activities, event) {
  * <think>...</think>。因此不能只依赖 SSE type，必须基于该 reason 的累计内容解析；
  * 同时保留 text 活动，避免过程正文被统一堆到所有工具卡之后。
  */
-function mergeReasonContentActivities(activities, reasonBuffers, event) {
+function mergeReasonContentActivities(activities, reasonBuffers, event, preserveNativeThinking = false) {
     const nextActivities = (activities || []).map(item => ({...item}));
     const nextBuffers = {...(reasonBuffers || {})};
     const reasonId = event.reasonId || `anonymous-${event.runId || "run"}`;
@@ -162,7 +166,10 @@ function mergeReasonContentActivities(activities, reasonBuffers, event) {
     const textId = `text-${reasonId}`;
     let textIndex = nextActivities.findIndex(item => item.id === textId);
 
-    if (parsed.thinking) {
+    const nativeThinking = preserveNativeThinking
+        && thinkingIndex >= 0
+        && nextActivities[thinkingIndex].source === "native";
+    if (parsed.thinking && !nativeThinking) {
         const thinkingItem = {
             id: thinkingId,
             type: "thinking",
@@ -170,7 +177,8 @@ function mergeReasonContentActivities(activities, reasonBuffers, event) {
             content: thinkingIndex >= 0
                 ? mergeStreamText(nextActivities[thinkingIndex].content, parsed.thinking)
                 : parsed.thinking,
-            active: parsed.pending && event.finished !== true
+            active: parsed.pending && event.finished !== true,
+            source: "embedded"
         };
         if (thinkingIndex >= 0) {
             nextActivities[thinkingIndex] = {...nextActivities[thinkingIndex], ...thinkingItem};
@@ -198,6 +206,186 @@ function mergeReasonContentActivities(activities, reasonBuffers, event) {
     }
 
     return {activities: nextActivities, reasonBuffers: nextBuffers};
+}
+
+function mergeSubagentTool(tools, activities, event) {
+    const nextTools = (tools || []).map(tool => ({...tool}));
+    let nextActivities = (activities || []).map(item => ({...item}));
+    const subtype = event.subtype;
+    const ensureActivity = callId => {
+        if (!nextActivities.some(item => item.type === "tool" && item.callId === callId)) {
+            nextActivities.push({id: `tool-${callId}`, type: "tool", callId});
+        }
+    };
+    if (subtype === "tool_args_start") {
+        if (!nextTools.some(tool => tool.streamId === event.streamId)) {
+            const tool = {
+                callId: `subagent-stream-${event.streamId || uid()}`,
+                streamId: event.streamId,
+                providerCallId: event.callId,
+                name: event.toolName || "正在生成工具调用",
+                argsText: "",
+                generating: true,
+                running: false,
+                streamed: true
+            };
+            nextTools.push(tool);
+        }
+    } else if (subtype === "tool_args_delta") {
+        let index = nextTools.findIndex(tool => tool.streamId === event.streamId);
+        if (index < 0) {
+            const tool = {
+                callId: `subagent-stream-${event.streamId || uid()}`,
+                streamId: event.streamId,
+                providerCallId: event.callId,
+                name: event.toolName || "正在生成工具调用",
+                argsText: "",
+                generating: true,
+                running: false,
+                streamed: true
+            };
+            nextTools.push(tool);
+            index = nextTools.length - 1;
+        }
+        nextTools[index] = {
+            ...nextTools[index],
+            providerCallId: event.callId || nextTools[index].providerCallId,
+            name: event.toolName || nextTools[index].name,
+            argsText: `${nextTools[index].argsText || ""}${asText(event.content)}`
+        };
+    } else if (subtype === "tool_args_end") {
+        const index = nextTools.findIndex(tool => tool.streamId === event.streamId);
+        if (index >= 0) nextTools[index] = {
+            ...nextTools[index],
+            providerCallId: event.callId || nextTools[index].providerCallId,
+            name: event.toolName || nextTools[index].name,
+            argsText: asText(event.content) || nextTools[index].argsText,
+            generating: false
+        };
+    } else if (subtype === "tool_start") {
+        nextActivities = nextActivities.map(item =>
+            item.type === "thinking" && item.active ? {...item, active: false} : item);
+        let index = event.callId
+            ? nextTools.findIndex(tool => tool.callId === event.callId || tool.providerCallId === event.callId)
+            : -1;
+        if (index < 0) {
+            index = nextTools.findIndex(tool => tool.streamed && !tool.executionStarted
+                && event.toolName && tool.name === event.toolName);
+        }
+        if (index < 0) {
+            index = nextTools.findIndex(tool => tool.streamed && !tool.executionStarted);
+        }
+        if (index < 0) {
+            const tool = {callId: event.callId || uid(), name: event.toolName || "tool"};
+            nextTools.push(tool);
+            index = nextTools.length - 1;
+        }
+        const previousCallId = nextTools[index].callId;
+        const callId = event.callId || previousCallId;
+        nextTools[index] = {
+            ...nextTools[index],
+            callId,
+            name: event.toolName || nextTools[index].name,
+            args: event.args || {},
+            generating: false,
+            running: true,
+            executionStarted: true
+        };
+        if (callId !== previousCallId) {
+            nextActivities = nextActivities.map(item =>
+                item.type === "tool" && item.callId === previousCallId
+                    ? {...item, callId}
+                    : item);
+        }
+        ensureActivity(callId);
+    } else if (subtype === "tool_end") {
+        let index = event.callId
+            ? nextTools.findIndex(tool => tool.callId === event.callId || tool.providerCallId === event.callId)
+            : nextTools.findIndex(tool => tool.running);
+        if (index < 0) {
+            const tool = {callId: event.callId || uid(), name: event.toolName || "tool"};
+            nextTools.push(tool);
+            index = nextTools.length - 1;
+        }
+        nextTools[index] = {
+            ...nextTools[index],
+            running: false,
+            generating: false,
+            durationMs: event.durationMs,
+            output: event.error || event.content,
+            error: Boolean(event.error)
+        };
+        ensureActivity(nextTools[index].callId);
+    }
+    return {tools: nextTools, activities: nextActivities};
+}
+
+function subagentEventId(event) {
+    return event.subagentId || event.taskId || event.childRunId || event.runId
+        || `${event.agentName || "agent"}-${event.taskIndex || 1}`;
+}
+
+function mergeSubagentEvent(subagents, event) {
+    const subagentId = subagentEventId(event);
+    const current = subagents?.[subagentId] || {
+        subagentId,
+        taskId: event.taskId,
+        index: event.taskIndex || 1,
+        agentName: event.agentName || "subagent",
+        description: event.description || "子任务",
+        multitask: Boolean(event.multitask),
+        status: "running",
+        tools: [],
+        activities: [],
+        reasonBuffers: {},
+        nativeThinkingReasons: {}
+    };
+    const next = {
+        ...current,
+        taskId: event.taskId || current.taskId,
+        index: event.taskIndex || current.index,
+        agentName: event.agentName || current.agentName,
+        description: event.description || current.description,
+        multitask: event.multitask ?? current.multitask,
+        activities: [...(current.activities || [])],
+        reasonBuffers: {...(current.reasonBuffers || {})},
+        nativeThinkingReasons: {...(current.nativeThinkingReasons || {})}
+    };
+    if (event.subtype === "thinking") {
+        const reasonId = event.reasonId || `anonymous-${event.runId || "run"}`;
+        next.nativeThinkingReasons[reasonId] = true;
+        next.activities = mergeThinkingActivity(next.activities, event);
+    } else if (["text", "text_replay", "chunk"].includes(event.subtype)) {
+        const reasonId = event.reasonId || `anonymous-${event.runId || "run"}`;
+        const merged = mergeReasonContentActivities(
+            next.activities,
+            next.reasonBuffers,
+            event,
+            Boolean(next.nativeThinkingReasons[reasonId]));
+        next.activities = merged.activities;
+        next.reasonBuffers = merged.reasonBuffers;
+    } else if (event.subtype === "run_start") {
+        next.status = "running";
+    } else if (event.subtype === "run_end") {
+        next.status = "success";
+        next.activities = next.activities.map(item =>
+            item.type === "thinking" && item.active ? {...item, active: false} : item);
+    } else if (event.subtype === "run_pending") {
+        next.status = "pending";
+        next.activities = next.activities.map(item =>
+            item.type === "thinking" && item.active ? {...item, active: false} : item);
+    } else if (event.subtype === "error") {
+        next.status = "error";
+        next.activities = next.activities.map(item =>
+            item.type === "thinking" && item.active ? {...item, active: false} : item);
+        next.error = event.message || event.content || "子智能体执行失败";
+    }
+    const toolState = mergeSubagentTool(next.tools, next.activities, event);
+    next.tools = toolState.tools;
+    next.activities = toolState.activities;
+    if (event.usage) next.usage = event.usage;
+    if (event.durationMs != null) next.durationMs = event.durationMs;
+    return {...(subagents || {}), [subagentId]: next};
 }
 
 function restoreHistory(history = []) {
@@ -617,7 +805,9 @@ function App() {
                 ...message,
                 tools: [...(message.tools || [])],
                 activities: [...(message.activities || [])],
-                reasonBuffers: {...(message.reasonBuffers || {})}
+                reasonBuffers: {...(message.reasonBuffers || {})},
+                subagents: {...(message.subagents || {})},
+                runtimeChunks: {...(message.runtimeChunks || {})}
             };
             if (event.type === "text" || event.type === "text_replay") {
                 const merged = mergeReasonContentActivities(
@@ -723,6 +913,28 @@ function App() {
                     output: event.error || event.content, error: Boolean(event.error)
                 };
             }
+            if (event.type === "subagent_event") {
+                const subagentId = subagentEventId(event);
+                if (!next.activities.some(item => item.type === "subagent" && item.subagentId === subagentId)) {
+                    next.activities.push({id: `subagent-${subagentId}`, type: "subagent", subagentId});
+                }
+                next.subagents = mergeSubagentEvent(next.subagents, {...event, subagentId});
+            }
+            if (event.type === "chunk" && event.content) {
+                const chunkId = `${event.runId || "run"}-${event.chunkType || "chunk"}`;
+                const currentChunk = next.runtimeChunks[chunkId] || {
+                    id: chunkId,
+                    chunkType: event.chunkType || "运行事件",
+                    content: ""
+                };
+                next.runtimeChunks[chunkId] = {
+                    ...currentChunk,
+                    content: mergeStreamText(currentChunk.content, event.content)
+                };
+                if (!next.activities.some(item => item.type === "runtime_chunk" && item.chunkId === chunkId)) {
+                    next.activities.push({id: `runtime-${chunkId}`, type: "runtime_chunk", chunkId});
+                }
+            }
             if (event.type === "hitl") {
                 next.hitl = event;
                 // HITL 是等待用户决策的正常暂停，不应和普通运行错误同时展示。
@@ -768,6 +980,8 @@ function App() {
                 tools: [],
                 activities: [],
                 reasonBuffers: {},
+                subagents: {},
+                runtimeChunks: {},
                 finished: false
             }
         ]);
@@ -1577,6 +1791,14 @@ function Message({message, onDecide, onOpenFile}) {
                     const tool = message.tools?.find(item => item.callId === activity.callId);
                     return tool ? <ToolCall key={tool.callId} tool={tool}/> : null;
                 }
+                if (activity.type === "subagent") {
+                    const subagent = message.subagents?.[activity.subagentId];
+                    return subagent ? <SubagentCard key={activity.id} subagent={subagent}/> : null;
+                }
+                if (activity.type === "runtime_chunk") {
+                    const chunk = message.runtimeChunks?.[activity.chunkId];
+                    return chunk ? <RuntimeChunkCard key={activity.id} chunk={chunk}/> : null;
+                }
                 if (activity.type === "text" && activity.content) {
                     return <div className="markdown-body assistant timeline-text" key={activity.id}>
                         <ReactMarkdown remarkPlugins={[remarkGfm]}>{activity.content}</ReactMarkdown>
@@ -1594,7 +1816,10 @@ function Message({message, onDecide, onOpenFile}) {
             {message.role === "assistant" && message.finished &&
                 <FileActivitySummary tools={message.tools} activities={message.fileActivities}
                                      onOpenFile={onOpenFile}/>}
-            {!parsed.visible && !thinking && !message.tools?.length && message.role === "assistant" && !message.error &&
+            {!parsed.visible && !thinking && !message.tools?.length
+                && !Object.keys(message.subagents || {}).length
+                && !Object.keys(message.runtimeChunks || {}).length
+                && message.role === "assistant" && !message.error &&
                 <div className="typing-row inline"><span/><span/><span/></div>}
             {message.hitl && <HitlCard event={message.hitl} onDecide={onDecide}/>}
             {message.error && <div className="message-error"><X size={16}/>{message.error}</div>}
@@ -1659,6 +1884,76 @@ function Thinking({content, active = false}) {
     </div>;
 }
 
+function SubagentCard({subagent}) {
+    const running = subagent.status === "running";
+    const [open, setOpen] = useState(false);
+    const activities = subagent.activities || [];
+    const activityToolIds = new Set(
+        activities.filter(item => item.type === "tool").map(item => item.callId)
+    );
+    const shortId = String(subagent.taskId || subagent.subagentId || "task")
+        .split(":").at(-1).slice(-6);
+    const status = subagent.status === "success" ? "已完成"
+        : subagent.status === "error" ? "执行失败"
+            : subagent.status === "pending" ? "等待中" : "执行中";
+    const usage = subagent.usage?.totalTokens
+        ? `${formatTokens(subagent.usage.totalTokens)} tokens`
+        : subagent.durationMs != null ? `${subagent.durationMs} ms` : "";
+    return <section className={`subagent-card ${subagent.status || "running"}`}>
+        <button className="subagent-heading" onClick={() => setOpen(value => !value)} aria-expanded={open}>
+            <span className="subagent-icon">{running
+                ? <RefreshCw className="spin" size={15}/>
+                : subagent.status === "error" ? <X size={15}/> : <Bot size={15}/>}</span>
+            <span className="subagent-title">
+                <b>{subagent.agentName}</b>
+                <small>{subagent.description}</small>
+            </span>
+            <i title={subagent.subagentId}>{subagent.multitask
+                ? `并行 #${subagent.index} · ${shortId}`
+                : `任务 · ${shortId}`}</i>
+            <span className="subagent-status">{status}{usage ? ` · ${usage}` : ""}</span>
+            {open ? <ChevronDown size={15}/> : <ChevronRight size={15}/>}
+        </button>
+        {open && <div className="subagent-content">
+            {activities.map(activity => {
+                if (activity.type === "thinking") {
+                    return <Thinking key={`subagent-thinking-${activity.id}`}
+                                     content={activity.content} active={activity.active}/>;
+                }
+                if (activity.type === "text" && activity.content) {
+                    return running
+                        ? <pre className="subagent-stream" key={activity.id}>{activity.content}</pre>
+                        : <div className="markdown-body assistant subagent-text" key={activity.id}>
+                            <ReactMarkdown remarkPlugins={[remarkGfm]}>{activity.content}</ReactMarkdown>
+                        </div>;
+                }
+                if (activity.type === "tool") {
+                    const tool = subagent.tools?.find(item => item.callId === activity.callId);
+                    return tool ? <ToolCall key={`subagent-tool-${tool.callId}`} tool={tool}/> : null;
+                }
+                return null;
+            })}
+            {subagent.tools?.filter(tool => !activityToolIds.has(tool.callId)
+                && (tool.executionStarted || tool.output || tool.error))
+                .map(tool => <ToolCall key={`subagent-extra-tool-${tool.callId}`} tool={tool}/>)}
+            {subagent.error && <div className="message-error"><X size={15}/>{subagent.error}</div>}
+            {!activities.length && !subagent.tools?.length && running &&
+                <div className="typing-row inline"><span/><span/><span/></div>}
+        </div>}
+    </section>;
+}
+
+function RuntimeChunkCard({chunk}) {
+    const [open, setOpen] = useState(false);
+    return <section className="runtime-chunk-card">
+        <button onClick={() => setOpen(value => !value)} aria-expanded={open}>
+            <span><Code2 size={14}/><b>运行事件</b><small>{chunk.chunkType}</small></span>
+            {open ? <ChevronDown size={15}/> : <ChevronRight size={15}/>}
+        </button>
+        {open && <pre>{chunk.content}</pre>}
+    </section>;
+}
+
 function ToolCall({tool}) {
     const [open, setOpen] = useState(Boolean(tool.generating));
     useEffect(() => {
@@ -1668,7 +1963,8 @@ function ToolCall({tool}) {
     const status = tool.generating ? "参数生成中" : tool.running ? "执行中" : `${tool.durationMs || 0} ms`;
     const details = tool.executionStarted
         ? JSON.stringify(tool.args || {}, null, 2)
-        : tool.argsText || "等待参数增量…";
+        : tool.argsText || "";
+    const showDetails = Boolean(details || tool.output);
     return <>
         <div className={`tool-call ${tool.generating ? "generating" : ""} ${tool.error ? "error" : ""}`}>
             <button onClick={() => setOpen(value => !value)}>
@@ -1678,7 +1974,7 @@ function ToolCall({tool}) {
                 <span><b>{tool.name}</b><small>{status}</small></span>
                 {open ? <ChevronDown size={15}/> : <ChevronRight size={15}/>}
             </button>
-            {open && <pre className={tool.generating ? "streaming-args" : ""}>
+            {open && showDetails && <pre className={tool.generating ? "streaming-args" : ""}>
                 {details}{tool.output ? `\n\n${tool.output}` : ""}
             </pre>}
         </div>
