@@ -13,42 +13,62 @@ solon.logging:
     console:
       level: INFO
 
+
+solon.config.load:
+#  - "classpath:${solon.env}/*.yml" #v2.7.6 后支持 * 表达式   #只加载内部文件
+  - "model.yml"                                             #先加载外部文件；如果没有则加载内部文件
+  - "./model.yml"                                             #先加载外部文件；如果没有则加载内部文件
+
 agent:
-  # Root directory; each user works under <workspace>/<userId>.
-  workspace: "${AGENT_WORKSPACE:./workspace}"
-  # Sessions and automations are stored under <data-dir>/users/<userId>.
-  data-dir: "${AGENT_DATA_DIR:./data}"
-  harness-home: ".soloncode"
-  max-turns: 100
-  context:
-    # Restore at most this many recent persisted messages for each new request.
-    session-window-size: 200
-    # Compress a long-running ReAct trace when either limit is reached.
-    compression-max-messages: 160
-    compression-max-context-ratio: 0.75
-  system-prompt: |
-    You are UData Harness, a careful coding agent.
-    Work only inside the configured workspace. Inspect before editing, preserve user changes,
-    explain material decisions, and verify changes with relevant builds or tests.
-  model:
-    default: "deepseek-flash"
-    retry:
-      # Total attempts, including the first request.
-      max-attempts: 3
-      # Base delay for exponential backoff with full jitter.
-      initial-delay-ms: 1000
-    api-url: "${AGENT_API_URL:https://api.xiaomimimo.com/v1}"
-    api-key: "${AGENT_API_KEY:sk-cig9xy7xloij1x8y68qywdo358forx0aj6296y37cew2mkft}"
-    provider: "${AGENT_PROVIDER:openai}"
-    # Declared model context window. The framework reserves 20K tokens for the
-    # system prompt, then starts compression at 75% of the effective budget.
-    context-length: 1000000
-    # Add or remove list items to control the models exposed by the composer.
-    models:
-      - name: "mimo-v2.6-flash"
-        model: "mimo-v2.6-flash"
-      - name: "mimo-v2.6-pro"
-        model: "mimo-v2.6-pro"
+  tools:
+    web:
+      # 内网部署可设为 false，一次禁用 websearch、codesearch 和 webfetch。
+      enabled: "${AGENT_WEB_TOOLS_ENABLED:true}"
+      # 总开关开启时，仍可分别控制每个网络工具。
+      websearch-enabled: "${AGENT_WEBSEARCH_ENABLED:true}"
+      codesearch-enabled: "${AGENT_CODESEARCH_ENABLED:true}"
+      webfetch-enabled: "${AGENT_WEBFETCH_ENABLED:true}"
+
+#agent:
+#  # Root directory; each user works under <workspace>/<userId>.
+#  workspace: "${AGENT_WORKSPACE:./workspace}"
+#  # Sessions and automations are stored under <data-dir>/users/<userId>.
+#  data-dir: "${AGENT_DATA_DIR:./data}"
+#  harness-home: ".soloncode"
+#  max-turns: 100
+#  context:
+#    # Restore at most this many recent persisted messages for each new request.
+#    session-window-size: 200
+#    # Compress a long-running ReAct trace when either limit is reached.
+#    compression-max-messages: 160
+#    compression-max-context-ratio: 0.75
+#  system-prompt: |
+#    You are UData Harness, a careful coding agent.
+#    Work only inside the configured workspace. Inspect before editing, preserve user changes,
+#    explain material decisions, and verify changes with relevant builds or tests.
+#  model:
+#    default: "deepseek-flash"
+#    retry:
+#      # Total attempts, including the first request.
+#      max-attempts: 3
+#      # Base delay for exponential backoff with full jitter.
+#      initial-delay-ms: 1000
+#    api-url: "${AGENT_API_URL:https://lmp.mucfc.com/v1}"
+#    api-key: "${AGENT_API_KEY:sk-0fdb900107f54140a22750ed95e5fe2d}"
+#    provider: "${AGENT_PROVIDER:openai}"
+#    # Declared model context window. The framework reserves 20K tokens for the
+#    # system prompt, then starts compression at 75% of the effective budget.
+#    context-length: 1000000
+#    # Add or remove list items to control the models exposed by the composer.
+#    models:
+#      - name: "Code"
+#        model: "Code"
+#      - name: "Ultra"
+#        model: "Ultra"
+#      - name: "Standard"
+#        model: "Standard"
+#      - name: "Flash"
+#        model: "Flash"
 #
 #    api-url: "${AGENT_API_URL:https://api.deepseek.com}"
 #    api-key: "${AGENT_API_KEY:sk-216497bffef942c09b250555bb4ac5ac}"

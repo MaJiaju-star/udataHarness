@@ -57,6 +57,22 @@ class UserHarnessEngineServiceImplTest {
         assertEquals("deepseek-v4-pro", models.get(1).getModel());
     }
 
+    @Test
+    void disablesAllWebToolsWithMasterSwitch() throws Exception {
+        UserHarnessEngineServiceImpl service = configuredService();
+        inject(service, "webToolsEnabled", false);
+
+        assertEquals(List.of("websearch", "codesearch", "webfetch"), service.disabledWebTools());
+    }
+
+    @Test
+    void disablesIndividualWebTool() throws Exception {
+        UserHarnessEngineServiceImpl service = configuredService();
+        inject(service, "codeSearchEnabled", false);
+
+        assertEquals(List.of("codesearch"), service.disabledWebTools());
+    }
+
     private UserHarnessEngineServiceImpl configuredService() throws Exception {
         UserHarnessEngineServiceImpl service = new UserHarnessEngineServiceImpl();
         inject(service, "modelContextLength", 1000000L);

@@ -57,6 +57,18 @@ public class UserHarnessEngineServiceImpl implements UserHarnessEngineService {
     @Inject("${agent.max-turns:100}")
     private int maxTurns;
 
+    @Inject("${agent.tools.web.enabled:true}")
+    private boolean webToolsEnabled = true;
+
+    @Inject("${agent.tools.web.websearch-enabled:true}")
+    private boolean webSearchEnabled = true;
+
+    @Inject("${agent.tools.web.codesearch-enabled:true}")
+    private boolean codeSearchEnabled = true;
+
+    @Inject("${agent.tools.web.webfetch-enabled:true}")
+    private boolean webFetchEnabled = true;
+
     /**
      * 每次新请求从持久化会话中恢复的最近消息数。
      *
@@ -202,6 +214,7 @@ public class UserHarnessEngineServiceImpl implements UserHarnessEngineService {
                 .compressionThreshold(compressionMaxMessages, compressionMaxContextRatio)
                 .sessionProvider(sessionRepository)
                 .toolsAdd(Arrays.asList(ToolName.TOOL_ALL_PUBLIC.getName(), ToolName.TOOL_HITL.getName()))
+                .disallowedToolsAdd(disabledWebTools())
                 .extensionAdd((engine, agentName, agentBuilder) -> {
                     agentBuilder.defaultToolAdd(CHART_TOOL);
                     agentBuilder.defaultToolAdd(ANTV_CHART_TOOL);
@@ -245,6 +258,21 @@ public class UserHarnessEngineServiceImpl implements UserHarnessEngineService {
                 .build());
         mcpServers.forEach(engine::addMcpServer);
         return engine;
+    }
+
+    /** 根据总开关和细粒度开关生成不向模型暴露的网络工具列表。 */
+    List<String> disabledWebTools() {
+        List<String> tools = new ArrayList<>();
+        if (!webToolsEnabled || !webSearchEnabled) {
+            tools.add(ToolName.TOOL_WEBSEARCH.getName());
+        }
+        if (!webToolsEnabled || !codeSearchEnabled) {
+            tools.add(ToolName.TOOL_CODESEARCH.getName());
+        }
+        if (!webToolsEnabled || !webFetchEnabled) {
+            tools.add(ToolName.TOOL_WEBFETCH.getName());
+        }
+        return tools;
     }
 
     /**
