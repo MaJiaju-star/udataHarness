@@ -2,6 +2,7 @@ package com.udata.harness.common.util;
 
 import com.udata.harness.common.support.ToolCallStreamEvent;
 import org.noear.snack4.ONode;
+import org.noear.solon.Utils;
 import org.noear.solon.ai.AiUsage;
 import org.noear.solon.ai.agent.AgentEvent;
 import org.noear.solon.ai.agent.trace.Metrics;
@@ -44,7 +45,7 @@ public final class StreamEventMapper {
     }
 
     public static String hitl(HITLTask task) {
-        return hitl(List.of(task));
+        return hitl(Utils.asList(task));
     }
 
     /**
@@ -95,14 +96,16 @@ public final class StreamEventMapper {
         if (suspendedReasonId == null) {
             return false;
         }
-        if (event instanceof ReasonStartEvent reason) {
+        if (event instanceof ReasonStartEvent) {
+            ReasonStartEvent reason = (ReasonStartEvent) event;
             return suspendedReasonId.equals(reason.getReasonId());
         }
-        if (event instanceof ReasonDeltaEvent reason) {
+        if (event instanceof ReasonDeltaEvent) {
+            ReasonDeltaEvent reason = (ReasonDeltaEvent) event;
             return suspendedReasonId.equals(reason.getReasonId());
         }
-        return event instanceof ReasonEndEvent reason
-                && suspendedReasonId.equals(reason.getReasonId());
+        return event instanceof ReasonEndEvent
+                && suspendedReasonId.equals(((ReasonEndEvent) event).getReasonId());
     }
 
     public static String map(AgentEvent agentEvent) {
@@ -111,8 +114,8 @@ public final class StreamEventMapper {
 
     /** 将框架事件映射为可继续补充上下文字段的结构化对象。 */
     private static Map<String, Object> mapEvent(AgentEvent agentEvent) {
-        if (agentEvent instanceof TaskWrapEvent taskEvent) {
-            return mapTaskEvent(taskEvent);
+        if (agentEvent instanceof TaskWrapEvent) {
+            return mapTaskEvent((TaskWrapEvent) agentEvent);
         }
 
         String type = agentEvent.getClass().getSimpleName();
@@ -120,7 +123,8 @@ public final class StreamEventMapper {
 
         if (agentEvent instanceof RunStartEvent) {
             event.put("type", "run_start");
-        } else if (agentEvent instanceof RunEndEvent runEnd) {
+        } else if (agentEvent instanceof RunEndEvent) {
+            RunEndEvent runEnd = (RunEndEvent) agentEvent;
             if (runEnd.getResponse().getSession().isPending()) {
                 event.put("type", "run_pending");
             } else if (runEnd.isAbnormal()) {
@@ -130,9 +134,10 @@ public final class StreamEventMapper {
                 event.put("type", "run_end");
             }
             putRunMetrics(event, runEnd.getMetrics());
-        } else if (agentEvent instanceof ToolCallStreamEvent toolStream) {
-            mapToolStreamEvent(event, toolStream);
-        } else if (agentEvent instanceof ToolCallStartEvent action) {
+        } else if (agentEvent instanceof ToolCallStreamEvent) {
+            mapToolStreamEvent(event, (ToolCallStreamEvent) agentEvent);
+        } else if (agentEvent instanceof ToolCallStartEvent) {
+            ToolCallStartEvent action = (ToolCallStartEvent) agentEvent;
             event.put("type", "tool_start");
             event.put("callId", action.getCallId());
             event.put("toolName", action.getToolName());
@@ -140,7 +145,8 @@ public final class StreamEventMapper {
             if (action.hasMeta("fileOperation")) {
                 event.put("fileOperation", action.getMeta().get("fileOperation"));
             }
-        } else if (agentEvent instanceof ToolCallEndEvent observation) {
+        } else if (agentEvent instanceof ToolCallEndEvent) {
+            ToolCallEndEvent observation = (ToolCallEndEvent) agentEvent;
             event.put("type", "tool_end");
             event.put("callId", observation.getCallId());
             event.put("toolName", observation.getToolName());
@@ -149,15 +155,18 @@ public final class StreamEventMapper {
             if (observation.getError() != null) {
                 event.put("error", observation.getError().getMessage());
             }
-        } else if (agentEvent instanceof ReasonStartEvent reason) {
+        } else if (agentEvent instanceof ReasonStartEvent) {
+            ReasonStartEvent reason = (ReasonStartEvent) agentEvent;
             event.put("type", "reason_start");
             event.put("reasonId", reason.getReasonId());
-        } else if (agentEvent instanceof ReasonDeltaEvent reason) {
+        } else if (agentEvent instanceof ReasonDeltaEvent) {
+            ReasonDeltaEvent reason = (ReasonDeltaEvent) agentEvent;
             event.put("type", reason.isThinking() ? "thinking" : "text");
             event.put("reasonId", reason.getReasonId());
             event.put("finished", reason.getChatEvent().is(ChatEventType.THINKING_END));
-        } else if (agentEvent instanceof ReasonEndEvent reason) {
-            boolean hasThinking = reason.getThinking() != null && !reason.getThinking().isBlank();
+        } else if (agentEvent instanceof ReasonEndEvent) {
+            ReasonEndEvent reason = (ReasonEndEvent) agentEvent;
+            boolean hasThinking = Utils.isNotBlank(reason.getThinking());
             event.put("type", hasThinking ? "thinking" : "text_replay");
             event.put("reasonId", reason.getReasonId());
             event.put("finished", true);

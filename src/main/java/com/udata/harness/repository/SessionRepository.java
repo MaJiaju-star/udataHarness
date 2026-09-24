@@ -2,6 +2,7 @@ package com.udata.harness.repository;
 
 import com.udata.harness.common.domain.SessionMetadata;
 import com.udata.harness.service.UserWorkspaceService;
+import org.noear.solon.Utils;
 import org.noear.solon.ai.agent.AgentSession;
 import org.noear.solon.ai.agent.AgentSessionProvider;
 import org.noear.solon.ai.agent.session.FileAgentSession;
@@ -65,7 +66,7 @@ public class SessionRepository implements AgentSessionProvider {
         SessionMetadata metadata = new SessionMetadata();
         metadata.setSessionId(sessionId);
         metadata.setUserId(userId);
-        metadata.setWorkspaceId(workspaceId == null || workspaceId.isBlank() ? "default" : workspaceId);
+        metadata.setWorkspaceId(Utils.isBlank(workspaceId) ? "default" : workspaceId);
         metadata.setTitle(normalizeTitle(title));
         metadata.setModel(model == null ? "" : model.trim());
         metadata.setPermissionMode("standard");
@@ -213,13 +214,12 @@ public class SessionRepository implements AgentSessionProvider {
         String firstPrompt = "";
         for (ChatMessage message : getSession(userId, sessionId).getMessages()) {
             if (message.getRole() == ChatRole.USER
-                    && message.getContent() != null
-                    && !message.getContent().isBlank()) {
+                    && Utils.isNotBlank(message.getContent())) {
                 firstPrompt = message.getContent();
                 break;
             }
         }
-        metadata.setTitle(normalizeTitle(firstPrompt.isBlank() ? prompt : firstPrompt));
+        metadata.setTitle(normalizeTitle(Utils.isBlank(firstPrompt) ? prompt : firstPrompt));
         save(userId, metadata);
         return metadata;
     }

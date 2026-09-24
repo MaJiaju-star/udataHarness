@@ -11,6 +11,7 @@ import com.udata.harness.service.ChatService;
 import com.udata.harness.service.SessionService;
 import com.udata.harness.service.UserHarnessEngineService;
 import com.udata.harness.service.UserWorkspaceService;
+import org.noear.solon.Utils;
 import org.noear.solon.ai.chat.ChatConfig;
 import org.noear.solon.ai.agent.AgentSession;
 import org.noear.solon.ai.chat.message.ChatMessage;
@@ -22,9 +23,11 @@ import org.noear.solon.annotation.Component;
 import org.noear.solon.annotation.Inject;
 
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.stream.Collectors;
 
 /**
  * 会话应用服务实现。
@@ -85,7 +88,7 @@ public class SessionServiceImpl implements SessionService {
         String workspaceId = workspaces.getActive(userId).getWorkspaceId();
         List<SessionMetadata> sessions = sessionRepository.list(userId).stream()
                 .filter(item -> workspaceId.equals(item.getWorkspaceId()))
-                .toList();
+                .collect(Collectors.toList());
         // active 是进程内实时状态，不写回会话元数据文件。
         sessions.forEach(item -> item.setActive(activeRuns.isActive(item.getSessionId())));
         return sessions;
@@ -101,7 +104,7 @@ public class SessionServiceImpl implements SessionService {
         HarnessEngine engine = engines.get(userId);
         String title = request == null ? null : request.getTitle();
         String model = request == null ? null : request.getModel();
-        if (model == null || model.isBlank()) {
+        if (Utils.isBlank(model)) {
             model = engine.getDefaultModel();
         }
         WorkspaceMetadata workspace = workspaces.getActive(userId);
@@ -116,8 +119,7 @@ public class SessionServiceImpl implements SessionService {
     @Override
     public SessionMetadata updatePermission(
             String userId, SessionPermissionRequest request) {
-        if (request == null || request.getSessionId() == null
-                || request.getSessionId().isBlank()) {
+        if (request == null || Utils.isBlank(request.getSessionId())) {
             throw new IllegalArgumentException("sessionId is required");
         }
         if (activeRuns.isActive(request.getSessionId())) {
@@ -151,8 +153,7 @@ public class SessionServiceImpl implements SessionService {
     /** 显式重命名会话，只更新产品元数据。 */
     @Override
     public SessionMetadata updateTitle(String userId, SessionTitleRequest request) {
-        if (request == null || request.getSessionId() == null
-                || request.getSessionId().isBlank()) {
+        if (request == null || Utils.isBlank(request.getSessionId())) {
             throw new IllegalArgumentException("sessionId is required");
         }
         return sessionRepository.updateTitle(
@@ -191,9 +192,11 @@ public class SessionServiceImpl implements SessionService {
         Map<String, Map<String, Object>> pendingTools = new LinkedHashMap<>();
         AgentSession session = sessionRepository.getSession(userId, sessionId);
         Object storedActivities = session.getContext().get(ChatServiceImpl.FILE_ACTIVITIES_KEY);
-        Map<?, ?> activitiesByRun = storedActivities instanceof Map<?, ?> map ? map : Map.of();
+        Map<?, ?> activitiesByRun = storedActivities instanceof Map<?, ?>
+                ? (Map<?, ?>) storedActivities : Collections.emptyMap();
         for (ChatMessage message : session.getMessages()) {
-            if (message instanceof ToolMessage toolMessage) {
+            if (message instanceof ToolMessage) {
+                ToolMessage toolMessage = (ToolMessage) message;
                 Map<String, Object> tool = pendingTools.get(toolMessage.getToolCallId());
                 if (tool != null) {
                     tool.put("output", toolMessage.getContent());
@@ -208,9 +211,10 @@ public class SessionServiceImpl implements SessionService {
             item.put("role", message.getRole().name().toLowerCase());
             item.put("content", message.getContent());
             item.put("thinking", message.isThinking());
-            if (message instanceof AssistantMessage assistantMessage
-                    && assistantMessage.getToolCalls() != null
-                    && !assistantMessage.getToolCalls().isEmpty()) {
+            if (message instanceof AssistantMessage
+                    && ((AssistantMessage) message).getToolCalls() != null
+                    && !((AssistantMessage) message).getToolCalls().isEmpty()) {
+                AssistantMessage assistantMessage = (AssistantMessage) message;
                 List<Map<String, Object>> tools = new ArrayList<>();
                 for (ToolCall call : assistantMessage.getToolCalls()) {
                     Map<String, Object> tool = new LinkedHashMap<>();

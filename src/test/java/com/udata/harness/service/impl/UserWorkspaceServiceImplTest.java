@@ -5,6 +5,7 @@ import org.junit.jupiter.api.io.TempDir;
 
 import java.nio.file.Path;
 import java.nio.file.Files;
+import java.nio.file.Paths;
 
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
@@ -34,7 +35,7 @@ class UserWorkspaceServiceImplTest {
                 tempDir.resolve("defaults"), tempDir.resolve("data"), allowed.toString());
 
         assertEquals(1, service.roots().size());
-        Path listed = Path.of(String.valueOf(service.children(allowed.toString()).get(0).get("path")));
+        Path listed = Paths.get(String.valueOf(service.children(allowed.toString()).get(0).get("path")));
         assertTrue(Files.isSameFile(project, listed));
 
         String workspaceId = service.register("alice", project.toString()).getWorkspaceId();

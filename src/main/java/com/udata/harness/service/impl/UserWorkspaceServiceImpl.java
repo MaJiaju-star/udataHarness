@@ -2,6 +2,7 @@ package com.udata.harness.service.impl;
 
 import com.udata.harness.common.domain.WorkspaceMetadata;
 import com.udata.harness.service.UserWorkspaceService;
+import org.noear.solon.Utils;
 
 import java.io.IOException;
 import java.io.InputStream;
@@ -16,6 +17,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Properties;
 import java.util.UUID;
+import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
 /**
@@ -138,7 +140,7 @@ public class UserWorkspaceServiceImpl implements UserWorkspaceService {
     /** 列出可供用户开始浏览的文件系统根节点。 */
     @Override
     public List<Map<String, Object>> roots() {
-        return allowedRoots.stream().map(this::directoryNode).toList();
+        return allowedRoots.stream().map(this::directoryNode).collect(Collectors.toList());
     }
 
     /** 列出目录的直接子目录，不递归扫描磁盘。 */
@@ -154,7 +156,7 @@ public class UserWorkspaceServiceImpl implements UserWorkspaceService {
                     .filter(item -> !isHidden(item))
                     .sorted(Comparator.comparing(item -> item.getFileName().toString().toLowerCase()))
                     .map(this::directoryNode)
-                    .toList();
+                    .collect(Collectors.toList());
         } catch (IOException e) {
             throw new IllegalStateException("Cannot list local directories", e);
         }
@@ -167,9 +169,9 @@ public class UserWorkspaceServiceImpl implements UserWorkspaceService {
 
     private List<Path> resolveAllowedRoots(String configured) {
         List<Path> roots = new ArrayList<>();
-        if (configured != null && !configured.isBlank()) {
+        if (Utils.isNotBlank(configured)) {
             for (String value : configured.split("[;\n]")) {
-                if (!value.isBlank()) {
+                if (Utils.isNotBlank(value)) {
                     roots.add(Paths.get(value.trim()).toAbsolutePath().normalize());
                 }
             }
@@ -180,7 +182,7 @@ public class UserWorkspaceServiceImpl implements UserWorkspaceService {
     }
 
     private Path resolveAllowed(String value) {
-        if (value == null || value.isBlank()) {
+        if (Utils.isBlank(value)) {
             throw new IllegalArgumentException("path is required");
         }
         Path path = Paths.get(value).toAbsolutePath().normalize();
@@ -207,8 +209,10 @@ public class UserWorkspaceServiceImpl implements UserWorkspaceService {
         }
     }
 
+    @SuppressWarnings("unchecked")
     private Map<String, Object> directoryNode(Path path) {
-        return Map.of("name", displayName(path), "path", path.toString(), "writable", Files.isWritable(path));
+        return Utils.asMap("name", displayName(path), "path", path.toString(),
+                "writable", Files.isWritable(path));
     }
 
     private boolean isHidden(Path path) {

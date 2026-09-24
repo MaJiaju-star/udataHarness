@@ -4,14 +4,19 @@ import com.udata.harness.common.domain.GlobalSearchResponse;
 import com.udata.harness.common.request.GlobalSearchRequest;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import org.noear.solon.Utils;
 import org.noear.solon.core.handle.DownloadedFile;
 import org.noear.solon.core.handle.UploadedFile;
 
 import java.io.ByteArrayInputStream;
+import java.io.ByteArrayOutputStream;
+import java.io.InputStream;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
 import java.util.Map;
+import java.util.stream.Collectors;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
@@ -41,12 +46,13 @@ class WorkspaceFileServiceImplTest {
         WorkspaceFileServiceImpl files = new WorkspaceFileServiceImpl(workspaces);
         Path workspace = workspaces.getOrCreate("alice");
         Files.createDirectories(workspace.resolve(".opencode"));
-        Files.writeString(workspace.resolve(".opencode/config.json"), "{}");
-        Files.writeString(workspace.resolve(".env.example"), "TOKEN=");
+        Files.write(workspace.resolve(".opencode/config.json"), "{}".getBytes(StandardCharsets.UTF_8));
+        Files.write(workspace.resolve(".env.example"), "TOKEN=".getBytes(StandardCharsets.UTF_8));
         Files.createDirectories(workspace.resolve(".git"));
 
         List<Map<String, Object>> tree = files.tree("alice", "", 3);
-        List<String> names = tree.stream().map(item -> String.valueOf(item.get("name"))).toList();
+        List<String> names = tree.stream().map(item -> String.valueOf(item.get("name")))
+                .collect(Collectors.toList());
 
         assertTrue(names.contains(".opencode"));
         assertTrue(names.contains(".env.example"));
@@ -67,7 +73,7 @@ class WorkspaceFileServiceImplTest {
         DownloadedFile download = files.download("alice", "artifacts/sample.bin");
 
         assertEquals("artifacts/sample.bin", saved.get("path"));
-        assertArrayEquals(content, download.getContent().readAllBytes());
+        assertArrayEquals(content, readAllBytes(download.getContent()));
         download.close();
     }
 
@@ -90,7 +96,7 @@ class WorkspaceFileServiceImplTest {
         WorkspaceFileServiceImpl files = new WorkspaceFileServiceImpl(workspaces);
         Path workspace = workspaces.getOrCreate("alice");
         Files.write(workspace.resolve("preview.png"), new byte[]{(byte) 0x89, 0x50, 0x4e, 0x47});
-        Files.writeString(workspace.resolve("README.md"), "# Preview");
+        Files.write(workspace.resolve("README.md"), "# Preview".getBytes(StandardCharsets.UTF_8));
 
         Map<String, Object> image = files.read("alice", "preview.png");
         Map<String, Object> markdown = files.read("alice", "README.md");
@@ -109,9 +115,9 @@ class WorkspaceFileServiceImplTest {
         files.save("alice", ".hidden/workspace.md", "workspace markdown");
         files.save("alice", "src/other.txt", "workspace text");
 
-        GlobalSearchRequest nameRequest = request("workspace", "name", List.of("java"));
+        GlobalSearchRequest nameRequest = request("workspace", "name", Utils.asList("java"));
         GlobalSearchResponse names = files.globalSearch("alice", nameRequest);
-        GlobalSearchRequest contentRequest = request("workspace", "content", List.of("java", "md"));
+        GlobalSearchRequest contentRequest = request("workspace", "content", Utils.asList("java", "md"));
         GlobalSearchResponse contents = files.globalSearch("alice", contentRequest);
 
         assertEquals(1, names.getTotalFiles());
@@ -120,7 +126,8 @@ class WorkspaceFileServiceImplTest {
         assertEquals(3, contents.getTotalMatches());
         assertEquals(2, contents.getItems().stream()
                 .filter(item -> item.getPath().endsWith("WorkspaceService.java"))
-                .findFirst().orElseThrow().getMatches().get(0).getLine());
+                .findFirst().orElseThrow(() -> new AssertionError("search result missing"))
+                .getMatches().get(0).getLine());
     }
 
     private GlobalSearchRequest request(String keyword, String mode, List<String> extensions) {
@@ -129,5 +136,16 @@ class WorkspaceFileServiceImplTest {
         request.setMode(mode);
         request.setExtensions(extensions);
         return request;
+    }
+
+    /** 以 Java 8 兼容方式读取下载响应流。 */
+    private byte[] readAllBytes(InputStream input) throws Exception {
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        byte[] buffer = new byte[1024];
+        int count;
+        while ((count = input.read(buffer)) >= 0) {
+            output.write(buffer, 0, count);
+        }
+        return output.toByteArray();
     }
 }

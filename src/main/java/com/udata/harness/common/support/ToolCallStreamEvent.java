@@ -1,5 +1,6 @@
 package com.udata.harness.common.support;
 
+import org.noear.solon.Utils;
 import org.noear.solon.ai.agent.AbsAgentEvent;
 import org.noear.solon.ai.agent.react.ReActTrace;
 import org.noear.solon.ai.chat.event.ChatEvent;
@@ -60,10 +61,10 @@ public class ToolCallStreamEvent extends AbsAgentEvent {
      */
     private String buildStreamId(ChatEvent event, ToolCall toolCall) {
         String index = toolCall == null ? null : toolCall.getIndex();
-        if (index == null || index.isBlank()) {
+        if (Utils.isBlank(index)) {
             index = event.getIndex() >= 0 ? String.valueOf(event.getIndex()) : event.getToolCallId();
         }
-        if (index == null || index.isBlank()) {
+        if (Utils.isBlank(index)) {
             index = "tool";
         }
         return String.valueOf(event.getResponseId()) + ":" + event.getStep() + ":" + index;

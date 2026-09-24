@@ -3,6 +3,7 @@ package com.udata.harness.common.util;
 import com.udata.harness.common.support.ToolCallStreamEvent;
 import org.junit.jupiter.api.Test;
 import org.noear.snack4.ONode;
+import org.noear.solon.Utils;
 import org.noear.solon.ai.AiUsage;
 import org.noear.solon.ai.agent.AgentSession;
 import org.noear.solon.ai.agent.session.InMemoryAgentSession;
@@ -70,17 +71,11 @@ class StreamEventMapperTest {
 
     @Test
     void marksAccumulatedTextFromToolCallReasonAsReplayCandidate() {
-        AssistantMessage toolCallMessage = (AssistantMessage) ChatMessage.fromJson("""
-                {
-                  "role": "assistant",
-                  "content": "好的，我先读取文件并分析数据。",
-                  "toolCalls": [{
-                    "id": "call-1",
-                    "name": "read",
-                    "arguments": {"file_path": "data.csv"}
-                  }]
-                }
-                """);
+        AssistantMessage toolCallMessage = (AssistantMessage) ChatMessage.fromJson(
+                "{\"role\":\"assistant\","
+                        + "\"content\":\"好的，我先读取文件并分析数据。\","
+                        + "\"toolCalls\":[{\"id\":\"call-1\",\"name\":\"read\","
+                        + "\"arguments\":{\"file_path\":\"data.csv\"}}]}");
         ReasonEndEvent toolCallReason = new ReasonEndEvent(
                 new ReActTrace(), streamingResponse(), toolCallMessage, 10L);
 
@@ -93,16 +88,10 @@ class StreamEventMapperTest {
 
     @Test
     void preservesThinkingWhenToolCallFinishesInTheSameChunk() {
-        AssistantMessage toolCallMessage = (AssistantMessage) ChatMessage.fromJson("""
-                {
-                  "role": "assistant",
-                  "toolCalls": [{
-                    "id": "call-2",
-                    "name": "bash",
-                    "arguments": {"command": "python analyze.py"}
-                  }]
-                }
-                """);
+        AssistantMessage toolCallMessage = (AssistantMessage) ChatMessage.fromJson(
+                "{\"role\":\"assistant\","
+                        + "\"toolCalls\":[{\"id\":\"call-2\",\"name\":\"bash\","
+                        + "\"arguments\":{\"command\":\"python analyze.py\"}}]}");
         AssistantMessage thinkingWithToolCall = new AssistantMessage(
                 "",
                 "我需要根据第一次工具结果继续分析。",
@@ -141,11 +130,11 @@ class StreamEventMapperTest {
     @Test
     void mapsEveryTaskInBatchWithStableCallUuid() {
         HITLTask first = new HITLTask(
-                "call-1", "bash", Map.of("command", "node --version"), "需要确认");
+                "call-1", "bash", Utils.asMap("command", "node --version"), "需要确认");
         HITLTask second = new HITLTask(
-                "call-2", "bash", Map.of("command", "python --version"), "需要确认");
+                "call-2", "bash", Utils.asMap("command", "python --version"), "需要确认");
 
-        ONode event = ONode.ofJson(StreamEventMapper.hitl(List.of(first, second)));
+        ONode event = ONode.ofJson(StreamEventMapper.hitl(Utils.asList(first, second)));
 
         assertEquals("hitl", event.get("type").getString());
         assertEquals(2, event.get("count").getInt());

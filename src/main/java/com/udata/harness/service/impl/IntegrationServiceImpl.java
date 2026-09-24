@@ -95,7 +95,8 @@ public class IntegrationServiceImpl implements IntegrationService {
         try (Stream<Path> paths = Files.list(configRoot.resolve("mcp"))) {
             paths.filter(path -> path.toString().endsWith(".json")).forEach(path -> {
                 try {
-                    McpConfigRequest request = ONode.ofJson(Files.readString(path)).toBean(McpConfigRequest.class);
+                    String content = new String(Files.readAllBytes(path), StandardCharsets.UTF_8);
+                    McpConfigRequest request = ONode.ofJson(content).toBean(McpConfigRequest.class);
                     String name = requireName(request.getName());
                     McpServerParameters parameters = toMcp(request);
                     mcpServers.put(name, parameters);
@@ -123,8 +124,8 @@ public class IntegrationServiceImpl implements IntegrationService {
 
     private void write(String type, String name, Object value) {
         try {
-            Files.writeString(configRoot.resolve(type).resolve(name + ".json"),
-                    ONode.ofBean(value).toJson(), StandardCharsets.UTF_8);
+            Files.write(configRoot.resolve(type).resolve(name + ".json"),
+                    ONode.ofBean(value).toJson().getBytes(StandardCharsets.UTF_8));
         } catch (IOException e) {
             throw new IllegalStateException("Cannot save integration", e);
         }

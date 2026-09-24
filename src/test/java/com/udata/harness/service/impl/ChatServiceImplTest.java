@@ -1,6 +1,7 @@
 package com.udata.harness.service.impl;
 
 import org.junit.jupiter.api.Test;
+import org.noear.solon.Utils;
 import org.noear.solon.ai.agent.react.intercept.HITLTask;
 import org.noear.solon.ai.agent.react.ReActTrace;
 import org.noear.solon.ai.agent.react.task.ToolCallEndEvent;
@@ -11,7 +12,7 @@ import org.junit.jupiter.api.io.TempDir;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.util.List;
+import java.nio.charset.StandardCharsets;
 import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -30,12 +31,12 @@ class ChatServiceImplTest {
         HITLTask anotherBash = task("call-2", "bash");
         HITLTask chart = task("call-3", "render_chart");
 
-        service.rememberAlwaysAllowedTools(firstSession, List.of(bash));
+        service.rememberAlwaysAllowedTools(firstSession, Utils.asList(bash));
 
-        assertTrue(service.areAllToolsAlwaysAllowed(firstSession, List.of(anotherBash)));
-        assertFalse(service.areAllToolsAlwaysAllowed(firstSession, List.of(chart)));
+        assertTrue(service.areAllToolsAlwaysAllowed(firstSession, Utils.asList(anotherBash)));
+        assertFalse(service.areAllToolsAlwaysAllowed(firstSession, Utils.asList(chart)));
         assertFalse(service.areAllToolsAlwaysAllowed(
-                InMemoryAgentSession.of("session-2"), List.of(anotherBash)));
+                InMemoryAgentSession.of("session-2"), Utils.asList(anotherBash)));
     }
 
     @Test
@@ -45,11 +46,11 @@ class ChatServiceImplTest {
         HITLTask bash = task("call-1", "bash");
         HITLTask chart = task("call-2", "render_chart");
 
-        service.rememberAlwaysAllowedTools(session, List.of(bash));
+        service.rememberAlwaysAllowedTools(session, Utils.asList(bash));
 
-        assertFalse(service.areAllToolsAlwaysAllowed(session, List.of(bash, chart)));
-        service.rememberAlwaysAllowedTools(session, List.of(chart));
-        assertTrue(service.areAllToolsAlwaysAllowed(session, List.of(bash, chart)));
+        assertFalse(service.areAllToolsAlwaysAllowed(session, Utils.asList(bash, chart)));
+        service.rememberAlwaysAllowedTools(session, Utils.asList(chart));
+        assertTrue(service.areAllToolsAlwaysAllowed(session, Utils.asList(bash, chart)));
     }
 
     @Test
@@ -70,7 +71,7 @@ class ChatServiceImplTest {
         ChatServiceImpl service = new ChatServiceImpl();
         InMemoryAgentSession session = InMemoryAgentSession.of("session-files");
         ReActTrace trace = new ReActTrace();
-        Files.writeString(tempDir.resolve("existing.txt"), "old");
+        Files.write(tempDir.resolve("existing.txt"), "old".getBytes(StandardCharsets.UTF_8));
 
         track(service, session, trace, "read-1", "read", "existing.txt");
         track(service, session, trace, "write-1", "write", "new.txt");
@@ -88,13 +89,13 @@ class ChatServiceImplTest {
 
     private void track(ChatServiceImpl service, InMemoryAgentSession session, ReActTrace trace,
                        String callId, String toolName, String filePath) {
-        Map<String, Object> args = Map.of("file_path", filePath);
+        Map<String, Object> args = Utils.asMap("file_path", filePath);
         service.trackFileActivity(tempDir, session, new ToolCallStartEvent(trace, callId, toolName, args));
         service.trackFileActivity(tempDir, session, new ToolCallEndEvent(
                 trace, callId, toolName, args, ChatMessage.ofTool("ok", toolName, callId), null, 10));
     }
 
     private static HITLTask task(String callUuid, String toolName) {
-        return new HITLTask(callUuid, toolName, Map.of("command", "echo ok"), "需要确认");
+        return new HITLTask(callUuid, toolName, Utils.asMap("command", "echo ok"), "需要确认");
     }
 }

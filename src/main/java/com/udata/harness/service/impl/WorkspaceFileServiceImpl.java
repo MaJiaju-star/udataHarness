@@ -6,6 +6,7 @@ import com.udata.harness.common.domain.SearchMatch;
 import com.udata.harness.common.request.GlobalSearchRequest;
 import com.udata.harness.service.UserWorkspaceService;
 import com.udata.harness.service.WorkspaceFileService;
+import org.noear.solon.Utils;
 import org.noear.solon.core.handle.DownloadedFile;
 import org.noear.solon.core.handle.UploadedFile;
 import org.noear.solon.annotation.Component;
@@ -15,6 +16,7 @@ import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.Paths;
 import java.nio.file.StandardOpenOption;
 import java.nio.file.StandardCopyOption;
 import java.net.URLConnection;
@@ -88,7 +90,7 @@ public class WorkspaceFileServiceImpl implements WorkspaceFileService {
             if (size > MAX_FILE_SIZE) {
                 throw new IllegalArgumentException("File too large (max 2MB)");
             }
-            result.put("content", Files.readString(file, StandardCharsets.UTF_8));
+            result.put("content", new String(Files.readAllBytes(file), StandardCharsets.UTF_8));
             return result;
         } catch (IOException e) {
             throw new IllegalStateException("Cannot read file", e);
@@ -106,7 +108,7 @@ public class WorkspaceFileServiceImpl implements WorkspaceFileService {
             if (file.getParent() != null) {
                 Files.createDirectories(file.getParent());
             }
-            Files.writeString(file, content == null ? "" : content, StandardCharsets.UTF_8,
+            Files.write(file, (content == null ? "" : content).getBytes(StandardCharsets.UTF_8),
                     StandardOpenOption.CREATE, StandardOpenOption.TRUNCATE_EXISTING);
             return read(userId, relative(root, file));
         } catch (IOException e) {
@@ -318,12 +320,12 @@ public class WorkspaceFileServiceImpl implements WorkspaceFileService {
     /** 将 multipart 文件流保存到指定相对目录。 */
     @Override
     public Map<String, Object> upload(String userId, String directory, UploadedFile file) {
-        if (file == null || file.getName() == null || file.getName().isBlank()) {
+        if (file == null || Utils.isBlank(file.getName())) {
             throw new IllegalArgumentException("file is required");
         }
         //1. 文件名只取最后一段，目录仍通过统一 resolve 执行 containment 校验。
         Path root = workspaces.getOrCreate(userId);
-        String fileName = Path.of(file.getName()).getFileName().toString();
+        String fileName = Paths.get(file.getName()).getFileName().toString();
         String parent = directory == null ? "" : directory.trim().replace('\\', '/');
         Path target = resolve(root, parent.isEmpty() ? fileName : parent + "/" + fileName, false);
 

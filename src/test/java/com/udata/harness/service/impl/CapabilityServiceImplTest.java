@@ -9,6 +9,8 @@ import org.noear.solon.ai.mcp.client.McpServerParameters;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.charset.StandardCharsets;
+import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 
@@ -42,7 +44,7 @@ class CapabilityServiceImplTest {
 
             @Override
             public java.util.Collection<HarnessEngine> all() {
-                return List.of();
+                return Collections.emptyList();
             }
 
             @Override
@@ -77,7 +79,8 @@ class CapabilityServiceImplTest {
         service.saveSkill(request);
         Path library = data.resolve("skill-library/review");
         Files.createDirectories(library.resolve("scripts"));
-        Files.writeString(library.resolve("scripts/check.js"), "console.log('ok')");
+        Files.write(library.resolve("scripts/check.js"),
+                "console.log('ok')".getBytes(StandardCharsets.UTF_8));
 
         service.activateSkill("alice", "review");
 

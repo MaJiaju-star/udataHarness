@@ -2,24 +2,26 @@ package com.udata.harness.common.support;
 
 import org.junit.jupiter.api.Test;
 import org.noear.snack4.ONode;
+import org.noear.solon.Utils;
 
-import java.util.List;
 import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
+@SuppressWarnings("unchecked")
 class ChartToolTest {
     private final ChartTool tool = new ChartTool();
 
     @Test
     void returnsASanitizedEChartsOption() {
-        String json = tool.renderEchart("季度收入", Map.of(
-                "tooltip", Map.of("trigger", "axis", "formatter", "<b>unsafe</b>"),
-                "xAxis", Map.of("type", "category", "data", List.of("Q1", "Q2")),
-                "yAxis", Map.of("type", "value"),
-                "series", List.of(Map.of("type", "bar", "data", List.of(12.5, 18.0)))));
+        String json = tool.renderEchart("季度收入", Utils.asMap(
+                "tooltip", Utils.asMap("trigger", "axis", "formatter", "<b>unsafe</b>"),
+                "xAxis", Utils.asMap("type", "category", "data", Utils.asList("Q1", "Q2")),
+                "yAxis", Utils.asMap("type", "value"),
+                "series", Utils.asList(Utils.asMap(
+                        "type", "bar", "data", Utils.asList(12.5, 18.0)))));
 
         Map<?, ?> result = ONode.deserialize(json, Map.class);
         assertEquals("echarts", result.get("engine"));
@@ -31,10 +33,10 @@ class ChartToolTest {
 
     @Test
     void rejectsExecutableUrlsAndUnknownSeries() {
-        assertThrows(IllegalArgumentException.class, () -> tool.renderEchart("bad", Map.of(
+        assertThrows(IllegalArgumentException.class, () -> tool.renderEchart("bad", Utils.asMap(
                 "backgroundColor", "javascript:alert(1)",
-                "series", List.of(Map.of("type", "line", "data", List.of(1))))));
-        assertThrows(IllegalArgumentException.class, () -> tool.renderEchart("bad", Map.of(
-                "series", List.of(Map.of("type", "custom", "data", List.of(1))))));
+                "series", Utils.asList(Utils.asMap("type", "line", "data", Utils.asList(1))))));
+        assertThrows(IllegalArgumentException.class, () -> tool.renderEchart("bad", Utils.asMap(
+                "series", Utils.asList(Utils.asMap("type", "custom", "data", Utils.asList(1))))));
     }
 }

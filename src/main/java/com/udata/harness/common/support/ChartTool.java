@@ -1,6 +1,7 @@
 package com.udata.harness.common.support;
 
 import org.noear.snack4.ONode;
+import org.noear.solon.Utils;
 import org.noear.solon.ai.annotation.ToolMapping;
 import org.noear.solon.ai.chat.tool.AbsToolProvider;
 import org.noear.solon.annotation.Param;
@@ -8,6 +9,7 @@ import org.noear.solon.annotation.Param;
 import java.lang.reflect.Array;
 import java.util.ArrayList;
 import java.util.Collection;
+import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
@@ -25,15 +27,15 @@ public class ChartTool extends AbsToolProvider {
     private static final int MAX_VALUES = 12_000;
     private static final int MAX_JSON_LENGTH = 256_000;
 
-    private static final Set<String> ALLOWED_TOP_LEVEL = Set.of(
+    private static final Set<String> ALLOWED_TOP_LEVEL = Collections.unmodifiableSet(Utils.asSet(
             "title", "legend", "grid", "dataset", "xAxis", "yAxis", "series",
             "tooltip", "dataZoom", "visualMap", "radar", "color", "backgroundColor",
-            "animation", "animationDuration", "aria");
-    private static final Set<String> ALLOWED_SERIES_TYPES = Set.of(
-            "line", "bar", "pie", "scatter", "radar", "heatmap", "funnel", "gauge");
-    private static final Set<String> BLOCKED_KEYS = Set.of(
+            "animation", "animationDuration", "aria"));
+    private static final Set<String> ALLOWED_SERIES_TYPES = Collections.unmodifiableSet(Utils.asSet(
+            "line", "bar", "pie", "scatter", "radar", "heatmap", "funnel", "gauge"));
+    private static final Set<String> BLOCKED_KEYS = Collections.unmodifiableSet(Utils.asSet(
             "__proto__", "prototype", "constructor", "formatter", "extracsstext",
-            "link", "sublink", "optiontocontent", "onclick", "transform", "reg");
+            "link", "sublink", "optiontocontent", "onclick", "transform", "reg"));
 
     /**
      * 接收模型生成的声明式 ECharts 配置，返回前端可直接消费的安全配置。
@@ -72,11 +74,11 @@ public class ChartTool extends AbsToolProvider {
         Map<String, Object> safeOption = (Map<String, Object>) sanitizeValue(null, selected, 0, budget);
         validateSeries(safeOption.get("series"));
         normalizeTooltip(safeOption);
-        if (!safeOption.containsKey("title") && title != null && !title.isBlank()) {
-            safeOption.put("title", Map.of("text", title.trim()));
+        if (!safeOption.containsKey("title") && Utils.isNotBlank(title)) {
+            safeOption.put("title", Utils.asMap("text", title.trim()));
         }
         safeOption.putIfAbsent("animationDuration", 450);
-        safeOption.putIfAbsent("aria", Map.of("enabled", true));
+        safeOption.putIfAbsent("aria", Utils.asMap("enabled", true));
 
         Map<String, Object> result = new LinkedHashMap<>();
         result.put("version", 1);
@@ -106,7 +108,8 @@ public class ChartTool extends AbsToolProvider {
         if (value == null || value instanceof Number || value instanceof Boolean) {
             return value;
         }
-        if (value instanceof String text) {
+        if (value instanceof String) {
+            String text = (String) value;
             String normalized = text.trim().toLowerCase(Locale.ROOT);
             if (normalized.startsWith("javascript:") || normalized.startsWith("data:")
                     || normalized.startsWith("http://") || normalized.startsWith("https://")
@@ -115,7 +118,8 @@ public class ChartTool extends AbsToolProvider {
             }
             return text.length() > 4_000 ? text.substring(0, 4_000) : text;
         }
-        if (value instanceof Map<?, ?> map) {
+        if (value instanceof Map<?, ?>) {
+            Map<?, ?> map = (Map<?, ?>) value;
             Map<String, Object> safe = new LinkedHashMap<>();
             for (Map.Entry<?, ?> entry : map.entrySet()) {
                 String childKey = String.valueOf(entry.getKey());
@@ -126,7 +130,8 @@ public class ChartTool extends AbsToolProvider {
             }
             return safe;
         }
-        if (value instanceof Collection<?> collection) {
+        if (value instanceof Collection<?>) {
+            Collection<?> collection = (Collection<?>) value;
             List<Object> safe = new ArrayList<>();
             for (Object item : collection) {
                 safe.add(sanitizeValue(key, item, depth + 1, budget));
@@ -152,14 +157,15 @@ public class ChartTool extends AbsToolProvider {
         if (value == null) {
             throw new IllegalArgumentException("option.series is required");
         }
-        List<?> series = value instanceof List<?> list ? list : List.of(value);
+        List<?> series = value instanceof List<?> ? (List<?>) value : Utils.asList(value);
         if (series.isEmpty() || series.size() > 20) {
             throw new IllegalArgumentException("option.series must contain 1 to 20 series");
         }
         for (Object item : series) {
-            if (!(item instanceof Map<?, ?> map)) {
+            if (!(item instanceof Map<?, ?>)) {
                 throw new IllegalArgumentException("every series must be an object");
             }
+            Map<?, ?> map = (Map<?, ?>) item;
             String type = String.valueOf(map.get("type")).toLowerCase(Locale.ROOT);
             if (!ALLOWED_SERIES_TYPES.contains(type)) {
                 throw new IllegalArgumentException("unsupported ECharts series type: " + type);
@@ -171,7 +177,8 @@ public class ChartTool extends AbsToolProvider {
     @SuppressWarnings("unchecked")
     private void normalizeTooltip(Map<String, Object> option) {
         Object tooltip = option.get("tooltip");
-        if (tooltip instanceof Map<?, ?> map) {
+        if (tooltip instanceof Map<?, ?>) {
+            Map<?, ?> map = (Map<?, ?>) tooltip;
             ((Map<String, Object>) map).put("renderMode", "richText");
         }
     }

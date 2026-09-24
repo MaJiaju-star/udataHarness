@@ -1,6 +1,7 @@
 package com.udata.harness.common.support;
 
 import org.noear.snack4.ONode;
+import org.noear.solon.Utils;
 import org.noear.solon.ai.annotation.ToolMapping;
 import org.noear.solon.ai.chat.tool.AbsToolProvider;
 import org.noear.solon.annotation.Param;
@@ -8,6 +9,7 @@ import org.noear.solon.annotation.Param;
 import java.lang.reflect.Array;
 import java.util.ArrayList;
 import java.util.Collection;
+import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
@@ -27,18 +29,18 @@ public class AntVChartTool extends AbsToolProvider {
     private static final int MAX_ROWS = 10_000;
 
     private static final Set<String> ALLOWED_CHART_TYPES =
-            Set.of("column", "bar", "line", "area", "pie", "scatter");
-    private static final Set<String> ALLOWED_CONFIG_KEYS = Set.of(
+            Collections.unmodifiableSet(Utils.asSet("column", "bar", "line", "area", "pie", "scatter"));
+    private static final Set<String> ALLOWED_CONFIG_KEYS = Collections.unmodifiableSet(Utils.asSet(
             "data", "xField", "yField", "colorField", "angleField", "seriesField",
             "shapeField", "sizeField", "stack", "group", "percent", "normalize",
             "sort", "transpose", "axis", "legend", "tooltip", "label", "style",
             "scale", "interaction", "animate", "theme", "padding", "inset",
             "height", "autoFit", "radius", "innerRadius", "smooth", "point",
-            "area", "line", "connectNulls");
-    private static final Set<String> BLOCKED_KEYS = Set.of(
+            "area", "line", "connectNulls"));
+    private static final Set<String> BLOCKED_KEYS = Collections.unmodifiableSet(Utils.asSet(
             "__proto__", "prototype", "constructor", "formatter", "innerhtml",
             "dangerouslysetinnerhtml", "onclick", "onready", "oninit", "onerror",
-            "link", "url", "src", "image", "transform", "callback");
+            "link", "url", "src", "image", "transform", "callback"));
 
     /**
      * 生成 AntV 统计图表配置。
@@ -79,7 +81,7 @@ public class AntVChartTool extends AbsToolProvider {
         validateConfig(normalizedType, safeConfig);
         safeConfig.putIfAbsent("autoFit", true);
         safeConfig.putIfAbsent("height", 360);
-        safeConfig.putIfAbsent("animate", Map.of("enter", Map.of("type", "fadeIn")));
+        safeConfig.putIfAbsent("animate", Utils.asMap("enter", Utils.asMap("type", "fadeIn")));
 
         Map<String, Object> result = new LinkedHashMap<>();
         result.put("version", 1);
@@ -96,7 +98,11 @@ public class AntVChartTool extends AbsToolProvider {
 
     private void validateConfig(String chartType, Map<String, Object> config) {
         Object data = config.get("data");
-        if (!(data instanceof List<?> rows) || rows.isEmpty() || rows.size() > MAX_ROWS) {
+        if (!(data instanceof List<?>)) {
+            throw new IllegalArgumentException("config.data must contain 1 to " + MAX_ROWS + " rows");
+        }
+        List<?> rows = (List<?>) data;
+        if (rows.isEmpty() || rows.size() > MAX_ROWS) {
             throw new IllegalArgumentException("config.data must contain 1 to " + MAX_ROWS + " rows");
         }
         if (rows.stream().anyMatch(row -> !(row instanceof Map<?, ?>))) {
@@ -113,7 +119,7 @@ public class AntVChartTool extends AbsToolProvider {
 
     private void requireField(Map<String, Object> config, String name) {
         Object value = config.get(name);
-        if (!(value instanceof String field) || field.isBlank()) {
+        if (!(value instanceof String) || Utils.isBlank((String) value)) {
             throw new IllegalArgumentException("config." + name + " is required");
         }
     }
@@ -128,7 +134,8 @@ public class AntVChartTool extends AbsToolProvider {
         if (value == null || value instanceof Number || value instanceof Boolean) {
             return value;
         }
-        if (value instanceof String text) {
+        if (value instanceof String) {
+            String text = (String) value;
             String normalized = text.trim().toLowerCase(Locale.ROOT);
             if (normalized.startsWith("javascript:")
                     || normalized.startsWith("data:")
@@ -139,7 +146,8 @@ public class AntVChartTool extends AbsToolProvider {
             }
             return text.length() > 4_000 ? text.substring(0, 4_000) : text;
         }
-        if (value instanceof Map<?, ?> map) {
+        if (value instanceof Map<?, ?>) {
+            Map<?, ?> map = (Map<?, ?>) value;
             Map<String, Object> safe = new LinkedHashMap<>();
             for (Map.Entry<?, ?> entry : map.entrySet()) {
                 String childKey = String.valueOf(entry.getKey());
@@ -149,7 +157,8 @@ public class AntVChartTool extends AbsToolProvider {
             }
             return safe;
         }
-        if (value instanceof Collection<?> collection) {
+        if (value instanceof Collection<?>) {
+            Collection<?> collection = (Collection<?>) value;
             List<Object> safe = new ArrayList<>();
             for (Object item : collection) {
                 safe.add(sanitizeValue(key, item, depth + 1, budget));

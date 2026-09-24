@@ -3,6 +3,7 @@ package com.udata.harness.service.impl;
 import com.udata.harness.repository.SessionRepository;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import org.noear.solon.Utils;
 import org.noear.solon.ai.chat.ChatConfig;
 import org.noear.solon.core.Props;
 
@@ -63,7 +64,7 @@ class UserHarnessEngineServiceImplTest {
         UserHarnessEngineServiceImpl service = configuredService();
         inject(service, "webToolsEnabled", false);
 
-        assertEquals(List.of("websearch", "codesearch", "webfetch"), service.disabledWebTools());
+        assertEquals(Utils.asList("websearch", "codesearch", "webfetch"), service.disabledWebTools());
     }
 
     @Test
@@ -71,7 +72,7 @@ class UserHarnessEngineServiceImplTest {
         UserHarnessEngineServiceImpl service = configuredService();
         inject(service, "codeSearchEnabled", false);
 
-        assertEquals(List.of("codesearch"), service.disabledWebTools());
+        assertEquals(Utils.asList("codesearch"), service.disabledWebTools());
     }
 
     @Test

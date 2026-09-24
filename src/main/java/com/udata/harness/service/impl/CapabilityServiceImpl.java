@@ -27,6 +27,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 import java.util.regex.Pattern;
+import java.util.stream.Collectors;
 import java.util.stream.Stream;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipInputStream;
@@ -121,7 +122,7 @@ public class CapabilityServiceImpl implements CapabilityService {
         requireInside(skillLibrary(), directory);
         try {
             Files.createDirectories(directory);
-            Files.writeString(directory.resolve("SKILL.md"), content, StandardCharsets.UTF_8,
+            Files.write(directory.resolve("SKILL.md"), content.getBytes(StandardCharsets.UTF_8),
                     StandardOpenOption.CREATE, StandardOpenOption.TRUNCATE_EXISTING);
         } catch (IOException e) {
             throw new IllegalStateException("Cannot save Skill package", e);
@@ -213,7 +214,7 @@ public class CapabilityServiceImpl implements CapabilityService {
         Path file = root.resolve(name + ".md").normalize();
         requireInside(root, file);
         try {
-            Files.writeString(file, content, StandardCharsets.UTF_8,
+            Files.write(file, content.getBytes(StandardCharsets.UTF_8),
                     StandardOpenOption.CREATE, StandardOpenOption.TRUNCATE_EXISTING);
             engines.refreshAgentsForAll();
         } catch (IOException e) {
@@ -308,7 +309,8 @@ public class CapabilityServiceImpl implements CapabilityService {
             return extracted;
         }
         try (Stream<Path> children = Files.list(extracted)) {
-            List<Path> directories = children.filter(Files::isDirectory).toList();
+            List<Path> directories = children.filter(Files::isDirectory)
+                    .collect(Collectors.toList());
             if (directories.size() == 1 && hasSkillFile(directories.get(0))) {
                 return directories.get(0);
             }
@@ -356,7 +358,7 @@ public class CapabilityServiceImpl implements CapabilityService {
 
     private static void copyTree(Path source, Path target) throws IOException {
         try (Stream<Path> paths = Files.walk(source)) {
-            for (Path path : paths.toList()) {
+            for (Path path : paths.collect(Collectors.toList())) {
                 if (Files.isSymbolicLink(path)) {
                     throw new IllegalArgumentException("Symbolic links are not allowed");
                 }
@@ -377,7 +379,7 @@ public class CapabilityServiceImpl implements CapabilityService {
             return;
         }
         try (Stream<Path> paths = Files.walk(target)) {
-            for (Path path : paths.sorted(Comparator.reverseOrder()).toList()) {
+            for (Path path : paths.sorted(Comparator.reverseOrder()).collect(Collectors.toList())) {
                 Files.deleteIfExists(path);
             }
         } catch (IOException e) {

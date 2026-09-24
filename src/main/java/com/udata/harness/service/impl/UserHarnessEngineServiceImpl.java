@@ -6,6 +6,7 @@ import com.udata.harness.repository.SessionRepository;
 import com.udata.harness.service.UserHarnessEngineService;
 import com.udata.harness.service.UserWorkspaceService;
 import org.noear.solon.Solon;
+import org.noear.solon.Utils;
 import org.noear.solon.ai.chat.ChatConfig;
 import org.noear.solon.ai.harness.HarnessEngine;
 import org.noear.solon.ai.harness.agent.ToolName;
@@ -361,7 +362,7 @@ public class UserHarnessEngineServiceImpl implements UserHarnessEngineService {
         if (rootProps != null) {
             for (Props props : rootProps.getListedProp("agent.model.models")) {
                 String configuredModel = props.get("model");
-                if (configuredModel == null || configuredModel.isBlank()) {
+                if (Utils.isBlank(configuredModel)) {
                     continue;
                 }
                 ChatConfig config = new ChatConfig();

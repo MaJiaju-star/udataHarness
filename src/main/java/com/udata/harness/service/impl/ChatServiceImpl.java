@@ -10,6 +10,7 @@ import com.udata.harness.repository.SessionRepository;
 import com.udata.harness.service.ChatService;
 import com.udata.harness.service.UserHarnessEngineService;
 import com.udata.harness.service.UserWorkspaceService;
+import org.noear.solon.Utils;
 import org.noear.solon.ai.agent.AgentSession;
 import org.noear.solon.ai.agent.AgentEvent;
 import org.noear.solon.ai.agent.react.ReActTrace;
@@ -392,7 +393,8 @@ public class ChatServiceImpl implements ChatService {
     private Set<String> readAlwaysAllowedTools(AgentSession session) {
         Object stored = session.getContext().get(ALWAYS_ALLOWED_TOOLS_KEY);
         Set<String> tools = new LinkedHashSet<>();
-        if (stored instanceof Collection<?> values) {
+        if (stored instanceof Collection<?>) {
+            Collection<?> values = (Collection<?>) stored;
             for (Object value : values) {
                 if (value != null && !isBlank(String.valueOf(value))) {
                     tools.add(String.valueOf(value).trim());
@@ -419,7 +421,7 @@ public class ChatServiceImpl implements ChatService {
     }
 
     private boolean isBlank(String value) {
-        return value == null || value.trim().isEmpty();
+        return Utils.isBlank(value);
     }
 
     /** 保存本轮模型和思考深度，使 HITL 恢复时继续使用相同推理配置。 */
@@ -432,16 +434,18 @@ public class ChatServiceImpl implements ChatService {
     /** 读取会话运行选项，旧会话没有该字段时使用回退值。 */
     private String readSessionOption(AgentSession session, String key, String fallback) {
         Object value = session.getContext().get(key);
-        return value == null || String.valueOf(value).isBlank() ? fallback : String.valueOf(value);
+        return value == null || Utils.isBlank(String.valueOf(value)) ? fallback : String.valueOf(value);
     }
 
     /** 将前端思考深度归一化为 Solon AI 支持的统一档位。 */
     String normalizeThinkingDepth(String value) {
         String normalized = value == null ? "auto" : value.trim().toLowerCase();
-        return switch (normalized) {
-            case "none", "low", "medium", "high", "max" -> normalized;
-            default -> "auto";
-        };
+        if ("none".equals(normalized) || "low".equals(normalized)
+                || "medium".equals(normalized) || "high".equals(normalized)
+                || "max".equals(normalized)) {
+            return normalized;
+        }
+        return "auto";
     }
 
     private boolean isFullPermission(SessionMetadata metadata) {
@@ -457,13 +461,18 @@ public class ChatServiceImpl implements ChatService {
     @SuppressWarnings("unchecked")
     void trackFileActivity(Path workspace, AgentSession session, AgentEvent event) {
         //1. Action 阶段识别文件工具，并暂存 callId 对应的活动记录。
-        if (event instanceof ToolCallStartEvent action) {
+        if (event instanceof ToolCallStartEvent) {
+            ToolCallStartEvent action = (ToolCallStartEvent) event;
             String name = action.getToolName() == null ? "" : action.getToolName().toLowerCase();
             if (!("read".equals(name) || "write".equals(name) || "edit".equals(name))) {
                 return;
             }
             Object rawPath = action.getArgs() == null ? null : action.getArgs().get("file_path");
-            if (!(rawPath instanceof String filePath) || filePath.isBlank() || filePath.startsWith("@")) {
+            if (!(rawPath instanceof String)) {
+                return;
+            }
+            String filePath = (String) rawPath;
+            if (Utils.isBlank(filePath) || filePath.startsWith("@")) {
                 return;
             }
             String type = "read";
@@ -482,12 +491,16 @@ public class ChatServiceImpl implements ChatService {
                 pending = new LinkedHashMap<>();
                 session.getContext().put(PENDING_FILE_ACTIVITIES_KEY, pending);
             }
-            pending.put(action.getCallId(), Map.of("type", type, "path", filePath));
+            Map<String, String> record = new LinkedHashMap<>();
+            record.put("type", type);
+            record.put("path", filePath);
+            pending.put(action.getCallId(), record);
             return;
         }
 
         //2. Observation 阶段仅持久化成功操作，并按类型和路径去重。
-        if (event instanceof ToolCallEndEvent observation) {
+        if (event instanceof ToolCallEndEvent) {
+            ToolCallEndEvent observation = (ToolCallEndEvent) event;
             Map<String, Map<String, String>> pending = (Map<String, Map<String, String>>)
                     session.getContext().get(PENDING_FILE_ACTIVITIES_KEY);
             if (pending == null) return;
