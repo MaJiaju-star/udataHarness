@@ -29,6 +29,16 @@ public interface UserHarnessEngineService {
     /** 判断技能是否已经加载到指定用户的引擎。 */
     boolean isSkillLoaded(String userId, String skillName);
 
+    /** 返回当前用户实际采用的沙箱开关状态。 */
+    default boolean isSandboxEnabled(String userId) {
+        return true;
+    }
+
+    /** 持久化并立即应用当前用户的沙箱开关。 */
+    default void setSandboxEnabled(String userId, boolean enabled) {
+        get(userId).setSandboxEnabled(enabled);
+    }
+
     /** 将共享 Subagent 定义刷新到所有已创建引擎。 */
     void refreshAgentsForAll();
 

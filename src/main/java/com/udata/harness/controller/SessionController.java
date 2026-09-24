@@ -4,6 +4,7 @@ import com.udata.harness.common.domain.SessionMetadata;
 import com.udata.harness.common.request.ChatRequest;
 import com.udata.harness.common.request.CreateSessionRequest;
 import com.udata.harness.common.request.HitlDecisionRequest;
+import com.udata.harness.common.request.SandboxSettingsRequest;
 import com.udata.harness.common.request.SessionPermissionRequest;
 import com.udata.harness.common.request.SessionTitleRequest;
 import com.udata.harness.service.ChatService;
@@ -104,6 +105,21 @@ public class SessionController {
             @Header("X-User-Id") String userId,
             @Body SessionPermissionRequest request) {
         return Result.succeed(sessionService.updatePermission(userId, request));
+    }
+
+    /**
+     * 修改当前用户共享 HarnessEngine 的沙箱状态。
+     *
+     * @param userId 当前用户标识
+     * @param request 是否启用沙箱
+     * @return 后端实际应用的沙箱状态
+     */
+    @Post
+    @Mapping("/settings/sandbox")
+    public Result<Boolean> updateSandbox(
+            @Header("X-User-Id") String userId,
+            @Body SandboxSettingsRequest request) {
+        return Result.succeed(sessionService.updateSandbox(userId, request.isEnabled()));
     }
 
     /** 显式修改会话标题。 */

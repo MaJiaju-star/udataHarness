@@ -27,6 +27,9 @@ public interface SessionService {
     /** 更新会话级 standard/full 权限；运行过程中禁止切换。 */
     SessionMetadata updatePermission(String userId, SessionPermissionRequest request);
 
+    /** 更新用户工作区级沙箱开关；该用户存在运行中会话时禁止切换。 */
+    boolean updateSandbox(String userId, boolean enabled);
+
     /** 显式重命名会话；运行上下文与消息历史不受影响。 */
     SessionMetadata updateTitle(String userId, SessionTitleRequest request);
 

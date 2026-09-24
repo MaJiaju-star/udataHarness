@@ -10,7 +10,7 @@ import {
     ClipboardPaste, Copy, Download, File, FileCode2, FilePlus2, Files, Folder, FolderOpen,
     Eye, Film, GitCompareArrows, HardDrive, Image as ImageIcon, Link2, Menu, MessageSquare,
     MoreHorizontal, Network, PanelLeftClose, PanelLeftOpen, PanelRightClose, Pencil, Plus, RefreshCw,
-    Save, Scissors, Search, Send, Settings2, ShieldCheck, Sparkles, SquareTerminal, Trash2,
+    Save, Scissors, Search, Send, Settings2, ShieldCheck, ShieldOff, Sparkles, SquareTerminal, Trash2,
     Upload, UserRound, X, Zap
 } from "lucide-react";
 
@@ -827,6 +827,19 @@ function App() {
         notify(permissionMode === "full" ? "已开启完整权限模式" : "已恢复标准权限模式");
     }
 
+    async function changeSandbox(enabled) {
+        if (running || meta?.sandboxEnabled === enabled) return;
+        if (!enabled && !window.confirm(
+            "关闭沙箱后，终端和文件工具可能访问工作区外的路径。确定为当前用户关闭吗？"
+        )) return;
+        const sandboxEnabled = await api("/api/settings/sandbox", {
+            method: "POST",
+            body: JSON.stringify({enabled})
+        });
+        setMeta(value => ({...value, sandboxEnabled}));
+        notify(sandboxEnabled ? "已开启沙箱保护" : "已关闭沙箱保护");
+    }
+
     function changeUser(nextUserId) {
         const value = nextUserId.trim();
         if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(value)) {
@@ -929,6 +942,7 @@ function App() {
                               tokenUsage={tokenUsage}
                               contextLength={activeModel?.contextLength || 1000000}
                               provider={activeModel?.provider}
+                              sandboxEnabled={meta?.sandboxEnabled !== false}
                               onModelChange={setSelectedModel}
                               onThinkingDepthChange={value => {
                                   setThinkingDepth(value);
@@ -937,6 +951,8 @@ function App() {
                               onOpenFile={path => openFile(path).catch(error => notify(error.message))}
                               onSend={sendPrompt} onCreate={() => createSession().catch(error => notify(error.message))}
                               onDecide={decideHitl}
+                              onSandboxChange={enabled => changeSandbox(enabled)
+                                  .catch(error => notify(error.message))}
                               onPermissionMode={mode => changePermissionMode(mode)
                                   .catch(error => notify(error.message))}/>
                 </section>
@@ -1124,9 +1140,9 @@ function activeFileReference(path, selection) {
 }
 
 function ChatView({api, current, messages, running, models, selectedModel, thinkingDepth,
-                      tokenUsage, contextLength, provider,
+                      tokenUsage, contextLength, provider, sandboxEnabled,
                       onModelChange, onThinkingDepthChange, onSend, onCreate, onDecide,
-                      onPermissionMode, onOpenFile}) {
+                      onPermissionMode, onSandboxChange, onOpenFile}) {
     const [prompt, setPrompt] = useState("");
     const [completionSources, setCompletionSources] = useState({skills: [], files: [], agents: []});
     const [completion, setCompletion] = useState(null);
@@ -1362,15 +1378,24 @@ function ChatView({api, current, messages, running, models, selectedModel, think
                             : "敏感工具执行前会询问你的许可"}</small>
                     </span>
                 </div>
-                <div className="permission-mode-switch" role="group" aria-label="权限模式">
-                    <button className={current.permissionMode !== "full" ? "active" : ""}
-                            disabled={running} onClick={() => onPermissionMode("standard")}>
-                        标准
+                <div className="permission-mode-controls">
+                    <button className={`sandbox-toggle ${sandboxEnabled ? "active" : "off"}`}
+                            type="button" role="switch" aria-checked={sandboxEnabled}
+                            disabled={running} onClick={() => onSandboxChange(!sandboxEnabled)}
+                            title="控制当前用户工作区的文件与终端沙箱">
+                        {sandboxEnabled ? <ShieldCheck size={13}/> : <ShieldOff size={13}/>}沙箱
+                        <b>{sandboxEnabled ? "开" : "关"}</b>
                     </button>
-                    <button className={current.permissionMode === "full" ? "active" : ""}
-                            disabled={running} onClick={() => onPermissionMode("full")}>
-                        完整权限
-                    </button>
+                    <div className="permission-mode-switch" role="group" aria-label="权限模式">
+                        <button className={current.permissionMode !== "full" ? "active" : ""}
+                                disabled={running} onClick={() => onPermissionMode("standard")}>
+                            标准
+                        </button>
+                        <button className={current.permissionMode === "full" ? "active" : ""}
+                                disabled={running} onClick={() => onPermissionMode("full")}>
+                            完整权限
+                        </button>
+                    </div>
                 </div>
             </div>
             <div className="composer-input-shell">

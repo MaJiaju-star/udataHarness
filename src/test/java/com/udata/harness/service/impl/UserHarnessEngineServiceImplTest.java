@@ -11,6 +11,7 @@ import java.nio.file.Path;
 import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 
 class UserHarnessEngineServiceImplTest {
@@ -71,6 +72,18 @@ class UserHarnessEngineServiceImplTest {
         inject(service, "codeSearchEnabled", false);
 
         assertEquals(List.of("codesearch"), service.disabledWebTools());
+    }
+
+    @Test
+    void persistsSandboxPreferenceForUser() throws Exception {
+        UserHarnessEngineServiceImpl service = configuredService();
+        inject(service, "dataDir", tempDir.resolve("data").toString());
+        service.setSandboxEnabled("alice", false);
+
+        UserHarnessEngineServiceImpl reloaded = configuredService();
+        inject(reloaded, "dataDir", tempDir.resolve("data").toString());
+
+        assertFalse(reloaded.isSandboxEnabled("alice"));
     }
 
     private UserHarnessEngineServiceImpl configuredService() throws Exception {

@@ -1334,6 +1334,23 @@ button, input, textarea, select { outline: none; }
     white-space: nowrap;
 }
 .permission-mode-bar.full .permission-mode-copy small { color: #aa7a3c; }
+.permission-mode-controls { display: flex; flex: 0 0 auto; align-items: center; gap: 6px; }
+.sandbox-toggle {
+    display: inline-flex;
+    min-height: 31px;
+    align-items: center;
+    gap: 5px;
+    padding: 0 8px;
+    border: 1px solid var(--border-default);
+    border-radius: 9px;
+    color: var(--text-secondary);
+    background: var(--surface-raised);
+    font-size: 9.5px;
+}
+.sandbox-toggle b { color: var(--accent-dark); font-size: 9px; }
+.sandbox-toggle.active { border-color: color-mix(in srgb, var(--accent) 45%, var(--border-default)); }
+.sandbox-toggle.off { color: var(--danger); border-color: color-mix(in srgb, var(--danger) 35%, var(--border-default)); }
+.sandbox-toggle.off b { color: var(--danger); }
 .permission-mode-switch {
     display: flex;
     flex: 0 0 auto;
@@ -1861,6 +1878,8 @@ button, input, textarea, select { outline: none; }
     }
     .permission-mode-bar { margin-bottom: 6px; padding: 6px 7px 6px 9px; border-radius: 11px; }
     .permission-mode-copy small { max-width: 42vw; }
+    .permission-mode-controls { gap: 4px; }
+    .sandbox-toggle { padding: 0 6px; }
     .permission-mode-switch button { min-height: 30px; padding: 0 8px; }
     .composer-box { border-radius: 15px; box-shadow: 0 5px 20px rgba(27, 35, 40, .08); }
     .composer-box textarea { min-height: 54px; max-height: 128px; padding: 12px 12px 5px; font-size: 16px; }

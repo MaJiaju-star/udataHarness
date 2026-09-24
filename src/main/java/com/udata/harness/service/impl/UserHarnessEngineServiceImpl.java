@@ -18,14 +18,17 @@ import org.noear.solon.annotation.Inject;
 import org.noear.solon.core.Props;
 
 import java.io.IOException;
+import java.io.InputStream;
+import java.io.OutputStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
-import java.util.Arrays;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collection;
 import java.util.List;
 import java.util.Map;
+import java.util.Properties;
 import java.util.concurrent.ConcurrentHashMap;
 
 /**
@@ -36,6 +39,7 @@ import java.util.concurrent.ConcurrentHashMap;
  */
 @Component
 public class UserHarnessEngineServiceImpl implements UserHarnessEngineService {
+    private static final String SANDBOX_ENABLED_KEY = "sandboxEnabled";
     private static final ChartTool CHART_TOOL = new ChartTool();
     private static final AntVChartTool ANTV_CHART_TOOL = new AntVChartTool();
 
@@ -56,6 +60,9 @@ public class UserHarnessEngineServiceImpl implements UserHarnessEngineService {
 
     @Inject("${agent.max-turns:100}")
     private int maxTurns;
+
+    @Inject("${agent.sandbox.enabled:true}")
+    private boolean sandboxEnabledByDefault = true;
 
     @Inject("${agent.tools.web.enabled:true}")
     private boolean webToolsEnabled = true;
@@ -114,6 +121,7 @@ public class UserHarnessEngineServiceImpl implements UserHarnessEngineService {
 
     private final Map<String, HarnessEngine> engines = new ConcurrentHashMap<>();
     private final Map<String, McpServerParameters> mcpServers = new ConcurrentHashMap<>();
+    private final Map<String, Boolean> sandboxPreferences = new ConcurrentHashMap<>();
 
     /**
      * 获取用户专属引擎；首次访问时原子创建并缓存。
@@ -124,6 +132,25 @@ public class UserHarnessEngineServiceImpl implements UserHarnessEngineService {
     public HarnessEngine get(String userId) {
         String safeUserId = UserWorkspaceService.requireUserId(userId);
         return engines.computeIfAbsent(safeUserId, this::build);
+    }
+
+    /** 返回用户持久化的沙箱设置；首次读取时回退到应用默认值。 */
+    @Override
+    public boolean isSandboxEnabled(String userId) {
+        String safeUserId = UserWorkspaceService.requireUserId(userId);
+        return sandboxPreferences.computeIfAbsent(safeUserId, this::loadSandboxPreference);
+    }
+
+    /** 保存用户沙箱设置，并同步到已经创建的 HarnessEngine。 */
+    @Override
+    public void setSandboxEnabled(String userId, boolean enabled) {
+        String safeUserId = UserWorkspaceService.requireUserId(userId);
+        saveSandboxPreference(safeUserId, enabled);
+        sandboxPreferences.put(safeUserId, enabled);
+        HarnessEngine engine = engines.get(safeUserId);
+        if (engine != null) {
+            engine.setSandboxEnabled(enabled);
+        }
     }
 
     /** 清除用户引擎缓存；工作区切换后的下一次访问会重新构建。 */
@@ -219,7 +246,7 @@ public class UserHarnessEngineServiceImpl implements UserHarnessEngineService {
                     agentBuilder.defaultToolAdd(CHART_TOOL);
                     agentBuilder.defaultToolAdd(ANTV_CHART_TOOL);
                 })
-                .sandboxEnabled(true)
+                .sandboxEnabled(isSandboxEnabled(userId))
                 .sandboxAllowUserHome(false)
                 .sandboxSystemRestrict(true)
                 // BashToolStrategy 会优先放行只读命令、拒绝系统级危险命令；
@@ -273,6 +300,49 @@ public class UserHarnessEngineServiceImpl implements UserHarnessEngineService {
             tools.add(ToolName.TOOL_WEBFETCH.getName());
         }
         return tools;
+    }
+
+    /** 从用户设置文件读取沙箱开关。 */
+    private boolean loadSandboxPreference(String userId) {
+        Properties properties = loadUserSettings(userId);
+        return Boolean.parseBoolean(properties.getProperty(
+                SANDBOX_ENABLED_KEY, String.valueOf(sandboxEnabledByDefault)));
+    }
+
+    /** 将沙箱开关写入用户设置文件。 */
+    private void saveSandboxPreference(String userId, boolean enabled) {
+        Properties properties = loadUserSettings(userId);
+        properties.setProperty(SANDBOX_ENABLED_KEY, String.valueOf(enabled));
+        Path file = userSettingsFile(userId);
+        try {
+            Files.createDirectories(file.getParent());
+            try (OutputStream output = Files.newOutputStream(file)) {
+                properties.store(output, "udata-harness user settings");
+            }
+        } catch (IOException e) {
+            throw new IllegalStateException("Cannot save user settings", e);
+        }
+    }
+
+    /** 读取用户设置；文件尚不存在时返回空配置。 */
+    private Properties loadUserSettings(String userId) {
+        Properties properties = new Properties();
+        Path file = userSettingsFile(userId);
+        if (!Files.isRegularFile(file)) {
+            return properties;
+        }
+        try (InputStream input = Files.newInputStream(file)) {
+            properties.load(input);
+            return properties;
+        } catch (IOException e) {
+            throw new IllegalStateException("Cannot read user settings", e);
+        }
+    }
+
+    /** 返回位于应用数据目录内的用户设置文件。 */
+    private Path userSettingsFile(String userId) {
+        return Paths.get(dataDir).toAbsolutePath().normalize()
+                .resolve("users").resolve(userId).resolve("settings.properties");
     }
 
     /**

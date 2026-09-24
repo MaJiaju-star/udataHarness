@@ -20,6 +20,9 @@ solon.config.load:
   - "./model.yml"                                             #先加载外部文件；如果没有则加载内部文件
 
 agent:
+  sandbox:
+    # 新用户的默认值；用户可在聊天界面修改，选择会保存到 data-dir/users/<userId>。
+    enabled: "${AGENT_SANDBOX_ENABLED:true}"
   tools:
     web:
       # 内网部署可设为 false，一次禁用 websearch、codesearch 和 webfetch。

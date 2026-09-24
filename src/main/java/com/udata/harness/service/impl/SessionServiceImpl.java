@@ -65,6 +65,7 @@ public class SessionServiceImpl implements SessionService {
         data.put("activeWorkspace", workspaces.getActive(safeUserId));
         data.put("workspaces", workspaces.list(safeUserId));
         data.put("defaultModel", engine.getDefaultModel());
+        data.put("sandboxEnabled", engines.isSandboxEnabled(safeUserId));
         List<Map<String, Object>> models = new ArrayList<>();
         for (ChatConfig config : engine.getModels()) {
             Map<String, Object> item = new LinkedHashMap<>();
@@ -127,6 +128,24 @@ public class SessionServiceImpl implements SessionService {
                 UserWorkspaceService.requireUserId(userId),
                 request.getSessionId(),
                 request.getPermissionMode());
+    }
+
+    /**
+     * 更新用户级沙箱开关。
+     *
+     * <p>同一用户的会话共享 HarnessEngine，因此只要存在运行中的会话就禁止切换，
+     * 避免一轮工具执行期间安全边界发生变化。</p>
+     */
+    @Override
+    public boolean updateSandbox(String userId, boolean enabled) {
+        String safeUserId = UserWorkspaceService.requireUserId(userId);
+        boolean running = sessionRepository.list(safeUserId).stream()
+                .anyMatch(item -> activeRuns.isActive(item.getSessionId()));
+        if (running) {
+            throw new IllegalStateException("Cannot change sandbox mode while an agent is running");
+        }
+        engines.setSandboxEnabled(safeUserId, enabled);
+        return enabled;
     }
 
     /** 显式重命名会话，只更新产品元数据。 */
