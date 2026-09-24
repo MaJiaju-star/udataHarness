@@ -1658,6 +1658,15 @@ function replaceTreeChildren(items, path, children) {
     });
 }
 
+function findTreeItem(items, path) {
+    for (const item of items || []) {
+        if (item.path === path) return item;
+        const child = findTreeItem(item.children, path);
+        if (child) return child;
+    }
+    return null;
+}
+
 function removeTreeItem(items, path) {
     return items
         .filter(item => item.path !== path)
@@ -1707,6 +1716,7 @@ function ExplorerPanel({api, notify, onOpenFile}) {
     const [query, setQuery] = useState("");
     const [loading, setLoading] = useState(true);
     const [expandedPaths, setExpandedPaths] = useState(() => new Set());
+    const expandedPathsRef = useRef(expandedPaths);
     const [loadingPaths, setLoadingPaths] = useState(() => new Set());
     const [contextMenu, setContextMenu] = useState(null);
     const uploadInputRef = useRef(null);
@@ -1716,12 +1726,27 @@ function ExplorerPanel({api, notify, onOpenFile}) {
     const removeEditorPath = useWorkspaceStore(state => state.removePath);
     const insertPromptReference = useWorkspaceStore(state => state.insertPromptReference);
     const treeRefreshVersion = useWorkspaceStore(state => state.treeRefreshVersion);
+    expandedPathsRef.current = expandedPaths;
 
     const loadTree = useCallback(async () => {
         setLoading(true);
         try {
-            setTree(await api("/api/files/tree?depth=1"));
-            setExpandedPaths(new Set());
+            //1. 重新加载根目录，并按层级恢复刷新前已展开的目录
+            let nextTree = await api("/api/files/tree?depth=1");
+            const restoredPaths = new Set();
+            const paths = [...expandedPathsRef.current]
+                .sort((left, right) => left.split(/[\\/]/).length - right.split(/[\\/]/).length);
+            for (const path of paths) {
+                const item = findTreeItem(nextTree, path);
+                if (!item || item.type !== "directory") continue;
+                const children = await api(`/api/files/tree?path=${encodeURIComponent(path)}&depth=1`);
+                nextTree = replaceTreeChildren(nextTree, path, children || []);
+                restoredPaths.add(path);
+            }
+
+            //2. 一次性更新树和仍然存在的展开目录，避免刷新过程中树节点闪烁收缩
+            setTree(nextTree);
+            setExpandedPaths(restoredPaths);
         }
         finally { setLoading(false); }
     }, [api]);
