@@ -1,7 +1,5 @@
 package com.udata.harness.service;
 
-import com.udata.harness.common.request.McpConfigRequest;
-
 import java.util.List;
 import java.util.Map;
 
@@ -22,9 +20,20 @@ public interface IntegrationService {
     /**
      * 保存 MCP 配置并更新运行时 Server 注册。
      *
-     * @param request MCP 配置请求
+     * @param name MCP Server 名称
+     * @param transport 传输方式
+     * @param url 远程服务 URL
+     * @param command 本地启动命令
+     * @param args 命令参数
+     * @param headers 请求 Header（JSON 文本，可能含敏感凭据）
+     * @param env 进程环境变量（JSON 文本，可能含敏感凭据）
+     * @param allowedTools 工具白名单
+     * @param disallowedTools 工具黑名单
+     * @param enabled 是否启用
      */
-    void saveMcp(McpConfigRequest request);
+    void saveMcp(String name, String transport, String url, String command, List<String> args,
+                 String headers, String env, List<String> allowedTools,
+                 List<String> disallowedTools, boolean enabled);
 
     /**
      * 删除持久化配置并从所有用户引擎注销 MCP Server。

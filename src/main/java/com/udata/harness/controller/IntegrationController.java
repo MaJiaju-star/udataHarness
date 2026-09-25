@@ -1,8 +1,6 @@
 package com.udata.harness.controller;
 
-import com.udata.harness.common.request.McpConfigRequest;
 import com.udata.harness.service.IntegrationService;
-import org.noear.solon.annotation.Body;
 import org.noear.solon.annotation.Controller;
 import org.noear.solon.annotation.Delete;
 import org.noear.solon.annotation.Get;
@@ -53,15 +51,35 @@ public class IntegrationController {
      * 新建或覆盖 MCP Server 配置。
      *
      * @param userId 当前调用用户
-     * @param request 传输协议、URL/命令、参数、凭据及工具过滤规则
+     * @param name 唯一名称
+     * @param transport 传输方式（如 stdio/sse/streamable）
+     * @param url 远程服务 URL
+     * @param command 本地启动命令
+     * @param args 命令参数
+     * @param headers 请求 Header（JSON 文本，可能含敏感凭据）
+     * @param env 进程环境变量（JSON 文本，可能含敏感凭据）
+     * @param allowedTools 工具白名单
+     * @param disallowedTools 工具黑名单
+     * @param enabled 是否启用
      * @return 无响应数据
      */
     @Post
     @Mapping("/mcp")
-    public Result<Void> saveMcp(@Header("X-User-Id") String userId,
-                                @Body McpConfigRequest request) {
+    public Result<Void> saveMcp(
+            @Header("X-User-Id") String userId,
+            @Param("name") String name,
+            @Param(value = "transport", required = false) String transport,
+            @Param(value = "url", required = false) String url,
+            @Param(value = "command", required = false) String command,
+            @Param(value = "args", required = false) List<String> args,
+            @Param(value = "headers", required = false) String headers,
+            @Param(value = "env", required = false) String env,
+            @Param(value = "allowedTools", required = false) List<String> allowedTools,
+            @Param(value = "disallowedTools", required = false) List<String> disallowedTools,
+            @Param(value = "enabled", required = false) Boolean enabled) {
         UserWorkspaceService.requireUserId(userId);
-        configs.saveMcp(request);
+        configs.saveMcp(name, transport, url, command, args, headers, env,
+                allowedTools, disallowedTools, enabled == null || enabled);
         return Result.succeed();
     }
 

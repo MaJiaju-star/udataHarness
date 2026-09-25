@@ -4,6 +4,7 @@ import org.noear.snack4.ONode;
 import com.udata.harness.common.request.McpConfigRequest;
 import com.udata.harness.service.IntegrationService;
 import com.udata.harness.service.UserHarnessEngineService;
+import org.noear.solon.Utils;
 import org.noear.solon.ai.mcp.client.McpServerParameters;
 import org.noear.solon.annotation.Component;
 import org.noear.solon.annotation.Init;
@@ -91,15 +92,59 @@ public class IntegrationServiceImpl implements IntegrationService {
     /**
      * 校验、持久化并热更新 MCP 服务；同名配置采用替换语义。
      *
-     * @param request MCP 配置请求
+     * @param name MCP Server 名称
+     * @param transport 传输方式
+     * @param url 远程服务 URL
+     * @param command 本地启动命令
+     * @param args 命令参数
+     * @param headers 请求 Header（JSON 文本，可能含敏感凭据）
+     * @param env 进程环境变量（JSON 文本，可能含敏感凭据）
+     * @param allowedTools 工具白名单
+     * @param disallowedTools 工具黑名单
+     * @param enabled 是否启用
      * @throws IllegalArgumentException 名称为空或格式非法时抛出
      */
-    public void saveMcp(McpConfigRequest request) {
-        String name = requireName(request == null ? null : request.getName());
+    @Override
+    public void saveMcp(String name, String transport, String url, String command,
+                        List<String> args, String headers, String env,
+                        List<String> allowedTools, List<String> disallowedTools, boolean enabled) {
+        McpConfigRequest request = new McpConfigRequest();
+        request.setName(name);
+        request.setTransport(transport);
+        request.setUrl(url);
+        request.setCommand(command);
+        request.setArgs(args == null ? new ArrayList<>() : args);
+        request.setHeaders(parseMap(headers));
+        request.setEnv(parseMap(env));
+        request.setAllowedTools(allowedTools == null ? new ArrayList<>() : allowedTools);
+        request.setDisallowedTools(disallowedTools == null ? new ArrayList<>() : disallowedTools);
+        request.setEnabled(enabled);
+
+        String safeName = requireName(request.getName());
         McpServerParameters params = toMcp(request);
-        mcpServers.put(name, params);
-        engines.putMcp(name, params);
-        write("mcp", name, request);
+        mcpServers.put(safeName, params);
+        engines.putMcp(safeName, params);
+        write("mcp", safeName, request);
+    }
+
+    /**
+     * 将 JSON 文本解析为字符串映射；为空或非法时返回空映射。
+     *
+     * @param json JSON 对象文本
+     * @return 解析后的键值对
+     */
+    private Map<String, String> parseMap(String json) {
+        if (Utils.isEmpty(json)) {
+            return new LinkedHashMap<>();
+        }
+        try {
+            Map<String, Object> raw = ONode.ofJson(json).toBean(Map.class);
+            Map<String, String> result = new LinkedHashMap<>();
+            raw.forEach((key, value) -> result.put(key, value == null ? null : String.valueOf(value)));
+            return result;
+        } catch (Exception e) {
+            throw new IllegalArgumentException("Invalid JSON map", e);
+        }
     }
 
     /**

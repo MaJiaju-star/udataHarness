@@ -1,11 +1,8 @@
 package com.udata.harness.controller;
 
 import com.udata.harness.common.domain.WorkspaceMetadata;
-import com.udata.harness.common.request.WorkspaceActivateRequest;
-import com.udata.harness.common.request.WorkspaceRegisterRequest;
 import com.udata.harness.service.UserHarnessEngineService;
 import com.udata.harness.service.UserWorkspaceService;
-import org.noear.solon.annotation.Body;
 import org.noear.solon.annotation.Controller;
 import org.noear.solon.annotation.Get;
 import org.noear.solon.annotation.Header;
@@ -78,15 +75,15 @@ public class WorkspaceController {
      * 注册本地目录，激活后重建用户引擎以应用新的工作目录。
      *
      * @param userId 当前用户标识
-     * @param request 本地目录绝对路径
+     * @param path 本地目录绝对路径
      * @return 注册后的工作区元数据
      */
     @Post
     @Mapping
     public Result<WorkspaceMetadata> register(
             @Header("X-User-Id") String userId,
-            @Body WorkspaceRegisterRequest request) {
-        WorkspaceMetadata workspace = workspaces.register(userId, request.getPath());
+            @Param("path") String path) {
+        WorkspaceMetadata workspace = workspaces.register(userId, path);
         engines.resetUser(userId);
         return Result.succeed(workspace);
     }
@@ -95,15 +92,15 @@ public class WorkspaceController {
      * 切换当前工作区，随后重建绑定旧目录的用户引擎。
      *
      * @param userId 当前用户标识
-     * @param request 目标工作区标识
+     * @param workspaceId 目标工作区标识
      * @return 激活后的工作区元数据
      */
     @Post
     @Mapping("/activate")
     public Result<WorkspaceMetadata> activate(
             @Header("X-User-Id") String userId,
-            @Body WorkspaceActivateRequest request) {
-        WorkspaceMetadata workspace = workspaces.activate(userId, request.getWorkspaceId());
+            @Param("workspaceId") String workspaceId) {
+        WorkspaceMetadata workspace = workspaces.activate(userId, workspaceId);
         engines.resetUser(userId);
         return Result.succeed(workspace);
     }

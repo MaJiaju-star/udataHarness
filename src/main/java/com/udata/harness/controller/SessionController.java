@@ -2,11 +2,7 @@ package com.udata.harness.controller;
 
 import com.udata.harness.common.domain.SessionMetadata;
 import com.udata.harness.common.request.ChatRequest;
-import com.udata.harness.common.request.CreateSessionRequest;
 import com.udata.harness.common.request.HitlDecisionRequest;
-import com.udata.harness.common.request.SandboxSettingsRequest;
-import com.udata.harness.common.request.SessionPermissionRequest;
-import com.udata.harness.common.request.SessionTitleRequest;
 import com.udata.harness.service.ChatService;
 import com.udata.harness.service.SessionService;
 import org.noear.solon.annotation.Body;
@@ -83,14 +79,16 @@ public class SessionController {
      * 创建一个新的独立会话。
      *
      * @param userId 当前用户标识，决定会话及工作区归属
-     * @param request 可选标题和模型；空值由服务层使用默认值补齐
+     * @param title 可选标题；为空时由服务层使用默认值
+     * @param model 可选模型；为空时使用引擎默认模型
      * @return 已持久化的会话元数据，默认权限模式为 {@code standard}
      */
     @Post
     @Mapping("/sessions")
     public Result<SessionMetadata> create(@Header("X-User-Id") String userId,
-                                          @Body CreateSessionRequest request) {
-        return Result.succeed(sessionService.create(userId, request));
+                                          @Param(value = "title", required = false) String title,
+                                          @Param(value = "model", required = false) String model) {
+        return Result.succeed(sessionService.create(userId, title, model));
     }
 
     /**
@@ -100,45 +98,49 @@ public class SessionController {
      * 可批准的工具调用。为避免正在执行的 Flux 前后权限不一致，运行中的会话禁止切换模式。</p>
      *
      * @param userId 当前用户标识
-     * @param request 目标 sessionId 与 standard/full 权限值
+     * @param sessionId 目标会话标识
+     * @param permissionMode standard/full 权限值
      * @return 更新后的会话元数据
      */
     @Post
     @Mapping("/sessions/permission")
     public Result<SessionMetadata> updatePermission(
             @Header("X-User-Id") String userId,
-            @Body SessionPermissionRequest request) {
-        return Result.succeed(sessionService.updatePermission(userId, request));
+            @Param("sessionId") String sessionId,
+            @Param("permissionMode") String permissionMode) {
+        return Result.succeed(sessionService.updatePermission(userId, sessionId, permissionMode));
     }
 
     /**
      * 修改当前用户共享 HarnessEngine 的沙箱状态。
      *
      * @param userId 当前用户标识
-     * @param request 是否启用沙箱
+     * @param enabled 是否启用沙箱
      * @return 后端实际应用的沙箱状态
      */
     @Post
     @Mapping("/settings/sandbox")
     public Result<Boolean> updateSandbox(
             @Header("X-User-Id") String userId,
-            @Body SandboxSettingsRequest request) {
-        return Result.succeed(sessionService.updateSandbox(userId, request.isEnabled()));
+            @Param("enabled") boolean enabled) {
+        return Result.succeed(sessionService.updateSandbox(userId, enabled));
     }
 
     /**
      * 显式修改会话标题。
      *
      * @param userId 当前用户标识
-     * @param request 目标 sessionId 与新标题
+     * @param sessionId 目标会话标识
+     * @param title 新标题
      * @return 更新后的会话元数据
      */
     @Post
     @Mapping("/sessions/title")
     public Result<SessionMetadata> updateTitle(
             @Header("X-User-Id") String userId,
-            @Body SessionTitleRequest request) {
-        return Result.succeed(sessionService.updateTitle(userId, request));
+            @Param("sessionId") String sessionId,
+            @Param("title") String title) {
+        return Result.succeed(sessionService.updateTitle(userId, sessionId, title));
     }
 
     /**

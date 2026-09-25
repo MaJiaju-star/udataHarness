@@ -3,7 +3,6 @@ package com.udata.harness.service.impl;
 import com.udata.harness.common.domain.GlobalSearchItem;
 import com.udata.harness.common.domain.GlobalSearchResponse;
 import com.udata.harness.common.domain.SearchMatch;
-import com.udata.harness.common.request.GlobalSearchRequest;
 import com.udata.harness.service.UserWorkspaceService;
 import com.udata.harness.service.WorkspaceFileService;
 import org.noear.solon.Utils;
@@ -245,43 +244,47 @@ public class WorkspaceFileServiceImpl implements WorkspaceFileService {
      * <p>不排除隐藏目录；内容模式跳过符号链接、二进制文件和超过 2MB 的文件。</p>
      *
      * @param userId 当前用户标识
-     * @param request 检索词、mode（name/content）、扩展名过滤与结果上限
+     * @param keyword 检索词
+     * @param mode 检索模式：name 或 content
+     * @param extensions 可选扩展名过滤列表
+     * @param maxResults 可选结果上限；为空时使用默认值
      * @return 按文件分组且包含行列信息的检索结果
-     * @throws IllegalArgumentException 请求或关键字为空时抛出
+     * @throws IllegalArgumentException 查询参数或关键字为空时抛出
      */
     @Override
-    public GlobalSearchResponse globalSearch(String userId, GlobalSearchRequest request) {
-        if (request == null || request.getKeyword() == null || request.getKeyword().trim().isEmpty()) {
+    public GlobalSearchResponse globalSearch(String userId, String keyword, String mode,
+                                             List<String> extensions, Integer maxResults) {
+        if (keyword == null || keyword.trim().isEmpty()) {
             throw new IllegalArgumentException("keyword is required");
         }
         Path root = workspaces.getOrCreate(userId);
-        String keyword = request.getKeyword().trim();
+        String trimmedKeyword = keyword.trim();
         //1. 归一化检索参数：模式默认 name，结果上限裁剪到配置最大值。
-        String mode = "content".equalsIgnoreCase(request.getMode()) ? "content" : "name";
-        int maxResults = request.getMaxResults() == null
-                ? MAX_SEARCH_RESULTS : Math.max(1, Math.min(request.getMaxResults(), MAX_SEARCH_RESULTS));
-        Set<String> extensions = normalizeExtensions(request.getExtensions());
+        String normalizedMode = "content".equalsIgnoreCase(mode) ? "content" : "name";
+        int limit = maxResults == null
+                ? MAX_SEARCH_RESULTS : Math.max(1, Math.min(maxResults, MAX_SEARCH_RESULTS));
+        Set<String> normalizedExtensions = normalizeExtensions(extensions);
 
         //2. 初始化响应并按文件系统顺序扫描普通文件。
         GlobalSearchResponse response = new GlobalSearchResponse();
-        response.setKeyword(keyword);
-        response.setMode(mode);
+        response.setKeyword(trimmedKeyword);
+        response.setMode(normalizedMode);
         try (Stream<Path> paths = Files.walk(root)) {
             Iterator<Path> iterator = paths.iterator();
-            while (iterator.hasNext() && response.getTotalMatches() < maxResults) {
+            while (iterator.hasNext() && response.getTotalMatches() < limit) {
                 Path file = iterator.next();
                 if (!Files.isRegularFile(file) || Files.isSymbolicLink(file)
-                        || !matchesExtension(file, extensions)) {
+                        || !matchesExtension(file, normalizedExtensions)) {
                     continue;
                 }
-                if ("content".equals(mode)) {
+                if ("content".equals(normalizedMode)) {
                     try {
-                        searchFileContent(root, file, keyword, maxResults, response);
+                        searchFileContent(root, file, trimmedKeyword, limit, response);
                     } catch (IOException ignored) {
                         // 单个不可读文件不应中断整个工作区检索。
                     }
                 } else {
-                    searchFileName(root, file, keyword, response);
+                    searchFileName(root, file, trimmedKeyword, response);
                 }
             }
         } catch (IOException e) {
@@ -290,7 +293,7 @@ public class WorkspaceFileServiceImpl implements WorkspaceFileService {
 
         //3. 汇总文件数并标记达到上限的响应，方便前端提示结果已截断。
         response.setTotalFiles(response.getItems().size());
-        response.setTruncated(response.getTotalMatches() >= maxResults);
+        response.setTruncated(response.getTotalMatches() >= limit);
         return response;
     }
 

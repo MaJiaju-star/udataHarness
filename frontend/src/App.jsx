@@ -33,6 +33,23 @@ const MonacoEditor = lazy(() => import("./MonacoEditor.jsx"));
 const MonacoDiffEditor = lazy(() => import("./MonacoEditor.jsx").then(module => ({default: module.MonacoDiffEditor})));
 
 const uid = () => `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+
+// 将对象转换为 x-www-form-urlencoded 请求体。
+// 数组以逗号拼接（Solon @Param 可绑定为 List），对象/其余值序列化为 JSON 文本。
+const toForm = (data = {}) => {
+    const params = new URLSearchParams();
+    Object.entries(data).forEach(([key, value]) => {
+        if (value === undefined || value === null) return;
+        if (Array.isArray(value)) {
+            params.append(key, value.join(","));
+        } else if (typeof value === "object") {
+            params.append(key, JSON.stringify(value));
+        } else {
+            params.append(key, String(value));
+        }
+    });
+    return params;
+};
 const emptyTokenUsage = () => ({
     promptTokens: 0,
     thinkTokens: 0,
@@ -644,10 +661,13 @@ function App() {
     const api = useCallback(async (path, options = {}) => {
         const {raw = false, ...fetchOptions} = options;
         const multipart = fetchOptions.body instanceof FormData;
+        const form = fetchOptions.body instanceof URLSearchParams;
         const response = await fetch(path, {
             ...fetchOptions,
             headers: {
-                ...(multipart ? {} : {"Content-Type": "application/json"}),
+                ...(multipart ? {} : form
+                    ? {"Content-Type": "application/x-www-form-urlencoded"}
+                    : {"Content-Type": "application/json"}),
                 "X-User-Id": userId,
                 ...(fetchOptions.headers || {})
             }
@@ -791,7 +811,7 @@ function App() {
         if (hasDirtyFiles() && !window.confirm("当前有未保存文件，切换工作区将放弃这些修改。继续吗？")) return;
         await api("/api/workspaces/activate", {
             method: "POST",
-            body: JSON.stringify({workspaceId})
+            body: toForm({workspaceId})
         });
         await reloadWorkspace();
     }
@@ -799,7 +819,7 @@ function App() {
     async function registerWorkspace(path) {
         if (running) throw new Error("请先停止当前智能体任务");
         if (hasDirtyFiles() && !window.confirm("当前有未保存文件，打开新工作区将放弃这些修改。继续吗？")) return;
-        await api("/api/workspaces", {method: "POST", body: JSON.stringify({path})});
+        await api("/api/workspaces", {method: "POST", body: toForm({path})});
         await reloadWorkspace();
     }
 
@@ -819,7 +839,7 @@ function App() {
     async function createSession() {
         const created = await api("/api/sessions", {
             method: "POST",
-            body: JSON.stringify({title: "新的编码任务", model: selectedModel || meta?.defaultModel})
+            body: toForm({title: "新的编码任务", model: selectedModel || meta?.defaultModel})
         });
         await loadSessions();
         await chooseSession(created);
@@ -844,7 +864,7 @@ function App() {
         if (!title.trim()) throw new Error("会话名称不能为空");
         const updated = await api("/api/sessions/title", {
             method: "POST",
-            body: JSON.stringify({sessionId: session.sessionId, title: title.trim()})
+            body: toForm({sessionId: session.sessionId, title: title.trim()})
         });
         setSessions(items => items.map(item =>
             item.sessionId === updated.sessionId ? {...item, ...updated} : item
@@ -1126,7 +1146,7 @@ function App() {
         )) return;
         const updated = await api("/api/sessions/permission", {
             method: "POST",
-            body: JSON.stringify({sessionId: current.sessionId, permissionMode})
+            body: toForm({sessionId: current.sessionId, permissionMode})
         });
         setCurrent(updated);
         setSessions(items => items.map(item =>
@@ -1142,7 +1162,7 @@ function App() {
         )) return;
         const sandboxEnabled = await api("/api/settings/sandbox", {
             method: "POST",
-            body: JSON.stringify({enabled})
+            body: toForm({enabled})
         });
         setMeta(value => ({...value, sandboxEnabled}));
         notify(sandboxEnabled ? "已开启沙箱保护" : "已关闭沙箱保护");
@@ -2322,7 +2342,9 @@ function ExplorerPanel({api, notify, onOpenFile}) {
     async function create() {
         const path = window.prompt("新文件的相对路径", "src/new-file.txt");
         if (!path) return;
-        const data = await api("/api/files/save", {method: "POST", body: JSON.stringify({path, content: ""})});
+        const data = await api("/api/files/save", {method: "POST",
+            headers: {"Content-Type": "application/x-www-form-urlencoded"},
+            body: new URLSearchParams({path, content: ""}).toString()});
         await loadTree();
         onOpenFile(data.path);
     }
@@ -2534,7 +2556,8 @@ function EditorPanel({api, notify, editorTheme}) {
         if (!active || active.previewType === "image" || active.previewType === "video") return;
         const file = await api("/api/files/save", {
             method: "POST",
-            body: JSON.stringify({path: active.path, content: active.content})
+            headers: {"Content-Type": "application/x-www-form-urlencoded"},
+            body: new URLSearchParams({path: active.path, content: active.content}).toString()
         });
         markSaved(active.path, file);
         notify(`已保存 ${active.path}`);
@@ -2917,7 +2940,7 @@ function IntegrationsView({api, notify}) {
     async function save() {
         let config;
         try { config = JSON.parse(json); } catch { throw new Error("请输入有效 JSON"); }
-        await api("/api/integrations/mcp", {method: "POST", body: JSON.stringify(config)});
+        await api("/api/integrations/mcp", {method: "POST", body: toForm(config)});
         notify("MCP 配置已保存");
         await load();
     }
@@ -2971,7 +2994,11 @@ function CapabilitiesView({api, notify, section = "skills"}) {
 
     async function saveSkill() {
         if (!skillName.trim()) throw new Error("请输入 Skill 名称");
-        await api("/api/capabilities/skills", {method: "POST", body: JSON.stringify({name: skillName, content: skillContent})});
+        await api("/api/capabilities/skills", {
+            method: "POST",
+            headers: {"Content-Type": "application/x-www-form-urlencoded"},
+            body: new URLSearchParams({name: skillName, content: skillContent}).toString()
+        });
         setSkillName("");
         notify("Skill 已保存到后台仓库");
         await load();
@@ -2985,7 +3012,9 @@ function CapabilitiesView({api, notify, section = "skills"}) {
             binary += String.fromCharCode(...bytes.subarray(offset, offset + 0x8000));
         }
         await api("/api/capabilities/skills/import", {
-            method: "POST", body: JSON.stringify({name: skillName, archiveBase64: btoa(binary)})
+            method: "POST",
+            headers: {"Content-Type": "application/x-www-form-urlencoded"},
+            body: new URLSearchParams({name: skillName, archiveBase64: btoa(binary)}).toString()
         });
         setSkillFile(null);
         setSkillName("");
@@ -3004,7 +3033,11 @@ function CapabilitiesView({api, notify, section = "skills"}) {
     }
     async function saveAgent() {
         if (!agentName.trim()) throw new Error("请输入 Subagent 名称");
-        await api("/api/capabilities/agents", {method: "POST", body: JSON.stringify({name: agentName, content: agentContent})});
+        await api("/api/capabilities/agents", {
+            method: "POST",
+            headers: {"Content-Type": "application/x-www-form-urlencoded"},
+            body: new URLSearchParams({name: agentName, content: agentContent}).toString()
+        });
         setAgentName("");
         notify("Subagent 已保存并刷新");
         await load();

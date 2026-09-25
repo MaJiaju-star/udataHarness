@@ -60,9 +60,13 @@ export default function GlobalSearchDialog({api, initialMode = "content", onClos
             api("/api/files/search", {
                 method: "POST",
                 signal: controller.signal,
-                body: JSON.stringify({
-                    keyword: keyword.trim(), mode, extensions, maxResults: 500
-                })
+                headers: {"Content-Type": "application/x-www-form-urlencoded"},
+                body: new URLSearchParams({
+                    keyword: keyword.trim(),
+                    mode,
+                    extensions: (extensions || []).join(","),
+                    maxResults: 500
+                }).toString()
             }).then(setResponse)
                 .catch(reason => {
                     if (reason.name !== "AbortError") setError(reason.message);

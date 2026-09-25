@@ -1,7 +1,6 @@
 package com.udata.harness.service.impl;
 
 import com.udata.harness.common.domain.GlobalSearchResponse;
-import com.udata.harness.common.request.GlobalSearchRequest;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import org.noear.solon.Utils;
@@ -115,10 +114,10 @@ class WorkspaceFileServiceImplTest {
         files.save("alice", ".hidden/workspace.md", "workspace markdown");
         files.save("alice", "src/other.txt", "workspace text");
 
-        GlobalSearchRequest nameRequest = request("workspace", "name", Utils.asList("java"));
-        GlobalSearchResponse names = files.globalSearch("alice", nameRequest);
-        GlobalSearchRequest contentRequest = request("workspace", "content", Utils.asList("java", "md"));
-        GlobalSearchResponse contents = files.globalSearch("alice", contentRequest);
+        GlobalSearchResponse names =
+                files.globalSearch("alice", "workspace", "name", Utils.asList("java"), null);
+        GlobalSearchResponse contents =
+                files.globalSearch("alice", "workspace", "content", Utils.asList("java", "md"), null);
 
         assertEquals(1, names.getTotalFiles());
         assertEquals("src/WorkspaceService.java", names.getItems().get(0).getPath());
@@ -128,14 +127,6 @@ class WorkspaceFileServiceImplTest {
                 .filter(item -> item.getPath().endsWith("WorkspaceService.java"))
                 .findFirst().orElseThrow(() -> new AssertionError("search result missing"))
                 .getMatches().get(0).getLine());
-    }
-
-    private GlobalSearchRequest request(String keyword, String mode, List<String> extensions) {
-        GlobalSearchRequest request = new GlobalSearchRequest();
-        request.setKeyword(keyword);
-        request.setMode(mode);
-        request.setExtensions(extensions);
-        return request;
     }
 
     /** 以 Java 8 兼容方式读取下载响应流。 */

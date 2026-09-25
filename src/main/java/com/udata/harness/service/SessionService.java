@@ -1,9 +1,6 @@
 package com.udata.harness.service;
 
 import com.udata.harness.common.domain.SessionMetadata;
-import com.udata.harness.common.request.CreateSessionRequest;
-import com.udata.harness.common.request.SessionPermissionRequest;
-import com.udata.harness.common.request.SessionTitleRequest;
 
 import java.util.List;
 import java.util.Map;
@@ -35,19 +32,21 @@ public interface SessionService {
      * 创建会话；未指定模型时使用用户 Harness 的默认模型。
      *
      * @param userId 当前用户标识
-     * @param request 可选标题与模型
+     * @param title 可选标题
+     * @param model 可选模型
      * @return 已持久化的会话元数据
      */
-    SessionMetadata create(String userId, CreateSessionRequest request);
+    SessionMetadata create(String userId, String title, String model);
 
     /**
      * 更新会话级 standard/full 权限；运行过程中禁止切换。
      *
      * @param userId 当前用户标识
-     * @param request 目标 sessionId 与目标权限模式
+     * @param sessionId 目标会话标识
+     * @param permissionMode 目标权限模式
      * @return 更新后的会话元数据
      */
-    SessionMetadata updatePermission(String userId, SessionPermissionRequest request);
+    SessionMetadata updatePermission(String userId, String sessionId, String permissionMode);
 
     /**
      * 更新用户工作区级沙箱开关；该用户存在运行中会话时禁止切换。
@@ -62,10 +61,11 @@ public interface SessionService {
      * 显式重命名会话；运行上下文与消息历史不受影响。
      *
      * @param userId 当前用户标识
-     * @param request 目标 sessionId 与新标题
+     * @param sessionId 目标会话标识
+     * @param title 新标题
      * @return 更新后的会话元数据
      */
-    SessionMetadata updateTitle(String userId, SessionTitleRequest request);
+    SessionMetadata updateTitle(String userId, String sessionId, String title);
 
     /**
      * 先取消可能存在的活动运行，再删除会话及持久化历史。

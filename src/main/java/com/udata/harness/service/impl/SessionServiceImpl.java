@@ -2,9 +2,6 @@ package com.udata.harness.service.impl;
 
 import com.udata.harness.common.domain.SessionMetadata;
 import com.udata.harness.common.domain.WorkspaceMetadata;
-import com.udata.harness.common.request.CreateSessionRequest;
-import com.udata.harness.common.request.SessionPermissionRequest;
-import com.udata.harness.common.request.SessionTitleRequest;
 import com.udata.harness.common.support.ActiveRunRegistry;
 import com.udata.harness.repository.SessionRepository;
 import com.udata.harness.service.ChatService;
@@ -123,14 +120,13 @@ public class SessionServiceImpl implements SessionService {
      * <p>请求未指定模型时使用该用户引擎的默认模型，最终选择会固定在会话元数据中。</p>
      *
      * @param userId 当前用户标识
-     * @param request 可选标题与模型；为空时全部使用默认值
+     * @param title 可选标题；为空时使用占位标题
+     * @param model 可选模型；为空时使用引擎默认模型
      * @return 已持久化的会话元数据
      */
     @Override
-    public SessionMetadata create(String userId, CreateSessionRequest request) {
+    public SessionMetadata create(String userId, String title, String model) {
         HarnessEngine engine = engines.get(userId);
-        String title = request == null ? null : request.getTitle();
-        String model = request == null ? null : request.getModel();
         if (Utils.isBlank(model)) {
             model = engine.getDefaultModel();
         }
@@ -144,25 +140,26 @@ public class SessionServiceImpl implements SessionService {
      * <p>运行中的会话禁止切换权限，避免同一轮工具调用前后使用不同授权策略。</p>
      *
      * @param userId 当前用户标识
-     * @param request 目标 sessionId 与目标权限模式
+     * @param sessionId 目标会话标识
+     * @param permissionMode 目标权限模式
      * @return 更新后的会话元数据
      * @throws IllegalArgumentException sessionId 为空时抛出
      * @throws IllegalStateException 会话正在运行时抛出
      */
     @Override
     public SessionMetadata updatePermission(
-            String userId, SessionPermissionRequest request) {
-        if (request == null || Utils.isBlank(request.getSessionId())) {
+            String userId, String sessionId, String permissionMode) {
+        if (Utils.isBlank(sessionId)) {
             throw new IllegalArgumentException("sessionId is required");
         }
-        if (activeRuns.isActive(request.getSessionId())) {
+        if (activeRuns.isActive(sessionId)) {
             throw new IllegalStateException(
                     "Cannot change permission mode while the session is running");
         }
         return sessionRepository.updatePermissionMode(
                 UserWorkspaceService.requireUserId(userId),
-                request.getSessionId(),
-                request.getPermissionMode());
+                sessionId,
+                permissionMode);
     }
 
     /**
@@ -192,18 +189,19 @@ public class SessionServiceImpl implements SessionService {
      * 显式重命名会话，只更新产品元数据。
      *
      * @param userId 当前用户标识
-     * @param request 目标 sessionId 与新标题
+     * @param sessionId 目标会话标识
+     * @param title 新标题
      * @return 更新后的会话元数据
      */
     @Override
-    public SessionMetadata updateTitle(String userId, SessionTitleRequest request) {
-        if (request == null || Utils.isBlank(request.getSessionId())) {
+    public SessionMetadata updateTitle(String userId, String sessionId, String title) {
+        if (Utils.isBlank(sessionId)) {
             throw new IllegalArgumentException("sessionId is required");
         }
         return sessionRepository.updateTitle(
                 UserWorkspaceService.requireUserId(userId),
-                request.getSessionId(),
-                request.getTitle());
+                sessionId,
+                title);
     }
 
     /**

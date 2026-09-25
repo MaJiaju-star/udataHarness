@@ -1,8 +1,5 @@
 package com.udata.harness.service;
 
-import com.udata.harness.common.request.CapabilityRequest;
-import com.udata.harness.common.request.SkillArchiveRequest;
-
 import java.util.List;
 import java.util.Map;
 
@@ -32,16 +29,18 @@ public interface CapabilityService {
     /**
      * 保存只有 SKILL.md 的单文件技能。
      *
-     * @param request 技能名称与内容
+     * @param name 技能名称
+     * @param content SKILL.md 内容
      */
-    void saveSkill(CapabilityRequest request);
+    void saveSkill(String name, String content);
 
     /**
      * 安全解压并保存包含脚本、引用资料和资源的完整技能包。
      *
-     * @param request 技能名称与 ZIP 的 Base64 内容
+     * @param name 技能名称
+     * @param archiveBase64 技能 ZIP 的 Base64 内容
      */
-    void importSkill(SkillArchiveRequest request);
+    void importSkill(String name, String archiveBase64);
 
     /**
      * 将技能复制到用户的 .soloncode/skills 目录并刷新引擎。
@@ -62,9 +61,10 @@ public interface CapabilityService {
     /**
      * 保存或覆盖共享 Subagent Markdown 定义。
      *
-     * @param request Subagent 名称与定义内容
+     * @param name Subagent 名称
+     * @param content Subagent 定义内容
      */
-    void saveAgent(CapabilityRequest request);
+    void saveAgent(String name, String content);
 
     /**
      * 删除共享技能定义。

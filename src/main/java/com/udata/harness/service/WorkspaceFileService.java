@@ -1,7 +1,6 @@
 package com.udata.harness.service;
 
 import com.udata.harness.common.domain.GlobalSearchResponse;
-import com.udata.harness.common.request.GlobalSearchRequest;
 import org.noear.solon.core.handle.DownloadedFile;
 import org.noear.solon.core.handle.UploadedFile;
 
@@ -73,10 +72,13 @@ public interface WorkspaceFileService {
      * 按文件名称或文本内容执行带扩展名过滤的全局检索。
      *
      * @param userId 当前用户标识
-     * @param request 检索词、模式、扩展名过滤与结果上限
+     * @param keyword 检索词
+     * @param mode 检索模式：name 或 content
+     * @param extensions 可选扩展名过滤列表
+     * @param maxResults 可选结果上限；为空时使用默认值
      * @return 按文件分组的检索结果
      */
-    GlobalSearchResponse globalSearch(String userId, GlobalSearchRequest request);
+    GlobalSearchResponse globalSearch(String userId, String keyword, String mode, List<String> extensions, Integer maxResults);
 
     /**
      * 将上传文件保存到工作区指定目录，重名文件会被覆盖。

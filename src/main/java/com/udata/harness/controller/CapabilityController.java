@@ -1,10 +1,7 @@
 package com.udata.harness.controller;
 
-import com.udata.harness.common.request.CapabilityRequest;
-import com.udata.harness.common.request.SkillArchiveRequest;
 import com.udata.harness.service.CapabilityService;
 import com.udata.harness.service.UserWorkspaceService;
-import org.noear.solon.annotation.Body;
 import org.noear.solon.annotation.Controller;
 import org.noear.solon.annotation.Delete;
 import org.noear.solon.annotation.Get;
@@ -58,15 +55,17 @@ public class CapabilityController {
      * 条目路径与大小限制由服务层检查，避免 ZIP Slip 和越界写入。</p>
      *
      * @param userId 发起管理操作的用户标识
-     * @param request 技能名称和 ZIP 内容的 Base64 文本
+     * @param name 技能名称
+     * @param archiveBase64 ZIP 内容的 Base64 文本
      * @return 无响应数据
      */
     @Post
     @Mapping("/skills/import")
     public Result<Void> importSkill(@Header("X-User-Id") String userId,
-                                    @Body SkillArchiveRequest request) {
+                                    @Param("name") String name,
+                                    @Param("archiveBase64") String archiveBase64) {
         UserWorkspaceService.requireUserId(userId);
-        capabilities.importSkill(request);
+        capabilities.importSkill(name, archiveBase64);
         return Result.succeed();
     }
 
@@ -101,15 +100,17 @@ public class CapabilityController {
      * {@code /skills/import}。</p>
      *
      * @param userId 发起管理操作的用户标识
-     * @param request 技能名称及 SKILL.md 内容
+     * @param name 技能名称
+     * @param content SKILL.md 内容
      * @return 无响应数据
      */
     @Post
     @Mapping("/skills")
     public Result<Void> saveSkill(@Header("X-User-Id") String userId,
-                                  @Body CapabilityRequest request) {
+                                  @Param("name") String name,
+                                  @Param("content") String content) {
         UserWorkspaceService.requireUserId(userId);
-        capabilities.saveSkill(request);
+        capabilities.saveSkill(name, content);
         return Result.succeed();
     }
 
@@ -146,15 +147,17 @@ public class CapabilityController {
      * 新建或覆盖 Subagent Markdown 定义。
      *
      * @param userId 发起管理操作的用户标识
-     * @param request Subagent 名称及定义内容
+     * @param name Subagent 名称
+     * @param content Subagent 定义内容
      * @return 无响应数据
      */
     @Post
     @Mapping("/agents")
     public Result<Void> saveAgent(@Header("X-User-Id") String userId,
-                                  @Body CapabilityRequest request) {
+                                  @Param("name") String name,
+                                  @Param("content") String content) {
         UserWorkspaceService.requireUserId(userId);
-        capabilities.saveAgent(request);
+        capabilities.saveAgent(name, content);
         return Result.succeed();
     }
 

@@ -1,10 +1,7 @@
 package com.udata.harness.controller;
 
 import com.udata.harness.common.domain.GlobalSearchResponse;
-import com.udata.harness.common.request.FileWriteRequest;
-import com.udata.harness.common.request.GlobalSearchRequest;
 import com.udata.harness.service.WorkspaceFileService;
-import org.noear.solon.annotation.Body;
 import org.noear.solon.annotation.Controller;
 import org.noear.solon.annotation.Delete;
 import org.noear.solon.annotation.Get;
@@ -73,14 +70,16 @@ public class WorkspaceFileController {
      * 新建或覆盖工作区内的文本文件。
      *
      * @param userId 当前用户标识
-     * @param request 相对路径与完整文本内容
+     * @param path 文件相对路径
+     * @param content 完整文本内容，可为空
      * @return 保存后的文件元数据
      */
     @Post
     @Mapping("/save")
     public Result<Map<String, Object>> save(@Header("X-User-Id") String userId,
-                                            @Body FileWriteRequest request) {
-        return Result.succeed(files.save(userId, request.getPath(), request.getContent()));
+                                            @Param("path") String path,
+                                            @Param(value = "content", required = false) String content) {
+        return Result.succeed(files.save(userId, path, content));
     }
 
     /**
@@ -133,15 +132,21 @@ public class WorkspaceFileController {
      * 按文件名称或文本内容检索当前工作区。
      *
      * @param userId 当前用户标识
-     * @param request 检索词、模式、扩展名过滤和结果上限
+     * @param keyword 检索关键字，必填
+     * @param mode 检索模式：name 按文件名，content 按文件内容；缺省为 name
+     * @param extensions 可选扩展名过滤列表，逗号分隔
+     * @param maxResults 可选结果上限；为空时使用服务端默认值
      * @return 按文件分组且包含行列信息的检索结果
      */
     @Post
     @Mapping("/search")
     public Result<GlobalSearchResponse> globalSearch(
             @Header("X-User-Id") String userId,
-            @Body GlobalSearchRequest request) {
-        return Result.succeed(files.globalSearch(userId, request));
+            @Param("keyword") String keyword,
+            @Param(value = "mode", required = false) String mode,
+            @Param(value = "extensions", required = false) List<String> extensions,
+            @Param(value = "maxResults", required = false) Integer maxResults) {
+        return Result.succeed(files.globalSearch(userId, keyword, mode, extensions, maxResults));
     }
 
     /**

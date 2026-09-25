@@ -1,7 +1,5 @@
 package com.udata.harness.service.impl;
 
-import com.udata.harness.common.request.CapabilityRequest;
-import com.udata.harness.common.request.SkillArchiveRequest;
 import com.udata.harness.service.CapabilityService;
 import com.udata.harness.service.UserHarnessEngineService;
 import com.udata.harness.service.UserWorkspaceService;
@@ -158,12 +156,13 @@ public class CapabilityServiceImpl implements CapabilityService {
      * <p>适用于只包含 Markdown 指令的简单技能；带脚本与资源的多文件技能应使用
      * {@link #importSkill}。</p>
      *
-     * @param request 技能名称与 SKILL.md 内容
+     * @param name 技能名称
+     * @param content SKILL.md 内容
      * @throws IllegalArgumentException 名称非法或内容为空/超大时抛出
      */
-    public void saveSkill(CapabilityRequest request) {
-        String name = requireName(request);
-        String content = requireContent(request);
+    public void saveSkill(String name, String content) {
+        name = requireName(name);
+        content = requireContent(content);
         Path directory = skillLibrary().resolve(name).normalize();
         requireInside(skillLibrary(), directory);
         try {
@@ -181,17 +180,18 @@ public class CapabilityServiceImpl implements CapabilityService {
      * <p>先解压到临时目录并定位唯一 Skill 根，再复制到仓库。路径穿越、符号链接逃逸、
      * 文件数和总体积均在解压阶段受限，失败时不会留下半完成目标目录。</p>
      *
-     * @param request 技能名称与 ZIP 内容的 Base64 文本
+     * @param name 技能名称
+     * @param archiveBase64 技能 ZIP 内容的 Base64 文本
      * @throws IllegalArgumentException 名非法、Base64 无效或 ZIP 超出限制时抛出
      */
-    public void importSkill(SkillArchiveRequest request) {
-        String name = requireName(request == null ? null : request.getName());
-        if (request == null || request.getArchiveBase64() == null) {
+    public void importSkill(String name, String archiveBase64) {
+        name = requireName(name);
+        if (archiveBase64 == null) {
             throw new IllegalArgumentException("archiveBase64 is required");
         }
         byte[] archive;
         try {
-            archive = Base64.getDecoder().decode(request.getArchiveBase64());
+            archive = Base64.getDecoder().decode(archiveBase64);
         } catch (IllegalArgumentException e) {
             throw new IllegalArgumentException("archiveBase64 is invalid");
         }
@@ -272,11 +272,12 @@ public class CapabilityServiceImpl implements CapabilityService {
     /**
      * 保存服务级 Subagent Markdown，并刷新所有已经实例化的用户引擎。
      *
-     * @param request Subagent 名称与 Markdown 定义内容
+     * @param name Subagent 名称
+     * @param content Markdown 定义内容
      */
-    public void saveAgent(CapabilityRequest request) {
-        String name = requireName(request);
-        String content = requireContent(request);
+    public void saveAgent(String name, String content) {
+        name = requireName(name);
+        content = requireContent(content);
         Path root = agentLibrary();
         Path file = root.resolve(name + ".md").normalize();
         requireInside(root, file);
@@ -387,15 +388,7 @@ public class CapabilityServiceImpl implements CapabilityService {
         }
     }
 
-    private static String requireName(CapabilityRequest request) {
-        if (request == null) {
-            throw new IllegalArgumentException("request is required");
-        }
-        return requireName(request.getName());
-    }
-
-    private static String requireContent(CapabilityRequest request) {
-        String content = request.getContent();
+    private static String requireContent(String content) {
         if (content == null || content.trim().isEmpty()) {
             throw new IllegalArgumentException("content is required");
         }

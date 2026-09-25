@@ -1,6 +1,5 @@
 package com.udata.harness.service.impl;
 
-import com.udata.harness.common.request.CapabilityRequest;
 import com.udata.harness.service.UserHarnessEngineService;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -73,10 +72,7 @@ class CapabilityServiceImplTest {
         Path data = tempDir.resolve("data");
         CapabilityServiceImpl service = new CapabilityServiceImpl(
                 engines, new UserWorkspaceServiceImpl(workspace), data);
-        CapabilityRequest request = new CapabilityRequest();
-        request.setName("review");
-        request.setContent("---\ndescription: Review code\n---\n# Review");
-        service.saveSkill(request);
+        service.saveSkill("review", "---\ndescription: Review code\n---\n# Review");
         Path library = data.resolve("skill-library/review");
         Files.createDirectories(library.resolve("scripts"));
         Files.write(library.resolve("scripts/check.js"),
