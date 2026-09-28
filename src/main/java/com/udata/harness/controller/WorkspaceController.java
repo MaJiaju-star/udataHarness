@@ -1,7 +1,6 @@
 package com.udata.harness.controller;
 
 import com.udata.harness.common.domain.WorkspaceMetadata;
-import com.udata.harness.service.UserHarnessEngineService;
 import com.udata.harness.service.UserWorkspaceService;
 import org.noear.solon.annotation.Controller;
 import org.noear.solon.annotation.Get;
@@ -29,12 +28,6 @@ public class WorkspaceController {
      */
     @Inject
     private UserWorkspaceService workspaces;
-
-    /**
-     * 工作区切换后重建用户引擎。
-     */
-    @Inject
-    private UserHarnessEngineService engines;
 
     /**
      * 返回当前用户已注册的工作区。
@@ -82,9 +75,9 @@ public class WorkspaceController {
     @Mapping
     public Result<WorkspaceMetadata> register(
             @Header("X-User-Id") String userId,
-            @Param("path") String path) {
-        WorkspaceMetadata workspace = workspaces.register(userId, path);
-        engines.resetUser(userId);
+            @Param("path") String path,
+            @Param(value = "activate", required = false) Boolean activate) {
+        WorkspaceMetadata workspace = workspaces.register(userId, path, !Boolean.FALSE.equals(activate));
         return Result.succeed(workspace);
     }
 
@@ -101,7 +94,6 @@ public class WorkspaceController {
             @Header("X-User-Id") String userId,
             @Param("workspaceId") String workspaceId) {
         WorkspaceMetadata workspace = workspaces.activate(userId, workspaceId);
-        engines.resetUser(userId);
         return Result.succeed(workspace);
     }
 }

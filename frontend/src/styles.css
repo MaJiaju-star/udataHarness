@@ -1557,7 +1557,7 @@ button, input, textarea, select { outline: none; }
 }
 .context-reference svg { flex: 0 0 auto; }
 .context-reference code { overflow: hidden; font: 10.5px/1.35 "Cascadia Code", Consolas, monospace; text-overflow: ellipsis; white-space: nowrap; }
-.composer-box textarea {
+.composer-box textarea, .composer-box .reference-input {
     display: block;
     width: 100%;
     min-height: 68px;
@@ -2016,7 +2016,7 @@ button, input, textarea, select { outline: none; }
     .sandbox-toggle { padding: 0 6px; }
     .permission-mode-switch button { min-height: 30px; padding: 0 8px; }
     .composer-box { border-radius: 15px; box-shadow: 0 5px 20px rgba(27, 35, 40, .08); }
-    .composer-box textarea { min-height: 54px; max-height: 128px; padding: 12px 12px 5px; font-size: 16px; }
+    .composer-box textarea, .composer-box .reference-input { min-height: 54px; max-height: 128px; padding: 12px 12px 5px; font-size: 16px; }
     .composer-footer { padding: 5px 7px 7px 12px; }
     .composer-tools > span { display: none; }
     .context-reference { margin: 8px 8px 0; }
@@ -2238,3 +2238,76 @@ html[data-mode="dark"] .thinking-icon,
 html[data-mode="dark"] .tool-icon { border-color: var(--border-default); background: var(--surface-raised); }
 html[data-mode="dark"] .html-preview iframe { border-color: var(--border-default); background: white; }
 html[data-mode="dark"] .media-preview { background: var(--surface-2); }
+
+/* IDEA host: keep the shared chat, let the IDE own files and editors. */
+.reference-input {
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+    overflow-y: auto;
+    outline: none;
+}
+.reference-input[data-empty="true"]::before {
+    content: attr(data-placeholder);
+    color: var(--text-secondary);
+    pointer-events: none;
+}
+.reference-input[aria-disabled="true"] { opacity: .65; }
+.prompt-reference-tag {
+    display: inline-block;
+    max-width: 100%;
+    margin: 1px 2px;
+    padding: 1px 7px;
+    border: 1px solid var(--accent);
+    border-radius: 7px;
+    background: var(--accent-soft);
+    color: var(--accent-dark);
+    font-size: .9em;
+    line-height: 1.5;
+    vertical-align: baseline;
+    overflow-wrap: anywhere;
+    user-select: all;
+}
+.app-shell.workbench.idea-shell { display: block; min-width: 0; }
+.idea-shell > .sidebar, .idea-shell > .resize-handle { display: none !important; }
+.idea-shell .workspace-shell { display: grid !important; height: 100%; grid-template-rows: auto 58px minmax(0, 1fr); }
+.idea-shell .sidebar-toggle, .idea-shell .global-search-trigger,
+.idea-shell .mobile-pane-switch { display: none; }
+.idea-shell .app-header { padding: 8px 12px; min-width: 0; }
+.idea-shell .header-title h1 { font-size: 15px; }
+.idea-shell .model-chip { display: none; }
+.idea-shell .composer-wrap { padding: 8px; }
+.idea-shell .permission-mode-panel { flex-wrap: wrap; gap: 8px; }
+.idea-shell .welcome-view { padding: 20px; }
+.idea-toolbar { padding: 10px 12px; background: var(--surface-1); border-bottom: 1px solid var(--line); }
+.idea-project { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted); font-size: 12px; margin-bottom: 8px; }
+.idea-toolbar-row { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
+.idea-toolbar-row select { flex: 1; min-width: 100px; }
+.idea-toolbar-row button, .idea-toolbar-row select { background: var(--surface-2); color: var(--text); border: 1px solid var(--line); border-radius: 6px; padding: 5px 7px; font-size: 12px; }
+.idea-context-list { max-height: 150px; overflow: auto; padding: 6px 8px; font-size: 12px; }
+.idea-context-list summary { cursor: pointer; overflow-wrap: anywhere; }
+.idea-context-list summary button { margin-left: 8px; }
+.idea-context-list pre { max-height: 100px; overflow: auto; white-space: pre-wrap; }
+.page-dialog-backdrop { z-index: 1000; padding: 16px; }
+.page-dialog { width: min(420px, 100%); max-height: calc(100dvh - 32px); overflow: auto; box-sizing: border-box; padding: 22px; border: 1px solid var(--line); border-radius: 14px; background: var(--surface, #fff); color: var(--text); box-shadow: 0 20px 70px rgba(0,0,0,.25); }
+.page-dialog h2 { margin: 0 0 16px; font-size: 18px; }
+.page-dialog p { margin: 0; line-height: 1.7; overflow-wrap: anywhere; }
+.page-dialog input { width: 100%; box-sizing: border-box; padding: 10px 12px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface, #fff); color: inherit; font: inherit; }
+.page-dialog footer { display: flex; justify-content: flex-end; gap: 8px; margin-top: 22px; }
+.page-dialog footer button { min-height: 36px; padding: 7px 18px; border: 1px solid var(--line); border-radius: 8px; }
+.session-history { width: min(620px, 100%); max-height: calc(100dvh - 40px); display: flex; flex-direction: column; background: var(--surface-1); color: var(--text); border: 1px solid var(--line); border-radius: 14px; box-shadow: 0 20px 70px rgba(0,0,0,.25); overflow: hidden; }
+.session-history header { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 18px; }
+.session-history h2 { margin: 0 0 6px; font-size: 18px; }
+.session-history small, .session-history-tip { color: var(--text-secondary); }
+.session-history button { padding: 7px 10px; border: 1px solid var(--line); border-radius: 7px; background: var(--surface-2); color: inherit; }
+.session-history button:disabled { opacity: .45; cursor: default; }
+.session-history-tools { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; padding: 0 18px 14px; border-bottom: 1px solid var(--line); }
+.session-history-tools label { display: flex; align-items: center; gap: 6px; font-size: 13px; }
+.session-history .session-history-danger { color: var(--danger); }
+.session-history-tip { margin: 12px 18px 0; font-size: 12px; line-height: 1.6; }
+.session-history-list { overflow: auto; padding: 8px 12px 16px; }
+.session-history-row { display: flex; align-items: center; gap: 10px; padding: 6px; border-radius: 8px; }
+.session-history-row.active { background: var(--accent-soft); }
+.session-history-row input { flex-shrink: 0; }
+.session-history-row .session-history-title { flex: 1; min-width: 0; text-align: left; overflow-wrap: anywhere; background: transparent; border-color: transparent; }
+.session-history-title small { display: block; margin-top: 4px; }
+.section-label > button { padding: 3px 6px; border-radius: 5px; font-size: 11px; color: var(--text-secondary); }

@@ -10,3 +10,7 @@
 /src/main/resources/static/
 
 .soloncode/
+/idea-plugin/.gradle/
+/idea-plugin/.intellijPlatform/
+/idea-plugin/build/
+/idea-plugin/.kotlin/

@@ -18,6 +18,7 @@ export const useWorkspaceStore = create(persist((set, get) => ({
     treeRefreshVersion: 0,
     referenceEnabled: true,
     promptInsertion: null,
+    promptReferences: [],
     themeMode: "system",
     colorTheme: "emerald",
     resolvedTheme: "light",
@@ -29,10 +30,12 @@ export const useWorkspaceStore = create(persist((set, get) => ({
     setMobilePane: mobilePane => set({mobilePane}),
     toggleReference: () => set(state => ({referenceEnabled: !state.referenceEnabled})),
     enableReference: () => set({referenceEnabled: true}),
-    insertPromptReference: text => set({
-        promptInsertion: {id: `${Date.now()}-${Math.random()}`, text},
+    insertPromptReference: (text, references = []) => set(state => ({
+        promptReferences: [...new Set([...state.promptReferences, ...references.map(item => item.trim())])].slice(-256),
+        promptInsertion: {id: `${Date.now()}-${Math.random()}`, text: state.promptInsertion?.text
+            ? `${state.promptInsertion.text} ${text}` : text},
         mobilePane: "chat"
-    }),
+    })),
     consumePromptInsertion: id => set(state => ({
         promptInsertion: state.promptInsertion?.id === id ? null : state.promptInsertion
     })),

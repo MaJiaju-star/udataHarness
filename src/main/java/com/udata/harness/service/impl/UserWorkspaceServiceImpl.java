@@ -3,6 +3,7 @@ package com.udata.harness.service.impl;
 import com.udata.harness.common.domain.WorkspaceMetadata;
 import com.udata.harness.service.UserWorkspaceService;
 import org.noear.solon.Utils;
+import org.noear.solon.core.handle.Context;
 
 import java.io.IOException;
 import java.io.InputStream;
@@ -98,7 +99,7 @@ public class UserWorkspaceServiceImpl implements UserWorkspaceService {
      * @return 工作区列表，按最近打开时间倒序
      */
     @Override
-    public List<WorkspaceMetadata> list(String userId) {
+    public synchronized List<WorkspaceMetadata> list(String userId) {
         String safeUserId = UserWorkspaceService.requireUserId(userId);
         Properties properties = load(safeUserId);
         ensureDefault(safeUserId, properties);
@@ -122,7 +123,17 @@ public class UserWorkspaceServiceImpl implements UserWorkspaceService {
      * @return 当前激活工作区元数据
      */
     @Override
-    public WorkspaceMetadata getActive(String userId) {
+    public synchronized WorkspaceMetadata getActive(String userId) {
+        // HTTP clients select independently; requests without this header retain legacy behavior.
+        Context context = Context.current();
+        String selected = context == null ? null : context.header("X-Workspace-Id");
+        if (selected != null && !selected.trim().isEmpty()) {
+            WorkspaceMetadata workspace = resolve(userId, selected.trim());
+            if (!Files.isDirectory(Paths.get(workspace.getPath()))) {
+                throw new IllegalArgumentException("Workspace directory not found");
+            }
+            return workspace;
+        }
         String safeUserId = UserWorkspaceService.requireUserId(userId);
         Properties properties = load(safeUserId);
         ensureDefault(safeUserId, properties);
@@ -147,6 +158,11 @@ public class UserWorkspaceServiceImpl implements UserWorkspaceService {
      */
     @Override
     public WorkspaceMetadata register(String userId, String path) {
+        return register(userId, path, true);
+    }
+
+    @Override
+    public synchronized WorkspaceMetadata register(String userId, String path, boolean activate) {
         //1. 解析目录并确认它位于后端允许浏览的根路径内。
         String safeUserId = UserWorkspaceService.requireUserId(userId);
         Path directory = resolveAllowed(path);
@@ -164,9 +180,9 @@ public class UserWorkspaceServiceImpl implements UserWorkspaceService {
         properties.setProperty(workspaceId + ".path", directory.toString());
         properties.setProperty(workspaceId + ".name", displayName(directory));
         properties.setProperty(workspaceId + ".lastOpenedAt", String.valueOf(System.currentTimeMillis()));
-        properties.setProperty(ACTIVE_KEY, workspaceId);
+        if (activate) properties.setProperty(ACTIVE_KEY, workspaceId);
         save(safeUserId, properties);
-        return toMetadata(properties, workspaceId, workspaceId);
+        return toMetadata(properties, workspaceId, properties.getProperty(ACTIVE_KEY, DEFAULT_WORKSPACE_ID));
     }
 
     /**
@@ -178,7 +194,7 @@ public class UserWorkspaceServiceImpl implements UserWorkspaceService {
      * @throws IllegalArgumentException 工作区不存在或目录已失效时抛出
      */
     @Override
-    public WorkspaceMetadata activate(String userId, String workspaceId) {
+    public synchronized WorkspaceMetadata activate(String userId, String workspaceId) {
         String safeUserId = UserWorkspaceService.requireUserId(userId);
         Properties properties = load(safeUserId);
         ensureDefault(safeUserId, properties);

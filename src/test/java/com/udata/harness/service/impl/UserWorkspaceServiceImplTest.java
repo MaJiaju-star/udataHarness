@@ -17,6 +17,19 @@ class UserWorkspaceServiceImplTest {
     Path tempDir;
 
     @Test
+    void registeringIdeaProjectsDoesNotChangeWebSelectionOrUserOwnership() throws Exception {
+        UserWorkspaceServiceImpl service = new UserWorkspaceServiceImpl(tempDir.resolve("defaults"));
+        String web = service.register("alice", Files.createDirectories(tempDir.resolve("web")).toString()).getWorkspaceId();
+        String idea = service.register("alice", Files.createDirectories(tempDir.resolve("idea")).toString(), false).getWorkspaceId();
+        assertEquals(web, service.getActive("alice").getWorkspaceId());
+        assertEquals(idea, service.resolve("alice", idea).getWorkspaceId());
+        assertEquals(web, service.getActive("alice").getWorkspaceId());
+        assertThrows(IllegalArgumentException.class, () -> service.resolve("bob", idea));
+        service.activate("alice", idea);
+        assertEquals(web, service.resolve("alice", web).getWorkspaceId());
+    }
+
+    @Test
     void createsIsolatedDirectoriesAndRejectsTraversal() {
         UserWorkspaceServiceImpl service = new UserWorkspaceServiceImpl(tempDir);
         Path alice = service.getOrCreate("alice");

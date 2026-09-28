@@ -3,8 +3,13 @@ package com.udata.harness.controller;
 import com.udata.harness.common.domain.SessionMetadata;
 import com.udata.harness.common.request.ChatRequest;
 import com.udata.harness.common.request.HitlDecisionRequest;
+import com.udata.harness.common.support.ActiveRunRegistry;
+import com.udata.harness.common.util.StreamEventMapper;
+import com.udata.harness.repository.SessionRepository;
 import com.udata.harness.service.ChatService;
 import com.udata.harness.service.SessionService;
+import org.noear.solon.ai.agent.AgentSession;
+import org.noear.solon.ai.agent.react.intercept.HITL;
 import org.noear.solon.annotation.Body;
 import org.noear.solon.annotation.Controller;
 import org.noear.solon.annotation.Delete;
@@ -47,6 +52,45 @@ public class SessionController {
      */
     @Inject
     private ChatService chatService;
+
+    /**
+     * 按用户归属读取会话，用于查询运行状态与挂起的 HITL 任务。
+     *
+     * <p>该依赖同时充当租户校验入口：即使 userId 正确，sessionId 不属于该用户也会失败。</p>
+     */
+    @Inject
+    private SessionRepository sessionRepository;
+
+    /**
+     * 进程内活跃运行注册表，用于判断会话当前是否有进行中的 Flux。
+     */
+    @Inject
+    private ActiveRunRegistry activeRuns;
+
+    /**
+     * 查询会话的实时运行状态与待审批任务。
+     *
+     * <p>{@code active} 来自内存注册表，是瞬时事实而非持久化状态，进程重启后不会被恢复。
+     * {@code hitl} 仅在会话空闲且存在挂起任务时填充：运行中的会话由其自身的 SSE 流继续推
+     * 送审批事件，重复下发会导致前端出现重复审批弹窗，因此此时固定为 {@code null}。</p>
+     *
+     * @param userId 当前用户标识，同时作为会话归属校验依据
+     * @param sessionId 目标会话标识
+     * @return 含 {@code active} 布尔值与可选 {@code hitl} 审批事件的数据对象
+     * @throws IllegalArgumentException 会话不存在或不属于该用户时抛出
+     */
+    @Get
+    @Mapping("/sessions/status")
+    public Result<Map<String, Object>> status(@Header("X-User-Id") String userId,
+                                            @Param("sessionId") String sessionId) {
+        AgentSession session = sessionRepository.getSession(userId, sessionId);
+        boolean active = activeRuns.isActive(sessionId);
+        Map<String, Object> data = new java.util.LinkedHashMap<>();
+        data.put("active", active);
+        List<org.noear.solon.ai.agent.react.intercept.HITLTask> pending = HITL.getPendingTasks(session);
+        data.put("hitl", active || pending.isEmpty() ? null : StreamEventMapper.hitl(pending));
+        return Result.succeed(data);
+    }
 
     /**
      * 获取前端初始化所需的运行元数据。

@@ -41,6 +41,16 @@ class UserHarnessEngineServiceImplTest {
 
         assertNotNull(service.get("alice"));
         assertEquals(4, service.get("alice").getModelRetries());
+        org.noear.solon.ai.harness.HarnessEngine original = service.get("alice");
+        UserWorkspaceServiceImpl workspaces = (UserWorkspaceServiceImpl) read(service, "workspaces");
+        String workspaceId = workspaces.register("alice",
+                java.nio.file.Files.createDirectories(tempDir.resolve("idea-project")).toString(), false).getWorkspaceId();
+        org.noear.solon.ai.harness.HarnessEngine idea = service.get("alice", workspaceId);
+        org.junit.jupiter.api.Assertions.assertNotSame(original, idea);
+        org.junit.jupiter.api.Assertions.assertSame(original, service.get("alice"));
+        workspaces.activate("alice", workspaceId);
+        org.junit.jupiter.api.Assertions.assertSame(idea, service.get("alice"));
+        org.junit.jupiter.api.Assertions.assertSame(original, service.get("alice", "default"));
     }
 
     @Test
@@ -103,5 +113,11 @@ class UserHarnessEngineServiceImplTest {
         Field field = target.getClass().getDeclaredField(name);
         field.setAccessible(true);
         field.set(target, value);
+    }
+
+    private Object read(Object target, String name) throws Exception {
+        Field field = target.getClass().getDeclaredField(name);
+        field.setAccessible(true);
+        return field.get(target);
     }
 }

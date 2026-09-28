@@ -37,6 +37,14 @@ public interface UserWorkspaceService {
      */
     WorkspaceMetadata getActive(String userId);
 
+    /** Resolve an owned workspace without changing any client's selection. */
+    default WorkspaceMetadata resolve(String userId, String workspaceId) {
+        if (workspaceId == null || workspaceId.trim().isEmpty()) return getActive(userId);
+        return list(userId).stream()
+                .filter(item -> workspaceId.equals(item.getWorkspaceId()))
+                .findFirst().orElseThrow(() -> new IllegalArgumentException("Workspace not found"));
+    }
+
     /**
      * 注册本地目录并立即将其设为当前工作区。
      *
@@ -45,6 +53,10 @@ public interface UserWorkspaceService {
      * @return 注册后的工作区元数据
      */
     WorkspaceMetadata register(String userId, String path);
+
+    default WorkspaceMetadata register(String userId, String path, boolean activate) {
+        return register(userId, path);
+    }
 
     /**
      * 激活已注册的工作区。

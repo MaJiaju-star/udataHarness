@@ -211,7 +211,15 @@ public class UserHarnessEngineServiceImpl implements UserHarnessEngineService {
      */
     public HarnessEngine get(String userId) {
         String safeUserId = UserWorkspaceService.requireUserId(userId);
-        return engines.computeIfAbsent(safeUserId, this::build);
+        return get(safeUserId, workspaces.getActive(safeUserId).getWorkspaceId());
+    }
+
+    @Override
+    public HarnessEngine get(String userId, String workspaceId) {
+        String safeUserId = UserWorkspaceService.requireUserId(userId);
+        com.udata.harness.common.domain.WorkspaceMetadata workspace = workspaces.resolve(safeUserId, workspaceId);
+        String key = safeUserId + ":" + workspace.getWorkspaceId();
+        return engines.computeIfAbsent(key, ignored -> build(safeUserId, Paths.get(workspace.getPath())));
     }
 
     /**
@@ -237,10 +245,9 @@ public class UserHarnessEngineServiceImpl implements UserHarnessEngineService {
         String safeUserId = UserWorkspaceService.requireUserId(userId);
         saveSandboxPreference(safeUserId, enabled);
         sandboxPreferences.put(safeUserId, enabled);
-        HarnessEngine engine = engines.get(safeUserId);
-        if (engine != null) {
-            engine.setSandboxEnabled(enabled);
-        }
+        engines.forEach((key, engine) -> {
+            if (key.startsWith(safeUserId + ":")) engine.setSandboxEnabled(enabled);
+        });
     }
 
     /**
@@ -250,7 +257,8 @@ public class UserHarnessEngineServiceImpl implements UserHarnessEngineService {
      */
     @Override
     public void resetUser(String userId) {
-        engines.remove(UserWorkspaceService.requireUserId(userId));
+        String prefix = UserWorkspaceService.requireUserId(userId) + ":";
+        engines.keySet().removeIf(key -> key.startsWith(prefix));
     }
 
     /**
@@ -300,7 +308,7 @@ public class UserHarnessEngineServiceImpl implements UserHarnessEngineService {
     /**
      * 保存运行时 MCP 定义并热更新所有现存引擎。
      *
-     * <p>尚未创建的用户引擎会在 {@link #build(String)} 时读取缓存中的同一份配置。</p>
+     * <p>尚未创建的用户引擎会在 {@link #build(String, Path)} 时读取缓存中的同一份配置。</p>
      *
      * @param name MCP Server 名称
      * @param parameters MCP 连接参数
@@ -338,8 +346,7 @@ public class UserHarnessEngineServiceImpl implements UserHarnessEngineService {
      * @param userId 已校验的目标用户标识
      * @return 完整初始化的用户级 HarnessEngine
      */
-    private HarnessEngine build(String userId) {
-        Path workspace = workspaces.getOrCreate(userId);
+    private HarnessEngine build(String userId, Path workspace) {
         Path skills = workspace.resolve(".soloncode").resolve("skills");
         Path agents = Paths.get(dataDir).toAbsolutePath().normalize().resolve("capabilities").resolve("agents");
         try {

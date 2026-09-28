@@ -11,6 +11,19 @@ agent:
     # Compress a long-running ReAct trace when either limit is reached.
     compression-max-messages: 160
     compression-max-context-ratio: 0.75
+
+  sandbox:
+    # 新用户的默认值；用户可在聊天界面修改，选择会保存到 data-dir/users/<userId>。
+    enabled: "${AGENT_SANDBOX_ENABLED:true}"
+  tools:
+    web:
+      # 内网部署可设为 false，一次禁用 websearch、codesearch 和 webfetch。
+      enabled: "${AGENT_WEB_TOOLS_ENABLED:true}"
+      # 总开关开启时，仍可分别控制每个网络工具。
+      websearch-enabled: "${AGENT_WEBSEARCH_ENABLED:true}"
+      codesearch-enabled: "${AGENT_CODESEARCH_ENABLED:true}"
+      webfetch-enabled: "${AGENT_WEBFETCH_ENABLED:true}"
+
   system-prompt: |
     You are UData Harness, a careful coding agent.
     Work only inside the configured workspace. Inspect before editing, preserve user changes,
@@ -34,3 +47,16 @@ agent:
         model: "deepseek-v4-flash"
       - name: "deepseek-pro"
         model: "deepseek-v4-pro"
+#
+#    api-url: "${AGENT_API_URL:https://api.xiaomimimo.com/}"
+#    api-key: "${AGENT_API_KEY:sk-cig9xy7xloij1x8y68qywdo358forx0aj6296y37cew2mkft}"
+#    provider: "${AGENT_PROVIDER:openai}"
+#    # Declared model context window. The framework reserves 20K tokens for the
+#    # system prompt, then starts compression at 75% of the effective budget.
+#    context-length: 1000000
+#    # Add or remove list items to control the models exposed by the composer.
+#    models:
+#      - name: "mimo-v2.6-flash"
+#        model: "mimo-v2.6-flash"
+#      - name: "deepseek-pro"
+#        model: "deepseek-v4-pro"

@@ -126,6 +126,7 @@ public class ChatServiceImpl implements ChatService {
         //1. 校验请求参数，并把 userId 归一化为可安全用于目录名与归属比较的形式。
         validate(request);
         userId = UserWorkspaceService.requireUserId(userId);
+        String promptWithContext = request.promptWithContext();
         String sessionId = request.getSessionId();
         if (!activeRuns.begin(sessionId)) {
             return Flux.just(StreamEventMapper.error("This session is already running"));
@@ -138,6 +139,9 @@ public class ChatServiceImpl implements ChatService {
             session = sessionRepository.getSession(userId, sessionId);
             metadata = sessionRepository.read(userId, sessionId);
             requireActiveWorkspace(userId, metadata);
+            if (!HITL.getPendingTasks(session).isEmpty()) {
+                throw new IllegalStateException("Resolve the pending approval before sending another prompt");
+            }
             sessionRepository.applyFirstPromptTitle(
                     userId, sessionId, request.getPrompt().trim());
         } catch (RuntimeException e) {
@@ -153,7 +157,7 @@ public class ChatServiceImpl implements ChatService {
         return run(
                 userId,
                 session,
-                request.getPrompt().trim(),
+                promptWithContext,
                 selectedModel,
                 thinkingDepth,
                 isFullPermission(metadata),
@@ -171,6 +175,8 @@ public class ChatServiceImpl implements ChatService {
      * @return 审批恢复后的连续 SSE JSON 事件流；校验失败时返回单条 error 事件
      */
     public Flux<String> decide(String userId, HitlDecisionRequest request) {
+        String lockedSessionId = null;
+        boolean handedOff = false;
         try {
             //1. 校验请求与会话归属，并确认会话仍属于当前激活工作区。
             userId = UserWorkspaceService.requireUserId(userId);
@@ -180,6 +186,10 @@ public class ChatServiceImpl implements ChatService {
             AgentSession session = sessionRepository.getSession(userId, request.getSessionId());
             SessionMetadata metadata = sessionRepository.read(userId, request.getSessionId());
             requireActiveWorkspace(userId, metadata);
+            if (!activeRuns.begin(request.getSessionId())) {
+                return Flux.just(StreamEventMapper.error("This session is already running"));
+            }
+            lockedSessionId = request.getSessionId();
 
             //2. 取出全部挂起任务，并按前端回传的 callUuid 选出本次要决策的整批任务。
             // 批量工具调用会一次产生多个 HITLTask，且可能具有相同 toolName。
@@ -204,13 +214,13 @@ public class ChatServiceImpl implements ChatService {
             }
 
             //4. 记录挂起前的 reasonId 用于过滤恢复时的重放文本，再清除 pending 并恢复运行。
-            HarnessEngine engine = engines.get(userId);
+            HarnessEngine engine = engines.get(userId, metadata.getWorkspaceId());
             ReActTrace trace = engine.getMainAgent().getTrace(session);
             String suspendedReasonId = trace == null ? null : trace.getCurrentReasonId();
             // 只有整批任务都有决策后才能清除 pending 并恢复。否则 ReAct 会重新 Reason，
             // 产生新的 tool call UUID，看起来像前端不断重复要求审批。
             session.pending(false, null);
-            return run(
+            Flux<String> continuation = run(
                     userId,
                     session,
                     null,
@@ -218,9 +228,13 @@ public class ChatServiceImpl implements ChatService {
                     readSessionOption(session, THINKING_DEPTH_KEY, "auto"),
                     isFullPermission(metadata),
                     suspendedReasonId);
+            handedOff = true;
+            return continuation;
         } catch (RuntimeException e) {
             // 审批接口是 SSE；将同步校验异常转换为协议内错误，避免浏览器只得到空白 500。
             return Flux.just(StreamEventMapper.error(e.getMessage()));
+        } finally {
+            if (lockedSessionId != null && !handedOff) activeRuns.end(lockedSessionId);
         }
     }
 
@@ -301,8 +315,10 @@ public class ChatServiceImpl implements ChatService {
             boolean fullPermission,
             int autoApprovalCount,
             String suspendedReasonId) {
-        Path workspace = workspaces.getOrCreate(userId);
-        HarnessEngine engine = engines.get(userId);
+        // Resolve from the persisted session, including on deferred HITL continuation threads.
+        SessionMetadata metadata = sessionRepository.read(userId, session.getSessionId());
+        Path workspace = java.nio.file.Paths.get(workspaces.resolve(userId, metadata.getWorkspaceId()).getPath());
+        HarnessEngine engine = engines.get(userId, metadata.getWorkspaceId());
         //1. 组装本次模型调用的重试、拦截器、cwd、模型与思考档位配置。
         Flux<String> chunks = engine.prompt(prompt)
                 .session(session)
@@ -696,9 +712,7 @@ public class ChatServiceImpl implements ChatService {
      * @throws IllegalArgumentException 会话不属于当前激活工作区时抛出
      */
     private void requireActiveWorkspace(String userId, SessionMetadata metadata) {
-        String activeWorkspaceId = workspaces.getActive(userId).getWorkspaceId();
-        if (metadata == null || !activeWorkspaceId.equals(metadata.getWorkspaceId())) {
-            throw new IllegalArgumentException("Session belongs to another workspace");
-        }
+        if (metadata == null) throw new IllegalArgumentException("Session not found");
+        workspaces.resolve(userId, metadata.getWorkspaceId());
     }
 }

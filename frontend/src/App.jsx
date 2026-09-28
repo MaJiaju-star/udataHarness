@@ -5,6 +5,12 @@ import ChartCard, {chartSpecFromTool} from "./ChartCard.jsx";
 import GlobalSearchDialog from "./GlobalSearchDialog.jsx";
 import ThemePicker from "./ThemePicker.jsx";
 import {useWorkspaceStore} from "./workspaceStore.js";
+import {callIdea, isIdea, initialUserId, initialWorkspaceId} from "./host.js";
+import IdeaToolbar from "./IdeaToolbar.jsx";
+import SessionHistory from "./SessionHistory.jsx";
+import ReferenceInput from "./ReferenceInput.jsx";
+import {usePageDialog} from "./usePageDialog.jsx";
+import {formatIdeaReference, withAutoReference, insertReferenceText, insertReferenceAtSelection, createReferenceReceiver} from "./ideaReferences.js";
 import {
     Activity, ArrowDown, ArrowLeft, Bot, Box, BrainCircuit, Check, ChevronDown, ChevronRight, Circle, CircleStop, Code2,
     ClipboardPaste, Copy, Download, File, FileCode2, FilePlus2, Files, Folder, FolderOpen,
@@ -578,10 +584,17 @@ async function readEventStream(stream, onEvent) {
 }
 
 function App() {
-    const [userId, setUserId] = useState(() => localStorage.getItem("udataHarnessUserId") || "");
+    const {confirm: confirmAction, prompt: promptAction, dialog: pageDialog} = usePageDialog();
+    const [historyOpen, setHistoryOpen] = useState(false);
+    const [userId, setUserId] = useState(() => initialUserId || localStorage.getItem("udataHarnessUserId") || "");
+    const [workspaceId, setWorkspaceId] = useState(() => initialWorkspaceId
+        || sessionStorage.getItem(`udataWorkspace:${initialUserId || localStorage.getItem("udataHarnessUserId") || ""}`) || "");
+    const workspaceIdRef = useRef(workspaceId);
+    const [ideaContext, setIdeaContext] = useState([]);
     const [meta, setMeta] = useState(null);
     const [sessions, setSessions] = useState([]);
     const [current, setCurrent] = useState(null);
+    const ensureReferenceSession = useRef(null);
     const [messages, setMessages] = useState([]);
     const [running, setRunning] = useState(false);
     const [mobile, setMobile] = useState(() => window.matchMedia("(max-width: 760px)").matches);
@@ -669,6 +682,7 @@ function App() {
                     ? {"Content-Type": "application/x-www-form-urlencoded"}
                     : {"Content-Type": "application/json"}),
                 "X-User-Id": userId,
+                ...(workspaceIdRef.current ? {"X-Workspace-Id": workspaceIdRef.current} : {}),
                 ...(fetchOptions.headers || {})
             }
         });
@@ -680,6 +694,11 @@ function App() {
     }, [userId]);
 
     const refreshWorkspaceFiles = useCallback(async () => {
+        if (isIdea) {
+            const result = await callIdea("refreshFiles");
+            if (result.warning) notify(result.warning);
+            return;
+        }
         const workspace = useWorkspaceStore.getState();
         workspace.requestTreeRefresh();
         const opened = workspace.openedPaths
@@ -713,11 +732,90 @@ function App() {
         }
     }, [api, notify]);
 
+    const loadSessionMessages = useCallback(async sessionId => {
+        const [history, status] = await Promise.all([
+            api(`/api/sessions/messages?sessionId=${encodeURIComponent(sessionId)}`),
+            api(`/api/sessions/status?sessionId=${encodeURIComponent(sessionId)}`)
+        ]);
+        const restored = restoreHistory(history);
+        if (status.hitl) {
+            restored.push({id: uid(), role: "assistant", content: "", tools: [],
+                hitl: JSON.parse(status.hitl), finished: true});
+        }
+        return restored;
+    }, [api]);
+
     async function refreshAfterRun() {
         const results = await Promise.allSettled([loadSessions(), refreshWorkspaceFiles()]);
         const failure = results.find(result => result.status === "rejected");
         if (failure) notify(failure.reason?.message || "刷新工作区失败");
     }
+
+    useEffect(() => {
+        ensureReferenceSession.current = async () => {
+            if (!current) await createSession();
+        };
+    });
+
+    useEffect(() => {
+        if (!isIdea) return;
+        const receive = event => {
+            const attachment = event.detail;
+            if (!attachment?.path || typeof attachment.content !== "string") return;
+            setIdeaContext(items => [...items.filter(item => item.path !== attachment.path), attachment].slice(-8));
+        };
+        window.addEventListener("udata:context", receive);
+        let cancelled = false;
+        const receiver = createReferenceReceiver(callIdea, async (text, references) => {
+            if (cancelled) throw new Error("引用页面已关闭");
+            await ensureReferenceSession.current?.();
+            if (cancelled) throw new Error("引用页面已关闭");
+            window.location.hash = "";
+            setPage("workspace");
+            useWorkspaceStore.getState().insertPromptReference(text, references);
+        });
+        const fetchReferences = () => receiver().catch(() => {});
+        window.addEventListener("udata:references-available", fetchReferences);
+        const timer = window.setInterval(fetchReferences, 500);
+        const ready = () => callIdea("ready").then(fetchReferences).catch(() => {});
+        window.addEventListener("udata:ready", ready);
+        ready();
+        return () => {
+            cancelled = true;
+            window.clearInterval(timer);
+            window.removeEventListener("udata:context", receive);
+            window.removeEventListener("udata:references-available", fetchReferences);
+            window.removeEventListener("udata:ready", ready);
+        };
+    }, []);
+
+    useEffect(() => {
+        if (!userId || !workspaceId) return;
+        let cancelled = false;
+        let busy = false;
+        const timer = window.setInterval(async () => {
+            if (busy || running || document.hidden) return;
+            busy = true;
+            try {
+                const data = await api("/api/sessions");
+                if (cancelled) return;
+                setSessions(data || []);
+                const selected = data?.find(item => item.sessionId === current?.sessionId);
+                if (selected) {
+                    setCurrent(selected);
+                    if (!selected.active && (selected.updatedAt !== current?.updatedAt || current?.active)) {
+                        const restored = await loadSessionMessages(selected.sessionId);
+                        if (!cancelled) setMessages(restored);
+                    }
+                } else if (current) {
+                    setCurrent(null);
+                    setMessages([]);
+                }
+            } catch { /* Explicit operations report errors; transient polling failures retry. */ }
+            finally { busy = false; }
+        }, 5000);
+        return () => { cancelled = true; window.clearInterval(timer); };
+    }, [api, userId, workspaceId, running, current, loadSessionMessages]);
 
     const loadSessions = useCallback(async () => {
         const data = await api("/api/sessions");
@@ -739,6 +837,10 @@ function App() {
         Promise.all([api("/api/meta"), api("/api/sessions")])
             .then(([metaData, sessionData]) => {
                 setMeta(metaData);
+                const selected = metaData.activeWorkspace?.workspaceId || "";
+                workspaceIdRef.current = selected;
+                setWorkspaceId(selected);
+                sessionStorage.setItem(`udataWorkspace:${userId}`, selected);
                 setSessions(sessionData || []);
                 setSelectedModel(value => (metaData.models || []).some(item => item.name === value)
                     ? value : metaData.defaultModel || metaData.models?.[0]?.name || "");
@@ -773,6 +875,7 @@ function App() {
 
     useEffect(() => {
         const openGlobalSearch = event => {
+            if (isIdea) return;
             if (page !== "workspace" || !(event.ctrlKey || event.metaKey)) return;
             if (event.key.toLowerCase() === "p") {
                 event.preventDefault();
@@ -792,11 +895,12 @@ function App() {
         setSelectedModel(session.model || meta?.defaultModel || "");
         setTokenUsage(emptyTokenUsage());
         if (mobile) useWorkspaceStore.getState().setMobilePane("chat");
-        const history = await api(`/api/sessions/messages?sessionId=${encodeURIComponent(session.sessionId)}`);
-        setMessages(restoreHistory(history));
+        setMessages(await loadSessionMessages(session.sessionId));
     }
 
+
     async function openFile(path, location) {
+        if (isIdea) return callIdea("openFile", {path, line: location?.line || 1});
         const data = await api(`/api/files/read?path=${encodeURIComponent(path)}`);
         openEditorFile(data);
         if (location?.line) {
@@ -808,22 +912,27 @@ function App() {
 
     async function switchWorkspace(workspaceId) {
         if (running) throw new Error("请先停止当前智能体任务");
-        if (hasDirtyFiles() && !window.confirm("当前有未保存文件，切换工作区将放弃这些修改。继续吗？")) return;
+        if (hasDirtyFiles() && !await confirmAction("当前有未保存文件，切换工作区将放弃这些修改。继续吗？")) return;
         await api("/api/workspaces/activate", {
             method: "POST",
             body: toForm({workspaceId})
         });
-        await reloadWorkspace();
+        await reloadWorkspace(workspaceId);
     }
 
     async function registerWorkspace(path) {
         if (running) throw new Error("请先停止当前智能体任务");
-        if (hasDirtyFiles() && !window.confirm("当前有未保存文件，打开新工作区将放弃这些修改。继续吗？")) return;
-        await api("/api/workspaces", {method: "POST", body: toForm({path})});
-        await reloadWorkspace();
+        if (hasDirtyFiles() && !await confirmAction("当前有未保存文件，打开新工作区将放弃这些修改。继续吗？")) return;
+        const registered = await api("/api/workspaces", {method: "POST", body: toForm({path, activate: false})});
+        await reloadWorkspace(registered.workspaceId);
     }
 
-    async function reloadWorkspace() {
+    async function reloadWorkspace(selectedWorkspaceId) {
+        if (selectedWorkspaceId) {
+            workspaceIdRef.current = selectedWorkspaceId;
+            setWorkspaceId(selectedWorkspaceId);
+            sessionStorage.setItem(`udataWorkspace:${userId}`, selectedWorkspaceId);
+        }
         const [metaData, sessionData] = await Promise.all([api("/api/meta"), api("/api/sessions")]);
         setMeta(metaData);
         setSessions(sessionData || []);
@@ -847,7 +956,7 @@ function App() {
 
     async function deleteSession(event, session) {
         event.stopPropagation();
-        if (!window.confirm(`删除会话“${session.title}”？`)) return;
+        if (!await confirmAction(`删除会话“${session.title}”？`)) return;
         await api(`/api/sessions?sessionId=${encodeURIComponent(session.sessionId)}`, {method: "DELETE"});
         if (current?.sessionId === session.sessionId) {
             setCurrent(null);
@@ -857,9 +966,32 @@ function App() {
         notify("会话已删除");
     }
 
+    async function deleteHistorySessions(ids, all) {
+        if (running) { notify("请先停止当前智能体任务"); return; }
+        const targets = sessions.filter(item => ids.includes(item.sessionId));
+        if (!targets.length) return;
+        if (targets.some(item => item.active)) { notify("请先停止待删除会话中的任务"); return; }
+        const message = all
+            ? `确定清理当前工作区的全部 ${targets.length} 个会话？聊天历史将被永久删除，无法恢复。`
+            : `确定删除所选的 ${targets.length} 个会话？聊天历史将被永久删除，无法恢复。`;
+        if (!await confirmAction(message)) return;
+        const deleted = [];
+        const failures = [];
+        for (const session of targets) {
+            try {
+                await api(`/api/sessions?sessionId=${encodeURIComponent(session.sessionId)}`, {method: "DELETE"});
+                deleted.push(session.sessionId);
+            } catch (error) { failures.push(error.message); }
+        }
+        setSessions(items => items.filter(item => !deleted.includes(item.sessionId)));
+        if (deleted.includes(current?.sessionId)) { setCurrent(null); setMessages([]); }
+        try { await loadSessions(); } catch (error) { failures.push(error.message); }
+        notify(failures.length ? `已删除 ${deleted.length} 个会话；部分操作失败：${failures[0]}` : `已删除 ${deleted.length} 个会话`);
+    }
+
     async function renameSession(event, session) {
         event.stopPropagation();
-        const title = window.prompt("重命名会话", session.title);
+        const title = await promptAction("重命名会话", session.title);
         if (title === null || title.trim() === session.title) return;
         if (!title.trim()) throw new Error("会话名称不能为空");
         const updated = await api("/api/sessions/title", {
@@ -1068,7 +1200,8 @@ function App() {
     async function stream(path, body, messageId) {
         const response = await fetch(path, {
             method: "POST",
-            headers: {"Content-Type": "application/json", "X-User-Id": userId},
+            headers: {"Content-Type": "application/json", "X-User-Id": userId,
+                ...(workspaceIdRef.current ? {"X-Workspace-Id": workspaceIdRef.current} : {})},
             body: JSON.stringify(body)
         });
         if (!response.ok || !response.body) throw new Error(await response.text() || "流式连接不可用");
@@ -1079,7 +1212,12 @@ function App() {
     }
 
     async function sendPrompt(text) {
-        if (!current || running || !text.trim()) return;
+        if (!current || running || current.active || !text.trim()) return false;
+        setRunning(true);
+        if (isIdea) {
+            try { await callIdea("prepareRun"); }
+            catch (error) { setRunning(false); notify(error.message); return false; }
+        }
         setTokenUsage(emptyTokenUsage());
         const assistantId = uid();
         setMessages(items => [
@@ -1099,11 +1237,11 @@ function App() {
                 finished: false
             }
         ]);
-        setRunning(true);
         try {
             await stream("/api/chat/stream", {
                 sessionId: current.sessionId,
                 prompt: text.trim(),
+                context: isIdea ? ideaContext : undefined,
                 model: selectedModel || current.model,
                 thinkingDepth
             }, assistantId);
@@ -1113,10 +1251,12 @@ function App() {
             setRunning(false);
             await refreshAfterRun();
         }
+        setIdeaContext([]);
+        return true;
     }
 
     async function decideHitl(messageId, action, alwaysAllow, callUuids) {
-        if (!current || running) return;
+        if (!current || running || current.active) return;
         setRunning(true);
         try {
             setMessages(items => items.map(item => item.id === messageId
@@ -1141,7 +1281,7 @@ function App() {
 
     async function changePermissionMode(permissionMode) {
         if (!current || running || current.permissionMode === permissionMode) return;
-        if (permissionMode === "full" && !window.confirm(
+        if (permissionMode === "full" && !await confirmAction(
             "完整权限模式会自动执行写文件、编辑和命令等操作，不再逐次请求审批。确定为当前会话开启吗？"
         )) return;
         const updated = await api("/api/sessions/permission", {
@@ -1157,7 +1297,7 @@ function App() {
 
     async function changeSandbox(enabled) {
         if (running || meta?.sandboxEnabled === enabled) return;
-        if (!enabled && !window.confirm(
+        if (!enabled && !await confirmAction(
             "关闭沙箱后，终端和文件工具可能访问工作区外的路径。确定为当前用户关闭吗？"
         )) return;
         const sandboxEnabled = await api("/api/settings/sandbox", {
@@ -1180,12 +1320,15 @@ function App() {
         setTokenUsage(emptyTokenUsage());
         setSelectedModel("");
         setMeta(null);
+        workspaceIdRef.current = "";
+        setWorkspaceId("");
     }
 
     if (!userId) return <UserGate onSubmit={changeUser}/>;
 
     if (page === "admin") {
         return <>
+            {pageDialog}
             <AdminShell api={api} notify={notify} userId={userId} workspace={meta?.workspace}
                         onBack={() => {
                             window.location.hash = "";
@@ -1201,8 +1344,13 @@ function App() {
         || meta?.models?.[0];
 
     return (
-        <div className={`app-shell workbench pane-${mobilePane} ${sidebarOpen ? "" : "sidebar-collapsed"} ${mobile ? "mobile-shell" : ""}`}
+        <div className={`app-shell workbench pane-${mobilePane} ${isIdea ? "idea-shell" : ""} ${sidebarOpen ? "" : "sidebar-collapsed"} ${mobile ? "mobile-shell" : ""}`}
              style={{"--left-width": `${leftWidth}px`, "--editor-width": `${editorWidth}px`}}>
+            {pageDialog}
+            {historyOpen && <SessionHistory key={`${userId}:${workspaceId}`} sessions={sessions} current={current} running={running}
+                onClose={() => setHistoryOpen(false)}
+                onSelect={session => chooseSession(session).catch(error => notify(error.message))}
+                onDelete={deleteHistorySessions}/>}
             <Sidebar
                 open={sidebarOpen}
                 view={leftTab}
@@ -1214,6 +1362,7 @@ function App() {
                 api={api}
                 notify={notify}
                 onOpenFile={path => openFile(path).catch(error => notify(error.message))}
+                onOpenHistory={() => setHistoryOpen(true)}
                 onOpenWorkspace={() => setWorkspacePickerOpen(true)}
                 onCreate={() => createSession().catch(error => notify(error.message))}
                 onSelect={session => chooseSession(session).catch(error => notify(error.message))}
@@ -1223,8 +1372,8 @@ function App() {
                     window.location.hash = "/admin";
                     setPage("admin");
                 }}
-                onChangeUser={() => {
-                    const value = window.prompt("切换 userId", userId);
+                onChangeUser={async () => {
+                    const value = await promptAction("切换 userId", userId);
                     if (value && value !== userId) {
                         try { changeUser(value); } catch (error) { notify(error.message); }
                     }
@@ -1235,6 +1384,14 @@ function App() {
                           onResize={delta => setLeftWidth(Math.max(220, Math.min(420, leftWidth + delta)))}
                           onReset={() => setLeftWidth(260)}/>
             <main className="workspace-shell">
+                {isIdea && <IdeaToolbar sessions={sessions} current={current} running={running}
+                    workspace={meta?.workspace} notify={notify}
+                    onOpenHistory={() => setHistoryOpen(true)}
+                    onSelect={session => session && chooseSession(session).catch(error => notify(error.message))}
+                    onCreate={() => createSession().catch(error => notify(error.message))}
+                    onRename={(event, session) => renameSession(event, session).catch(error => notify(error.message))}
+                    onDelete={(event, session) => deleteSession(event, session).catch(error => notify(error.message))}
+                    onAttach={attachment => setIdeaContext(items => [...items.filter(item => item.path !== attachment.path), attachment].slice(-8))}/>}
                 <header className="app-header">
                     <button className="icon-button sidebar-toggle" onClick={toggleLeft}
                             aria-label="切换侧栏">
@@ -1243,7 +1400,7 @@ function App() {
                     <div className="header-title">
                         <h1>{title}</h1>
                         <span className="header-meta">
-                            {running ? <><span className="pulse-dot"/> 智能体运行中</> :
+                            {running || current?.active ? <><span className="pulse-dot"/> 智能体运行中</> :
                                 <><span className="ready-dot"/> {meta?.models?.[0]?.model || "正在连接"}</>}
                         </span>
                     </div>
@@ -1255,7 +1412,7 @@ function App() {
                             <button className={mobilePane === "chat" ? "active" : ""} onClick={() => setMobilePane("chat")}>对话</button>
                             <button className={mobilePane === "editor" ? "active" : ""} onClick={() => setMobilePane("editor")}>编辑器</button>
                         </div>
-                        {running &&
+                        {(running || current?.active) &&
                             <button className="stop-button" onClick={() => stopRun().catch(error => notify(error.message))}>
                                 <CircleStop size={16}/> 停止
                             </button>}
@@ -1264,7 +1421,8 @@ function App() {
                 </header>
 
                 <section className="content-shell">
-                    <ChatView api={api} current={current} messages={messages} running={running}
+                    <ChatView api={api} current={current} messages={messages} running={running || !!current?.active}
+                              ideaContext={ideaContext} onRemoveContext={path => setIdeaContext(items => items.filter(item => item.path !== path))}
                               models={meta?.models || []} selectedModel={selectedModel}
                               thinkingDepth={thinkingDepth}
                               tokenUsage={tokenUsage}
@@ -1288,7 +1446,7 @@ function App() {
             <ResizeHandle axis="editor"
                           onResize={delta => setEditorWidth(Math.max(320, Math.min(680, editorWidth - delta)))}
                           onReset={() => setEditorWidth(420)}/>
-            <EditorPanel api={api} notify={notify} editorTheme={resolvedTheme === "dark" ? "vs-dark" : "vs"}/>
+            {!isIdea && <EditorPanel api={api} notify={notify} editorTheme={resolvedTheme === "dark" ? "vs-dark" : "vs"}/>}
             {globalSearch && <GlobalSearchDialog api={api} initialMode={globalSearch.mode}
                 onClose={() => setGlobalSearch(null)}
                 onOpenFile={openFile}/>}
@@ -1380,7 +1538,7 @@ function UserGate({onSubmit}) {
 }
 
 function Sidebar({open, view, setView, sessions, current, userId, workspace, api, notify, onOpenFile,
-                     onOpenWorkspace, onCreate, onSelect, onRename, onDelete, onOpenAdmin, onChangeUser, onClose}) {
+                     onOpenWorkspace, onOpenHistory, onCreate, onSelect, onRename, onDelete, onOpenAdmin, onChangeUser, onClose}) {
     return (
         <aside className="sidebar" aria-label="工作区导航">
             <div className="brand">
@@ -1404,7 +1562,7 @@ function Sidebar({open, view, setView, sessions, current, userId, workspace, api
             {open && <div className="sidebar-content">
                 {view === "files"
                     ? <ExplorerPanel api={api} notify={notify} onOpenFile={onOpenFile}/>
-                    : <SessionPanel sessions={sessions} current={current} onCreate={onCreate}
+                    : <SessionPanel onOpenHistory={onOpenHistory} sessions={sessions} current={current} onCreate={onCreate}
                                     onSelect={onSelect} onRename={onRename} onDelete={onDelete}/>}
             </div>}
             <div className="sidebar-footer">
@@ -1419,10 +1577,10 @@ function Sidebar({open, view, setView, sessions, current, userId, workspace, api
     );
 }
 
-function SessionPanel({sessions, current, onCreate, onSelect, onRename, onDelete}) {
+function SessionPanel({sessions, current, onCreate, onSelect, onRename, onDelete, onOpenHistory}) {
     return <div className="session-panel">
         <button className="new-chat-button" onClick={onCreate}><Plus size={17}/><span>新建会话</span></button>
-        <div className="section-label"><span>当前工作区会话</span><MoreHorizontal size={15}/></div>
+        <div className="section-label"><span>当前工作区会话</span><button onClick={onOpenHistory}>管理 / 清理</button></div>
         <div className="session-scroll">
             {sessions.length === 0 && <div className="sidebar-empty">这个工作区还没有会话</div>}
             {sessions.map(session => <button key={session.sessionId}
@@ -1467,16 +1625,24 @@ function activeFileReference(path, selection) {
     return `@${path}#L${selection.startLine}-L${selection.endLine}`;
 }
 
-function ChatView({api, current, messages, running, models, selectedModel, thinkingDepth,
+function ChatView({api, current, messages, running, models, selectedModel, thinkingDepth, ideaContext = [], onRemoveContext,
                       tokenUsage, contextLength, provider, sandboxEnabled,
                       onModelChange, onThinkingDepthChange, onSend, onCreate, onDecide,
                       onPermissionMode, onSandboxChange, onOpenFile}) {
     const [prompt, setPrompt] = useState("");
+    const [nativeReference, setNativeReference] = useState(null);
+    const [referenceError, setReferenceError] = useState("");
+    const submittingRef = useRef(false);
     const [completionSources, setCompletionSources] = useState({skills: [], files: [], agents: []});
     const [completion, setCompletion] = useState(null);
     const [activeCompletion, setActiveCompletion] = useState(0);
     const [showScrollToBottom, setShowScrollToBottom] = useState(false);
     const textareaRef = useRef(null);
+    const promptSelectionRef = useRef(null);
+    const lastInsertionRef = useRef(null);
+    const rememberPromptSelection = event => {
+        promptSelectionRef.current = {start: event.currentTarget.selectionStart, end: event.currentTarget.selectionEnd};
+    };
     const endRef = useRef(null);
     const scrollContainerRef = useRef(null);
     const autoFollowRef = useRef(true);
@@ -1489,8 +1655,25 @@ function ChatView({api, current, messages, running, models, selectedModel, think
     const promptInsertion = useWorkspaceStore(state => state.promptInsertion);
     const consumePromptInsertion = useWorkspaceStore(state => state.consumePromptInsertion);
     const fileReference = referenceEnabled
-        ? activeFileReference(activePath, selections[activePath])
-        : "";
+        ? (isIdea ? formatIdeaReference(nativeReference) : activeFileReference(activePath, selections[activePath])) : "";
+    const ComposerInput = isIdea ? ReferenceInput : "textarea";
+
+    useEffect(() => {
+        if (!isIdea) return;
+        let cancelled = false;
+        const receive = event => setNativeReference(event.detail || null);
+        const refresh = () => callIdea("getReference").then(reference => {
+            if (!cancelled) setNativeReference(reference);
+        }).catch(() => {});
+        window.addEventListener("udata:reference", receive);
+        window.addEventListener("udata:ready", refresh);
+        refresh();
+        return () => {
+            cancelled = true;
+            window.removeEventListener("udata:reference", receive);
+            window.removeEventListener("udata:ready", refresh);
+        };
+    }, []);
 
     const scrollToBottom = useCallback((behavior = "auto") => {
         const element = scrollContainerRef.current;
@@ -1545,14 +1728,20 @@ function ChatView({api, current, messages, running, models, selectedModel, think
     }, []);
 
     useEffect(() => {
-        if (!promptInsertion) return;
-        setPrompt(current => {
-            const separator = current && !/\s$/.test(current) ? " " : "";
-            return `${current}${separator}${promptInsertion.text} `;
-        });
+        if (!promptInsertion || running || !current || lastInsertionRef.current === promptInsertion.id) return;
+        lastInsertionRef.current = promptInsertion.id;
+        const next = isIdea
+            ? insertReferenceAtSelection(prompt, promptInsertion.text, promptSelectionRef.current)
+            : {value: insertReferenceText(prompt, promptInsertion.text)};
+        setPrompt(next.value);
+        if (isIdea) promptSelectionRef.current = {start: next.cursor, end: next.cursor};
         consumePromptInsertion(promptInsertion.id);
-        window.requestAnimationFrame(() => textareaRef.current?.focus());
-    }, [promptInsertion, consumePromptInsertion]);
+        window.requestAnimationFrame(() => {
+            const textarea = textareaRef.current;
+            textarea?.focus();
+            if (textarea && isIdea) textarea.setSelectionRange(next.cursor, next.cursor);
+        });
+    }, [promptInsertion, consumePromptInsertion, prompt, running, current]);
 
     useEffect(() => {
         let cancelled = false;
@@ -1632,16 +1821,36 @@ function ChatView({api, current, messages, running, models, selectedModel, think
         });
     };
 
-    const submit = () => {
-        if (!prompt.trim() || !current || running) return;
-        const alreadyReferencesActiveFile = activePath && prompt.includes(`@${activePath}`);
-        const value = fileReference && !alreadyReferencesActiveFile
-            ? `${fileReference}\n\n${prompt.trim()}`
-            : prompt;
-        setPrompt("");
-        setCompletion(null);
-        scrollToBottom();
-        onSend(value);
+    const submit = async () => {
+        if (!prompt.trim() || !current || running || submittingRef.current) return;
+        submittingRef.current = true;
+        try {
+            setReferenceError("");
+            const alreadyReferencesActiveFile = activePath && prompt.includes(`@${activePath}`);
+            let value = fileReference && !alreadyReferencesActiveFile
+                ? `${fileReference}\n\n${prompt.trim()}`
+                : prompt;
+            if (isIdea) {
+                value = prompt;
+                if (referenceEnabled) {
+                    try {
+                        // Read the latest selection at send time rather than relying on a debounced UI event.
+                        const reference = await callIdea("getReference");
+                        setNativeReference(reference);
+                        value = withAutoReference(prompt, reference);
+                    } catch (error) {
+                        setReferenceError(error.message);
+                        return;
+                    }
+                }
+            }
+            setCompletion(null);
+            scrollToBottom();
+            setPrompt(existing => existing === prompt ? "" : existing);
+            if (!await onSend(value)) setPrompt(existing => existing || prompt);
+        } finally {
+            submittingRef.current = false;
+        }
     };
 
     if (!current) {
@@ -1727,6 +1936,15 @@ function ChatView({api, current, messages, running, models, selectedModel, think
                 </div>
             </div>
             <div className="composer-input-shell">
+                {referenceError && <div role="alert">{referenceError}</div>}
+                {isIdea && ideaContext.length > 0 && <div className="idea-context-list">
+                    {ideaContext.map(item => <details key={item.path}>
+                        <summary>{item.path}{item.startLine ? `:${item.startLine}–${item.endLine}` : ""}
+                            <button type="button" disabled={running} onClick={() => onRemoveContext(item.path)} aria-label={`移除 ${item.path}`}>×</button>
+                        </summary>
+                        <pre>{item.content}</pre>
+                    </details>)}
+                </div>}
                 {completion && <div className="completion-menu" role="listbox">
                     <div className="completion-heading">
                         <span>{completion.symbol === "/" ? "选择 Skill" : completion.symbol === "@" ? "选择文件或目录" : "选择 SubAgent"}</span>
@@ -1786,12 +2004,17 @@ function ChatView({api, current, messages, running, models, selectedModel, think
                     {fileReference && <div className="context-reference" title={fileReference}>
                         <FileCode2 size={14}/><code>{fileReference}</code>
                     </div>}
-                    <textarea ref={textareaRef} value={prompt} disabled={running}
+                    <ComposerInput ref={textareaRef} value={prompt} disabled={running}
                               placeholder="输入任务，使用 / Skill、@ 文件或目录、# SubAgent…"
-                              onBlur={() => window.setTimeout(() => setCompletion(null), 120)}
+                              onSelect={rememberPromptSelection}
+                              onBlur={event => {
+                                  rememberPromptSelection(event);
+                                  window.setTimeout(() => setCompletion(null), 120);
+                              }}
                               onClick={event => refreshCompletion(prompt, event.currentTarget.selectionStart)}
                               onChange={event => {
                                   const value = event.target.value;
+                                  rememberPromptSelection(event);
                                   setPrompt(value);
                                   refreshCompletion(value, event.target.selectionStart);
                               }}
@@ -1827,7 +2050,7 @@ function ChatView({api, current, messages, running, models, selectedModel, think
                                     aria-pressed={referenceEnabled}
                                     title={referenceEnabled ? "关闭自动引用" : "开启自动引用"}
                                     onClick={toggleReference}>
-                                <Link2 size={13}/>引用
+                                <Link2 size={13}/>{isIdea ? "自动引用" : "引用"}
                             </button>
                             <span><Activity size={14}/>{running ? "正在执行任务" : "/ Skill · @ 文件/目录 · # SubAgent"}</span>
                         </div>

@@ -17,6 +17,12 @@ SolonCode、Solon Harness 和 `D:\code\dev-agent` 实现。
 
 架构与安全边界见 [docs/architecture.md](docs/architecture.md)。
 
+## IntelliJ IDEA 插件
+
+网页工作台继续独立使用；新增 IDEA 侧栏通过 HTTP/SSE 连接同一个本地 Solon 服务，支持项目绑定、
+共享会话、审批、选区/文件上下文、文件定位和修改同步。构建与安装步骤见
+[idea-plugin/README.md](idea-plugin/README.md)，双客户端协议见 [docs/idea-integration.md](docs/idea-integration.md)。
+
 ## Requirements
 
 - JDK 17+

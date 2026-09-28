@@ -1,0 +1,17 @@
+<idea-plugin>
+    <depends>com.intellij.modules.platform</depends>
+    <extensions defaultExtensionNs="com.intellij">
+        <toolWindow id="UData Harness" anchor="right" factoryClass="com.udata.harness.idea.HarnessToolWindowFactory"/>
+    </extensions>
+    <actions>
+        <action id="UDataHarness.SendReference" class="com.udata.harness.idea.SendReferenceAction"
+                text="发送到 UData Harness 对话框" description="在对话输入框光标处插入文件、目录或代码行引用">
+            <keyboard-shortcut keymap="$default" first-keystroke="alt K"/>
+            <add-to-group group-id="ProjectViewPopupMenu" anchor="last"/>
+            <add-to-group group-id="EditorTabPopupMenu" anchor="last"/>
+            <add-to-group group-id="EditorPopupMenu" anchor="last"/>
+        </action>
+        <action id="UDataHarness.SendSelection" class="com.udata.harness.idea.SendSelectionAction"
+                text="发送到 UData Harness" description="在对话输入框光标处插入引用"/>
+    </actions>
+</idea-plugin>
