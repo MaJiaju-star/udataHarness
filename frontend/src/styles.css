@@ -2342,3 +2342,4 @@ html[data-mode="dark"] .permission-mode-switch { background: var(--surface-2); c
 .idea-toolbar-row .idea-reference-trigger { display: inline-flex; align-items: center; gap: 4px; flex: 0 0 auto; height: 30px; padding: 4px 8px; white-space: nowrap; }
 .idea-toolbar-row .idea-reference-trigger + .idea-toolbar-icon { margin-left: auto; }
 .idea-reference-hint { margin-top: 4px; padding: 8px; border-top: 1px solid var(--line); color: var(--text-secondary); font-size: 11px; line-height: 1.5; }
+.composer-stop-button { display: inline-flex; align-items: center; gap: 5px; flex-shrink: 0; padding: 6px 9px; border: 1px solid var(--danger); border-radius: 7px; background: var(--surface-2); color: var(--danger); font-size: 12px; }

@@ -5,11 +5,13 @@ import org.reactivestreams.Subscription;
 
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
+import reactor.core.publisher.Flux;
+import reactor.core.publisher.Sinks;
 
 /**
  * 活跃对话 Reactor 订阅注册表。
  *
- * <p>begin 防止同一 session 并发执行，bind 保存可取消订阅，doFinally 必须调用
+ * <p>begin 防止同一 session 并发执行，cancellable 同时结束 SSE 下游与上游运行，doFinally 必须调用
  * end 清理状态。本组件是进程内状态，不承担持久化职责。</p>
  */
 @Component
@@ -23,6 +25,11 @@ public class ActiveRunRegistry {
      * 会话 Id 到可取消订阅的映射，用于主动终止运行。
      */
     private final ConcurrentHashMap<String, Subscription> subscriptions = new ConcurrentHashMap<>();
+    private static class Cancellation {
+        final Sinks.Empty<Void> signal = Sinks.empty();
+        volatile boolean stopped;
+    }
+    private final ConcurrentHashMap<String, Cancellation> cancellations = new ConcurrentHashMap<>();
 
     /**
      * 尝试占位当前会话的运行，保证同一会话同一时刻只执行一个 Flux。
@@ -30,8 +37,19 @@ public class ActiveRunRegistry {
      * @param sessionId 会话标识
      * @return 之前未在运行时返回 true
      */
-    public boolean begin(String sessionId) {
-        return active.add(sessionId);
+    public synchronized boolean begin(String sessionId) {
+        if (!active.add(sessionId)) return false;
+        cancellations.put(sessionId, new Cancellation());
+        return true;
+    }
+
+    public <T> Flux<T> cancellable(String sessionId, Flux<T> source) {
+        Cancellation cancellation = cancellations.get(sessionId);
+        if (cancellation == null) return source;
+        // Capture this run's token: completion can remove the registry entry
+        // before takeUntilOther attempts its source subscription.
+        return Flux.defer(() -> cancellation.stopped ? Flux.empty() : source)
+                .takeUntilOther(cancellation.signal.asMono());
     }
 
     /**
@@ -48,14 +66,19 @@ public class ActiveRunRegistry {
      * 取消指定会话的活动订阅。
      *
      * @param sessionId 会话标识
-     * @return 找到活动订阅并发出取消信号时为 true
+     * @return 找到运行或活动订阅并发出取消信号时为 true
      */
     public boolean cancel(String sessionId) {
         Subscription subscription = subscriptions.get(sessionId);
-        if (subscription == null) {
-            return false;
+        Cancellation signal = cancellations.get(sessionId);
+        if (signal == null && subscription == null) return false;
+        // Complete the downstream SSE as well as cancelling upstream work.
+        // The signal is replayed if stop arrives before the stream subscribes.
+        if (signal != null) {
+            signal.stopped = true;
+            signal.signal.tryEmitEmpty();
         }
-        subscription.cancel();
+        if (subscription != null) subscription.cancel();
         return true;
     }
 
@@ -64,8 +87,9 @@ public class ActiveRunRegistry {
      *
      * @param sessionId 会话标识
      */
-    public void end(String sessionId) {
+    public synchronized void end(String sessionId) {
         subscriptions.remove(sessionId);
+        cancellations.remove(sessionId);
         active.remove(sessionId);
     }
 

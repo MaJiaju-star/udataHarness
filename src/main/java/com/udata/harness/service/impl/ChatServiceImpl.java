@@ -283,6 +283,7 @@ public class ChatServiceImpl implements ChatService {
                                 0,
                                 suspendedReasonId))
                 .doOnSubscribe(subscription -> activeRuns.bind(sessionId, subscription))
+                .transform(source -> activeRuns.cancellable(sessionId, source))
                 .doOnComplete(() -> sessionRepository.touch(userId, sessionId))
                 .doFinally(signal -> activeRuns.end(sessionId));
     }

@@ -597,6 +597,8 @@ function App() {
     const ensureReferenceSession = useRef(null);
     const [messages, setMessages] = useState([]);
     const [running, setRunning] = useState(false);
+    const [stopping, setStopping] = useState(false);
+    const streamAbortRef = useRef(null);
     const [mobile, setMobile] = useState(() => window.matchMedia("(max-width: 760px)").matches);
     const [notice, setNotice] = useState("");
     const [page, setPage] = useState(() => window.location.hash === "#/admin" ? "admin" : "workspace");
@@ -1192,17 +1194,21 @@ function App() {
                     item.type === "thinking" && item.active ? {...item, active: false} : item
                 );
             }
+            if (event.type === "done" || event.type === "run_end" || event.type === "error") {
+                next.tools = next.tools.map(tool => ({...tool, running: false, generating: false}));
+            }
             if (event.type === "error") next.error = event.message || event.content || "智能体运行失败";
             return next;
         }));
     }, []);
 
-    async function stream(path, body, messageId) {
+    async function stream(path, body, messageId, controller) {
         const response = await fetch(path, {
             method: "POST",
             headers: {"Content-Type": "application/json", "X-User-Id": userId,
                 ...(workspaceIdRef.current ? {"X-Workspace-Id": workspaceIdRef.current} : {})},
-            body: JSON.stringify(body)
+            body: JSON.stringify(body),
+            signal: controller.signal
         });
         if (!response.ok || !response.body) throw new Error(await response.text() || "流式连接不可用");
         await readEventStream(response.body, event => {
@@ -1212,11 +1218,14 @@ function App() {
     }
 
     async function sendPrompt(text) {
-        if (!current || running || current.active || !text.trim()) return false;
+        if (!current || running || stopping || current.active || !text.trim()) return false;
+        const controller = new AbortController();
+        streamAbortRef.current = controller;
         setRunning(true);
         if (isIdea) {
             try { await callIdea("prepareRun"); }
-            catch (error) { setRunning(false); notify(error.message); return false; }
+            catch (error) { streamAbortRef.current = null; setRunning(false); notify(error.message); return false; }
+            if (controller.signal.aborted) { setRunning(false); streamAbortRef.current = null; return false; }
         }
         setTokenUsage(emptyTokenUsage());
         const assistantId = uid();
@@ -1244,10 +1253,12 @@ function App() {
                 context: isIdea ? ideaContext : undefined,
                 model: selectedModel || current.model,
                 thinkingDepth
-            }, assistantId);
+            }, assistantId, controller);
         } catch (error) {
-            mutateAssistant(assistantId, {type: "error", message: error.message});
+            mutateAssistant(assistantId, controller.signal.aborted ? {type: "done"} : {type: "error", message: error.message});
         } finally {
+            if (streamAbortRef.current === controller) streamAbortRef.current = null;
+            mutateAssistant(assistantId, {type: "done"});
             setRunning(false);
             await refreshAfterRun();
         }
@@ -1256,7 +1267,9 @@ function App() {
     }
 
     async function decideHitl(messageId, action, alwaysAllow, callUuids) {
-        if (!current || running || current.active) return;
+        if (!current || running || stopping || current.active) return;
+        const controller = new AbortController();
+        streamAbortRef.current = controller;
         setRunning(true);
         try {
             setMessages(items => items.map(item => item.id === messageId
@@ -1264,19 +1277,30 @@ function App() {
                 : item));
             await stream("/api/hitl/decide", {
                 sessionId: current.sessionId, action, alwaysAllow, callUuids
-            }, messageId);
+            }, messageId, controller);
         } catch (error) {
-            mutateAssistant(messageId, {type: "error", message: error.message});
+            mutateAssistant(messageId, controller.signal.aborted ? {type: "done"} : {type: "error", message: error.message});
         } finally {
+            if (streamAbortRef.current === controller) streamAbortRef.current = null;
+            mutateAssistant(messageId, {type: "done"});
             setRunning(false);
             await refreshAfterRun();
         }
     }
 
     async function stopRun() {
-        if (!current) return;
-        await api(`/api/chat/cancel?sessionId=${encodeURIComponent(current.sessionId)}`, {method: "POST"});
-        notify("正在停止智能体");
+        if (!current || stopping) return;
+        const sessionId = current.sessionId;
+        const controller = streamAbortRef.current;
+        setStopping(true);
+        try {
+            await api(`/api/chat/cancel?sessionId=${encodeURIComponent(sessionId)}`, {method: "POST"});
+            controller?.abort();
+            const status = await api(`/api/sessions/status?sessionId=${encodeURIComponent(sessionId)}`);
+            setCurrent(selected => selected?.sessionId === sessionId ? {...selected, active: status.active} : selected);
+            setSessions(items => items.map(item => item.sessionId === sessionId ? {...item, active: status.active} : item));
+            notify(status.active ? "正在停止智能体，请稍候" : "智能体已停止，可以继续输入或切换会话");
+        } finally { setStopping(false); }
     }
 
     async function changePermissionMode(permissionMode) {
@@ -1428,6 +1452,7 @@ function App() {
 
                 <section className="content-shell">
                     <ChatView api={api} current={current} messages={messages} running={running || !!current?.active}
+                              stopping={stopping} onStop={() => stopRun().catch(error => notify(error.message))}
                               ideaContext={ideaContext} onRemoveContext={path => setIdeaContext(items => items.filter(item => item.path !== path))}
                               models={meta?.models || []} selectedModel={selectedModel}
                               thinkingDepth={thinkingDepth}
@@ -1631,7 +1656,7 @@ function activeFileReference(path, selection) {
     return `@${path}#L${selection.startLine}-L${selection.endLine}`;
 }
 
-function ChatView({api, current, messages, running, models, selectedModel, thinkingDepth, ideaContext = [], onRemoveContext,
+function ChatView({api, current, messages, running, stopping, onStop, models, selectedModel, thinkingDepth, ideaContext = [], onRemoveContext,
                       tokenUsage, contextLength, provider, sandboxEnabled,
                       onModelChange, onThinkingDepthChange, onSend, onCreate, onDecide,
                       onPermissionMode, onSandboxChange, onOpenFile}) {
@@ -2054,6 +2079,9 @@ function ChatView({api, current, messages, running, models, selectedModel, think
                                   }
                               }}/>
                     <div className="composer-footer">
+                        {running && <button className="composer-stop-button" type="button" disabled={stopping} onClick={onStop}>
+                            <CircleStop size={14}/>{stopping ? "正在停止…" : "停止"}
+                        </button>}
                         <div className="composer-tools">
                             <button className={`reference-toggle ${referenceEnabled ? "active" : ""}`}
                                     type="button"
