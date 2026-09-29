@@ -1,6 +1,6 @@
 import {test} from "node:test";
 import assert from "node:assert/strict";
-import {formatIdeaReference, withAutoReference, insertReferenceText, insertReferenceAtSelection, createReferenceReceiver} from "../src/ideaReferences.js";
+import {formatIdeaReference, readManualIdeaReference, withAutoReference, insertReferenceText, insertReferenceAtSelection, createReferenceReceiver} from "../src/ideaReferences.js";
 
 test("current file, selected block, single line, and closed editor references", () => {
     assert.equal(formatIdeaReference({path: "src/Main.java"}), "@src/Main.java");
@@ -96,4 +96,19 @@ test("a failed input initialization leaves references pending for retry", async 
     assert.equal(acknowledgements, 0);
     await receive();
     assert.equal(acknowledgements, 1);
+});
+
+test("toolbar file reference excludes the active selection range", async () => {
+    const read = async method => {
+        assert.equal(method, "getReference");
+        return {path: "src/Main.java", startLine: 2, endLine: 5};
+    };
+    assert.equal(await readManualIdeaReference(read, "file"), "@src/Main.java");
+    assert.equal(await readManualIdeaReference(read, "selection"), "@src/Main.java#L2-L5");
+});
+
+test("toolbar selection requires an actual selection and file reference requires an open file", async () => {
+    await assert.rejects(readManualIdeaReference(async () => ({path: "src/Main.java"}), "selection"), /选中/);
+    await assert.rejects(readManualIdeaReference(async () => ({}), "file"), /打开/);
+    await assert.rejects(readManualIdeaReference(async () => ({path: "src/Main.java", startLine: 3, endLine: 2}), "selection"), /选中/);
 });

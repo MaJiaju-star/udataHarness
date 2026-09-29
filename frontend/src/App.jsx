@@ -10,7 +10,7 @@ import IdeaToolbar from "./IdeaToolbar.jsx";
 import SessionHistory from "./SessionHistory.jsx";
 import ReferenceInput from "./ReferenceInput.jsx";
 import {usePageDialog} from "./usePageDialog.jsx";
-import {formatIdeaReference, withAutoReference, insertReferenceText, insertReferenceAtSelection, createReferenceReceiver} from "./ideaReferences.js";
+import {formatIdeaReference, readManualIdeaReference, withAutoReference, insertReferenceText, insertReferenceAtSelection, createReferenceReceiver} from "./ideaReferences.js";
 import {
     Activity, ArrowDown, ArrowLeft, Bot, Box, BrainCircuit, Check, ChevronDown, ChevronRight, Circle, CircleStop, Code2,
     ClipboardPaste, Copy, Download, File, FileCode2, FilePlus2, Files, Folder, FolderOpen,
@@ -1348,6 +1348,7 @@ function App() {
              style={{"--left-width": `${leftWidth}px`, "--editor-width": `${editorWidth}px`}}>
             {pageDialog}
             {historyOpen && <SessionHistory key={`${userId}:${workspaceId}`} sessions={sessions} current={current} running={running}
+                title={isIdea ? "切换会话" : "历史会话"}
                 onClose={() => setHistoryOpen(false)}
                 onSelect={session => chooseSession(session).catch(error => notify(error.message))}
                 onDelete={deleteHistorySessions}/>}
@@ -1384,15 +1385,20 @@ function App() {
                           onResize={delta => setLeftWidth(Math.max(220, Math.min(420, leftWidth + delta)))}
                           onReset={() => setLeftWidth(260)}/>
             <main className="workspace-shell">
-                {isIdea && <IdeaToolbar sessions={sessions} current={current} running={running}
+                {isIdea && <IdeaToolbar current={current} running={running || !!current?.active}
+                    onStop={() => stopRun().catch(error => notify(error.message))}
                     workspace={meta?.workspace} notify={notify}
                     onOpenHistory={() => setHistoryOpen(true)}
-                    onSelect={session => session && chooseSession(session).catch(error => notify(error.message))}
+                    onReference={async kind => {
+                        const text = await readManualIdeaReference(callIdea, kind);
+                        await ensureReferenceSession.current?.();
+                        useWorkspaceStore.getState().insertPromptReference(text, [text]);
+                    }}
                     onCreate={() => createSession().catch(error => notify(error.message))}
                     onRename={(event, session) => renameSession(event, session).catch(error => notify(error.message))}
                     onDelete={(event, session) => deleteSession(event, session).catch(error => notify(error.message))}
                     onAttach={attachment => setIdeaContext(items => [...items.filter(item => item.path !== attachment.path), attachment].slice(-8))}/>}
-                <header className="app-header">
+                {!isIdea && <header className="app-header">
                     <button className="icon-button sidebar-toggle" onClick={toggleLeft}
                             aria-label="切换侧栏">
                         {mobile ? <Menu size={20}/> : sidebarOpen ? <PanelLeftClose size={19}/> : <PanelLeftOpen size={19}/>}
@@ -1418,7 +1424,7 @@ function App() {
                             </button>}
                         <div className="model-chip"><Zap size={14}/>{selectedModel || meta?.defaultModel || "model"}</div>
                     </div>
-                </header>
+                </header>}
 
                 <section className="content-shell">
                     <ChatView api={api} current={current} messages={messages} running={running || !!current?.active}
@@ -1923,7 +1929,11 @@ function ChatView({api, current, messages, running, models, selectedModel, think
                         {sandboxEnabled ? <ShieldCheck size={13}/> : <ShieldOff size={13}/>}沙箱
                         <b>{sandboxEnabled ? "开" : "关"}</b>
                     </button>
-                    <div className="permission-mode-switch" role="group" aria-label="权限模式">
+                    {isIdea ? <select className="idea-permission-select" aria-label="权限模式" value={current.permissionMode === "full" ? "full" : "standard"}
+                        disabled={running} title="标准权限会询问敏感操作；完整权限自动执行工具调用"
+                        onChange={event => onPermissionMode(event.target.value)}>
+                        <option value="standard">标准权限</option><option value="full">完整权限</option>
+                    </select> : <div className="permission-mode-switch" role="group" aria-label="权限模式">
                         <button className={current.permissionMode !== "full" ? "active" : ""}
                                 disabled={running} onClick={() => onPermissionMode("standard")}>
                             标准
@@ -1932,7 +1942,7 @@ function ChatView({api, current, messages, running, models, selectedModel, think
                                 disabled={running} onClick={() => onPermissionMode("full")}>
                             完整权限
                         </button>
-                    </div>
+                    </div>}
                 </div>
             </div>
             <div className="composer-input-shell">

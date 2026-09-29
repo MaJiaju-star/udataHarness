@@ -128,7 +128,8 @@ class HarnessPanel(private val project: Project) : JPanel(BorderLayout()), Dispo
                 val body = "path=${encode(Path.of(project.basePath!!).toRealPath().toString())}&activate=false"
                 val workspace = request(client, base.resolve("/api/workspaces"), user, body)
                 val id = workspace.get("workspaceId").asString
-                val page = "$base/?host=idea&userId=${encode(user)}&workspaceId=${encode(id)}"
+                // A fresh URL bypasses a cached HTML entry from an older backend build.
+                val page = "$base/?host=idea&userId=${encode(user)}&workspaceId=${encode(id)}&uiReload=${java.util.UUID.randomUUID()}"
                 ApplicationManager.getApplication().invokeLater {
                     if (!disposed && !project.isDisposed) {
                         settings.state.backendUrl = base.toString()

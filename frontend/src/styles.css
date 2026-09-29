@@ -2311,3 +2311,34 @@ html[data-mode="dark"] .media-preview { background: var(--surface-2); }
 .session-history-row .session-history-title { flex: 1; min-width: 0; text-align: left; overflow-wrap: anywhere; background: transparent; border-color: transparent; }
 .session-history-title small { display: block; margin-top: 4px; }
 .section-label > button { padding: 3px 6px; border-radius: 5px; font-size: 11px; color: var(--text-secondary); }
+.theme-toggle { display: flex; flex-wrap: wrap; gap: 8px; margin: 6px 0 10px; }
+.theme-toggle button, .theme-toggle select { display: inline-flex; align-items: center; gap: 6px; min-height: 30px; padding: 5px 9px; border: 1px solid var(--line); border-radius: 7px; background: var(--surface-2); color: var(--text); font-size: 12px; }
+.theme-toggle button[aria-checked="true"] { color: var(--accent); border-color: var(--accent); background: var(--accent-soft); }
+.theme-toggle select { color-scheme: inherit; }
+html[data-mode="dark"] .composer-config-bar select,
+html[data-mode="dark"] .permission-mode-switch { background: var(--surface-2); color: var(--text); border-color: var(--line); }
+.idea-shell .workspace-shell { grid-template-rows: auto minmax(0, 1fr); }
+.idea-toolbar { position: relative; padding: 8px; z-index: 30; }
+.idea-toolbar-row { flex-wrap: nowrap; align-items: center; margin: 0; gap: 6px; }
+.idea-toolbar-row select { min-width: 0; width: 0; height: 32px; text-overflow: ellipsis; }
+.idea-project-icon { display: grid; flex: 0 0 22px; place-items: center; color: var(--muted); }
+.idea-toolbar-row .idea-toolbar-icon { display: grid; place-items: center; flex: 0 0 32px; width: 32px; height: 32px; padding: 0; }
+.idea-more-menu { position: absolute; top: calc(100% + 4px); right: 8px; width: min(250px, calc(100vw - 24px)); max-height: calc(100dvh - 68px); overflow-y: auto; padding: 6px; background: var(--surface-raised); color: var(--text); border: 1px solid var(--line); border-radius: 10px; box-shadow: 0 12px 36px var(--shadow-color); }
+.idea-menu-label { color: var(--text-secondary); font-size: 11px; padding: 8px 8px 4px; }
+.idea-menu-label:not(:first-child) { border-top: 1px solid var(--line); margin-top: 4px; }
+.idea-more-menu button { display: flex; align-items: center; justify-content: space-between; width: 100%; text-align: left; border: 0; background: transparent; color: inherit; padding: 8px; border-radius: 6px; font-size: 12px; }
+.idea-more-menu button:hover, .idea-more-menu button:focus-visible { background: var(--surface-2); }
+.idea-more-menu button:disabled { opacity: .4; cursor: default; }
+.idea-shell .permission-mode-copy { display: none; }
+.idea-shell .permission-mode-bar, .idea-shell .permission-mode-bar.full { justify-content: flex-start; background: transparent; border: 0; border-radius: 0; padding: 0; margin-bottom: 6px; box-shadow: none; }
+.idea-shell .permission-mode-controls { gap: 6px; flex-wrap: wrap; }
+.idea-shell .permission-mode-controls::after { content: none; }
+.idea-shell .sandbox-toggle, .idea-permission-select { min-height: 28px; padding: 4px 8px; border: 1px solid var(--line); border-radius: 7px; background: var(--surface-2); color: var(--text); font-size: 11px; }
+.idea-shell .sandbox-toggle svg { display: none; }
+.idea-shell .sandbox-toggle b { font-size: inherit; font-weight: 500; }
+.idea-toolbar-row .idea-switch-session { flex: 0 0 auto; height: 30px; padding: 4px 9px; font-size: 12px; white-space: nowrap; }
+.idea-toolbar-row .idea-switch-session + .idea-toolbar-icon { margin-left: auto; }
+.session-history header > button { flex-shrink: 0; white-space: nowrap; }
+.idea-toolbar-row .idea-reference-trigger { display: inline-flex; align-items: center; gap: 4px; flex: 0 0 auto; height: 30px; padding: 4px 8px; white-space: nowrap; }
+.idea-toolbar-row .idea-reference-trigger + .idea-toolbar-icon { margin-left: auto; }
+.idea-reference-hint { margin-top: 4px; padding: 8px; border-top: 1px solid var(--line); color: var(--text-secondary); font-size: 11px; line-height: 1.5; }

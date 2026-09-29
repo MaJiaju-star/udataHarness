@@ -1,6 +1,6 @@
 import {useState} from "react";
 
-export default function SessionHistory({sessions, current, running, onSelect, onDelete, onClose}) {
+export default function SessionHistory({sessions, current, running, onSelect, onDelete, onClose, title = "历史会话"}) {
     const [selected, setSelected] = useState([]);
     const [busy, setBusy] = useState(false);
     const available = sessions.filter(item => !item.active);
@@ -14,8 +14,8 @@ export default function SessionHistory({sessions, current, running, onSelect, on
     return <div className="modal-backdrop session-history-backdrop">
         <section className="session-history" role="dialog" aria-modal="true" aria-labelledby="session-history-title">
             <header>
-                <div><h2 id="session-history-title">历史会话</h2><small>当前工作区 · {sessions.length} 个会话</small></div>
-                <button disabled={busy} onClick={onClose} aria-label="关闭历史会话">关闭</button>
+                <div><h2 id="session-history-title">{title}</h2><small>当前工作区 · {sessions.length} 个会话 · 点击名称切换</small></div>
+                <button disabled={busy} onClick={onClose} aria-label={`关闭${title}`}>关闭</button>
             </header>
             <div className="session-history-tools">
                 <label><input type="checkbox" checked={allSelected} disabled={busy || running || !available.length}
@@ -33,7 +33,7 @@ export default function SessionHistory({sessions, current, running, onSelect, on
                         disabled={busy || running || item.active} onChange={event => setSelected(ids => event.target.checked
                             ? [...ids, item.sessionId] : ids.filter(id => id !== item.sessionId))}/>
                     <button className="session-history-title" disabled={busy || running} onClick={() => {onSelect(item); onClose();}}>
-                        {item.title}{item.active && <small>运行中</small>}</button>
+                        {item.title}{current?.sessionId === item.sessionId && <small>当前会话</small>}{item.active && <small>运行中</small>}</button>
                     <button disabled={busy || running || item.active} aria-label={`删除会话 ${item.title}`}
                         onClick={() => remove([item.sessionId])}>删除</button>
                 </div>)}

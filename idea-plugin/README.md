@@ -22,7 +22,7 @@ IDEA 插件与网页共用 Solon Web 后端。首版支持本机 HTTP 服务，�
    .\gradlew.bat buildPlugin verifyPluginStructure
    ```
 
-   安装包位于 `build/distributions/udata-harness-idea-0.1.6.zip`。
+   安装包位于 `build/distributions/udata-harness-idea-0.1.7.zip`。
    使用 IDEA **Settings → Plugins → 齿轮 → Install Plugin from Disk** 安装 ZIP 并按提示重启。
    编译基线为 IDEA Community 2024.3.6，最低平台构建号为 243。IDE 必须使用支持 JCEF 的运行时。
    调试可运行 `.\gradlew.bat runIde`，在开发实例中打开本地项目。
@@ -116,3 +116,7 @@ IDEA 对话输入框使用可编辑文本与独立的引用标签，右键发送
 “发送到 UData Harness 对话框”默认绑定 `Alt+K`。编辑器内选中代码后按快捷键，会插入带行号范围的引用；未选中代码时插入文件路径引用。项目文件树中也可选择一个或多个文件/目录后按快捷键。右键菜单与快捷键使用同一个动作，沿用多处引用标签和输入框光标位置。
 
 如果当前 Keymap 的 `Alt+K` 已分配给其他操作，在 IDEA 的 Settings → Keymap 中搜索“发送到 UData Harness 对话框”调整绑定或移除冲突。此版本需要安装新版插件 ZIP 并按 IDEA 提示重启；无需更新后端。
+
+## 0.1.7 页面更新缓存修复
+
+每次连接使用独立的 HTML 页面地址，绕过旧版服务设置的入口页面缓存。后端对 `/` 和 `/index.html` 禁用缓存，带哈希的 JS/CSS 仍沿用原有缓存。更新后端并安装此插件，重新连接时即可获取最新界面。

@@ -56,3 +56,14 @@ export function createReferenceReceiver(callNative, insert) {
         }
     };
 }
+export async function readManualIdeaReference(callNative, kind) {
+    const reference = await callNative("getReference");
+    if (!reference?.path) throw new Error("请先打开当前项目中的文本文件");
+    if (kind === "file") return formatIdeaReference({path: reference.path});
+    if (kind !== "selection") throw new Error("未知引用类型");
+    if (!Number.isInteger(reference.startLine) || !Number.isInteger(reference.endLine) ||
+        reference.startLine <= 0 || reference.endLine < reference.startLine) {
+        throw new Error("请先在编辑器中选中要引用的代码");
+    }
+    return formatIdeaReference(reference);
+}
