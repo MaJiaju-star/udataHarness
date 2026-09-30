@@ -40,8 +40,19 @@ class UserHarnessEngineServiceImplTest {
         inject(service, "model", "deepseek-v4-flash");
 
         assertNotNull(service.get("alice"));
+        org.junit.jupiter.api.Assertions.assertTrue(service.get("alice").getCompressionInterceptor()
+                instanceof com.udata.harness.common.support.PersistentContextCompressionInterceptor);
         assertEquals(4, service.get("alice").getModelRetries());
         org.noear.solon.ai.harness.HarnessEngine original = service.get("alice");
+        for (org.noear.solon.ai.chat.tool.FunctionTool tool : com.udata.harness.common.context.ContextTools.definitions()) {
+            assertNotNull(original.getMainAgent().getConfig().getDefaultOptions().getTool(tool.name()));
+        }
+        org.noear.solon.ai.agent.react.ReActAgent child = original.getAgentBuilder(
+                org.noear.solon.ai.harness.agent.AgentDefinition.builder().name("child").build(), null).build();
+        org.junit.jupiter.api.Assertions.assertNull(child.getConfig().getDefaultOptions().getTool("context_restore"));
+        inject(service, "contextManagementEnabled", false);
+        org.junit.jupiter.api.Assertions.assertNull(service.get("bob").getMainAgent().getConfig().getDefaultOptions().getTool("context_restore"));
+        inject(service, "contextManagementEnabled", true);
         UserWorkspaceServiceImpl workspaces = (UserWorkspaceServiceImpl) read(service, "workspaces");
         String workspaceId = workspaces.register("alice",
                 java.nio.file.Files.createDirectories(tempDir.resolve("idea-project")).toString(), false).getWorkspaceId();

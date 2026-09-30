@@ -2,12 +2,18 @@ package com.udata.harness.service.impl;
 
 import com.udata.harness.common.support.AntVChartTool;
 import com.udata.harness.common.support.ChartTool;
+import com.udata.harness.common.support.PersistentContextCompressionInterceptor;
+import com.udata.harness.common.context.ContextTools;
+import org.noear.solon.ai.harness.agent.AgentDefinition;
 import com.udata.harness.repository.SessionRepository;
 import com.udata.harness.service.UserHarnessEngineService;
 import com.udata.harness.service.UserWorkspaceService;
 import org.noear.solon.Solon;
 import org.noear.solon.Utils;
 import org.noear.solon.ai.chat.ChatConfig;
+import org.noear.solon.ai.agent.react.intercept.compress.CompositeCompressionStrategy;
+import org.noear.solon.ai.agent.react.intercept.compress.KeyInfoExtractionStrategy;
+import org.noear.solon.ai.agent.react.intercept.compress.HierarchicalCompressionStrategy;
 import org.noear.solon.ai.harness.HarnessEngine;
 import org.noear.solon.ai.harness.agent.ToolName;
 import org.noear.solon.ai.harness.permission.PermissionRule;
@@ -122,20 +128,32 @@ public class UserHarnessEngineServiceImpl implements UserHarnessEngineService {
     private boolean webFetchEnabled = true;
 
     /**
-     * 每次新请求从持久化会话中恢复的最近消息数。
+     * 框架的历史加载开关：正数启用，0 禁用。文件会话恢复完整的当前模型视图。
      *
-     * <p>该值是消息条数而不是对话轮数；工具调用及其结果也会各占一条消息。</p>
+     * <p>模型视图包含持久化摘要与未压缩消息，加载时不再按消息数裁剪。</p>
      */
     @Inject("${agent.context.session-window-size:200}")
     private int sessionWindowSize;
 
     /**
-     * 单次 ReAct 运行中，非初始消息超过该数量时触发上下文压缩。
+     * 压缩后保留消息数的目标，实际触发上限再乘以 trigger-factor。
      *
      * <p>设置得低于 Token 阈值可防止大量短工具消息无限累积。</p>
      */
-    @Inject("${agent.context.compression-max-messages:160}")
+    @Inject("${agent.context.compression-max-messages:1000}")
     private int compressionMaxMessages;
+
+    @Inject("${agent.context.compression-message-trigger-factor:2.0}")
+    private double compressionMessageTriggerFactor = 2D;
+
+    @Inject("${agent.context.management-enabled:true}")
+    private boolean contextManagementEnabled = true;
+
+    @Inject("${agent.context.tool-result-max-chars:6000}")
+    private int toolResultMaxChars = 6000;
+
+    @Inject("${agent.context.checkpoint-retain-messages:12}")
+    private int checkpointRetainMessages = 12;
 
     /**
      * 达到模型上下文窗口的该比例时触发压缩，取值范围为 0 到 1。
@@ -358,18 +376,34 @@ public class UserHarnessEngineServiceImpl implements UserHarnessEngineService {
 
         //1. 工具、沙箱、HITL 和 Subagent 在引擎创建时一次性启用；会话级 cwd
         // 仍由 ChatService 每次运行时写入 toolContext。
+        PersistentContextCompressionInterceptor compression = new PersistentContextCompressionInterceptor(
+                compressionMaxMessages, compressionMaxContextRatio, modelMaxAttempts,
+                compressionMessageTriggerFactor, new CompositeCompressionStrategy()
+                .addStrategy(new KeyInfoExtractionStrategy())
+                .addStrategy(new HierarchicalCompressionStrategy().maxSummaryLength(3000)));
+        if (contextManagementEnabled) compression.contextManagement(toolResultMaxChars, checkpointRetainMessages);
+        String effectivePrompt = systemPrompt;
+        if (contextManagementEnabled) effectivePrompt += "\nFor long tasks, establish task_state_update with the user's objective, acceptance and constraints. "
+                + "Track decisions, unresolved issues and evidence IDs. At completed phases, closed bugs or module switches, update task state "
+                + "and request context_checkpoint; avoid checkpointing every turn. Tool excerpts are partial: use context_search/context_restore "
+                + "when omitted evidence is needed. Historical evidence can be stale; verify current files and tests. Task state claims are not proof of completion.";
         HarnessEngine.Builder builder = HarnessEngine.of(workspace.toString(), harnessHome)
-                .systemPrompt(systemPrompt)
+                .systemPrompt(effectivePrompt)
                 .maxTurns(maxTurns)
                 .sessionWindowSize(sessionWindowSize)
                 .modelRetries(modelMaxAttempts)
                 .compressionThreshold(compressionMaxMessages, compressionMaxContextRatio)
+                .compressionInterceptor(compression)
                 .sessionProvider(sessionRepository)
                 .toolsAdd(Arrays.asList(ToolName.TOOL_ALL_PUBLIC.getName(), ToolName.TOOL_HITL.getName()))
                 .disallowedToolsAdd(disabledWebTools())
                 .extensionAdd((engine, agentName, agentBuilder) -> {
                     agentBuilder.defaultToolAdd(CHART_TOOL);
                     agentBuilder.defaultToolAdd(ANTV_CHART_TOOL);
+                    if (contextManagementEnabled && AgentDefinition.AGENT_MAIN.equals(agentName)) {
+                        agentBuilder.defaultInterceptorAdd(Integer.MIN_VALUE, new com.udata.harness.common.context.ModelCallObserver());
+                        for (org.noear.solon.ai.chat.tool.FunctionTool tool : ContextTools.definitions()) agentBuilder.defaultToolAdd(tool);
+                    }
                 })
                 .sandboxEnabled(isSandboxEnabled(userId))
                 .sandboxAllowUserHome(false)

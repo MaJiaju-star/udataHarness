@@ -7,6 +7,7 @@ import com.udata.harness.common.support.ActiveRunRegistry;
 import com.udata.harness.common.support.ToolCallStreamInterceptor;
 import com.udata.harness.common.util.StreamEventMapper;
 import com.udata.harness.repository.SessionRepository;
+import com.udata.harness.repository.ModelContextAgentSession;
 import com.udata.harness.service.ChatService;
 import com.udata.harness.service.UserHarnessEngineService;
 import com.udata.harness.service.UserWorkspaceService;
@@ -424,6 +425,9 @@ public class ChatServiceImpl implements ChatService {
             if (pendingReason.equals(trace.getFinalAnswer())) {
                 trace.setFinalAnswer(null, false);
             }
+        }
+        if (trace != null && session instanceof ModelContextAgentSession) {
+            ((ModelContextAgentSession) session).saveModelContext(trace.getWorkingMemory().getMessages(), false);
         }
         session.updateSnapshot();
     }

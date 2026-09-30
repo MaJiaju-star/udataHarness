@@ -48,6 +48,26 @@ $env:AGENT_PROVIDER='openai'
 `api-url`、`api-key`、`provider` 和 `context-length`。
 模型请求重试通过 `agent.model.retry.max-attempts` 和
 `agent.model.retry.initial-delay-ms` 调整；最大尝试次数包含第一次请求。
+
+会话消息归档与模型上下文分开保存：`*.messages.ndjson` 保留原始记录，
+`*.model-context.json` 原子保存当前摘要、保留消息、压缩代数和已消费的归档位置。
+新请求沿用这个模型视图并追加新消息，重启后也不重新加载已总结的原始历史。
+旧会话首次启用时从完整归档初始化；原来 200～400 条滑动窗口的参数已移除。
+`agent.context.session-window-size` 保留框架兼容性：正数启用历史加载，0 禁用，
+文件会话不再把该值当作消息条数上限。
+`compression-max-context-ratio` 默认 0.75，按实际所选模型窗口估算整体上下文压力；
+`compression-max-messages` 默认 1000，`compression-message-trigger-factor` 默认 2.0，
+作为大量短消息的辅助守卫：超过约 2000 条后摘要旧消息并保留至多约 1000 条近期消息。
+跨轮历史允许参与摘要，系统指令独立构建；工具调用组由框架保持完整。
+如果裁剪没有生成新摘要，则恢复原上下文并报错，避免无摘要淘汰历史。
+审批恢复继续原运行，临时等待审批消息从模型视图同步清理。
+摘要生成会调用已配置模型；压缩节点仍可能重建前缀缓存，实际收益需通过 API 用量验证。
+
+长周期任务管理默认启用：新工具结果先完整归档，再提供有界片段；重复文件读取在同版本全文
+仍处于活跃上下文时只追加引用。主 Agent 可使用任务状态、阶段检查点、证据检索/恢复工具，
+在阶段结束时批量收敛上下文。配置、HTTP 观测接口、验证方法与当前限制见
+[docs/context-management.md](docs/context-management.md)。
+
 `AGENT_API_KEY` 没有默认值；必须通过进程环境或密钥管理服务注入。不要将密钥
 提交到仓库或写入配置文件。
 

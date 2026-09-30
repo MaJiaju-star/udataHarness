@@ -6,11 +6,19 @@ agent:
   harness-home: ".soloncode"
   max-turns: 100
   context:
-    # Restore at most this many recent persisted messages for each new request.
+    # Positive enables loading the durable model context; no fixed-size history slicing.
     session-window-size: 200
-    # Compress a long-running ReAct trace when either limit is reached.
-    compression-max-messages: 160
+    # Token budget is primary; message count is a secondary guard for many small messages.
+    # Retain up to this many recent messages after summarizing older context.
+    compression-max-messages: 1000
+    # Trigger after 2000 messages, leaving room to append after each compression.
+    compression-message-trigger-factor: 2.0
     compression-max-context-ratio: 0.75
+    # Govern new plain-text read/search/terminal results before the next model request.
+    management-enabled: true
+    tool-result-max-chars: 6000
+    # Explicit phase checkpoints keep recent complete tool groups plus the latest user request.
+    checkpoint-retain-messages: 12
 
   sandbox:
     # 新用户的默认值；用户可在聊天界面修改，选择会保存到 data-dir/users/<userId>。
@@ -38,8 +46,8 @@ agent:
     api-url: "${AGENT_API_URL:https://api.deepseek.com}"
     api-key: "${AGENT_API_KEY:sk-216497bffef942c09b250555bb4ac5ac}"
     provider: "${AGENT_PROVIDER:openai}"
-    # Declared model context window. The framework reserves 20K tokens for the
-    # system prompt, then starts compression at 75% of the effective budget.
+    # Declared model window; compression includes system instructions, tools,
+    # and messages in its estimate against the configured context ratio.
     context-length: 1000000
     # Add or remove list items to control the models exposed by the composer.
     models:

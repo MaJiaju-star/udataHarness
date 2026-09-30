@@ -114,16 +114,20 @@ public class SessionRepository implements AgentSessionProvider {
         return metadata;
     }
 
-    @Override
     /**
      * 按全局 sessionId 获取会话。
      *
-     * <p>该重载供框架 SessionProvider 使用；业务 HTTP 层应优先调用带 userId 的重载。</p>
+     * <p>该重载供框架 {@link AgentSessionProvider} 使用；业务 HTTP 层应优先调用带 userId
+     * 的重载，以便在入口处完成归属校验。</p>
      *
-     * @param sessionId 全局会话标识
-     * @return 对应 AgentSession
-     * @throws IllegalArgumentException 会话不存在时抛出
+     * <p>调用方不提供 userId，因此归属由仓储自行反查：先查 owners 内存索引，未命中时扫描
+     * 全部用户目录并回填缓存。这一步依赖磁盘布局，不额外做强校验。</p>
+     *
+     * @param sessionId 全局会话标识，须形如 {@code web-<uuid>}
+     * @return 与磁盘目录绑定的 AgentSession
+     * @throws IllegalArgumentException sessionId 格式非法或找不到任何用户下的会话目录时抛出
      */
+    @Override
     public @NonNull AgentSession getSession(String sessionId) {
         requireValidId(sessionId);
         String userId = owners.computeIfAbsent(sessionId, this::findOwner);
@@ -150,14 +154,18 @@ public class SessionRepository implements AgentSessionProvider {
         }
         owners.put(sessionId, userId);
         return sessions.computeIfAbsent(sessionId,
-                key -> new FileAgentSession(key, sessionDir.toString()));
+                key -> new ModelContextAgentSession(key, sessionDir.toString()));
     }
 
     /**
      * 从内存缓存移除会话，不删除磁盘数据。
      *
+     * <p>仅驱逐 {@code sessions} 缓存中的活动实例；{@code owners} 归属索引与磁盘目录都会保留，
+     * 因此下次 {@link #getSession} 仍可重新加载同一会话。</p>
+     *
      * @param sessionId 目标会话标识
-     * @return 被移除的活动 AgentSession；不存在时返回 null
+     * @return 被移除的活动 AgentSession；缓存中不存在时返回 null
+     * @throws IllegalArgumentException sessionId 格式非法时抛出
      */
     public @Nullable AgentSession removeSession(String sessionId) {
         requireValidId(sessionId);
@@ -232,6 +240,7 @@ public class SessionRepository implements AgentSessionProvider {
      *
      * @param userId 当前用户标识
      * @param sessionId 目标会话标识
+     * @throws IllegalArgumentException 会话不存在、不属于该用户或标识非法时抛出
      */
     public void touch(String userId, String sessionId) {
         SessionMetadata metadata = read(userId, sessionId);
@@ -246,6 +255,7 @@ public class SessionRepository implements AgentSessionProvider {
      * @param sessionId 目标会话标识
      * @param permissionMode 目标权限模式
      * @return 更新后的会话元数据
+     * @throws IllegalArgumentException 会话不存在、不属于该用户或标识非法时抛出
      */
     public synchronized SessionMetadata updatePermissionMode(
             String userId, String sessionId, String permissionMode) {
@@ -287,13 +297,16 @@ public class SessionRepository implements AgentSessionProvider {
      * @param sessionId 目标会话标识
      * @param prompt 当前即将提交的问题（回退值）
      * @return 更新后的会话元数据
+     * @throws IllegalArgumentException 会话不存在、不属于该用户或标识非法时抛出
      */
     public synchronized SessionMetadata applyFirstPromptTitle(
             String userId, String sessionId, String prompt) {
+        //1. 读取元数据；标题已被用户显式改过时原样返回，避免自动标题覆盖用户输入
         SessionMetadata metadata = read(userId, sessionId);
         if (!isPlaceholderTitle(metadata.getTitle())) {
             return metadata;
         }
+        //2. 优先取归档中第一条非空用户消息；取不到时回退到本次即将提交的 prompt
         String firstPrompt = "";
         for (ChatMessage message : getSession(userId, sessionId).getMessages()) {
             if (message.getRole() == ChatRole.USER
@@ -302,6 +315,7 @@ public class SessionRepository implements AgentSessionProvider {
                 break;
             }
         }
+        //3. 归一化后落盘并返回最新元数据
         metadata.setTitle(normalizeTitle(Utils.isBlank(firstPrompt) ? prompt : firstPrompt));
         save(userId, metadata);
         return metadata;
@@ -316,6 +330,7 @@ public class SessionRepository implements AgentSessionProvider {
      * @param sessionId 目标会话标识
      */
     public void delete(String userId, String sessionId) {
+        //1. 校验标识并先清理内存状态，避免删除过程中仍有请求命中旧缓存
         userId = UserWorkspaceService.requireUserId(userId);
         requireValidId(sessionId);
         removeSession(sessionId);
@@ -324,6 +339,7 @@ public class SessionRepository implements AgentSessionProvider {
         if (!Files.exists(target)) {
             return;
         }
+        //2. 逆序删除目录树：先删文件后删目录，否则非空目录无法删除
         try (Stream<Path> paths = Files.walk(target)) {
             paths.sorted(Comparator.reverseOrder()).forEach(path -> {
                 try {
@@ -353,11 +369,13 @@ public class SessionRepository implements AgentSessionProvider {
      * @param metadata 待保存的元数据
      */
     private void save(String userId, SessionMetadata metadata) {
+        //1. 校验标识并解析会话目录，缺目录时补建（首次保存场景）
         userId = UserWorkspaceService.requireUserId(userId);
         requireValidId(metadata.getSessionId());
         Path sessionDir = sessionPath(userId, metadata.getSessionId());
         try {
             Files.createDirectories(sessionDir);
+            //2. 逐个字段做归一化后写入，保证磁盘值与内存对象口径一致
             Properties props = new Properties();
             props.setProperty("title", normalizeTitle(metadata.getTitle()));
             props.setProperty("model", metadata.getModel() == null ? "" : metadata.getModel());
@@ -367,6 +385,7 @@ public class SessionRepository implements AgentSessionProvider {
                     "permissionMode", normalizePermissionMode(metadata.getPermissionMode()));
             props.setProperty("createdAt", String.valueOf(metadata.getCreatedAt()));
             props.setProperty("updatedAt", String.valueOf(metadata.getUpdatedAt()));
+            //3. 覆盖写 meta.properties，失败统一转为状态异常并带上会话标识
             try (OutputStream output = Files.newOutputStream(sessionDir.resolve(META_FILE))) {
                 props.store(output, "udata-harness session");
             }
@@ -410,12 +429,15 @@ public class SessionRepository implements AgentSessionProvider {
     /**
      * 查找 sessionId 的所有者并回填内存索引。
      *
-     * <p>冷启动时 owners 为空，因此需要在 users 根目录下扫描；命中后缓存以避免重复扫描。</p>
+     * <p>冷启动时 owners 为空，因此需要遍历 users 根目录下的一级用户目录逐个命中探测；
+     * 结果由调用方写入 owners 索引，避免后续重复扫描。归属不一致的会话在业务侧会被拒绝，
+     * 因此这里只返回首个匹配项，不做多所有者仲裁。</p>
      *
      * @param sessionId 目标会话标识
      * @return 所有者 userId；未找到时返回 null
      */
     private String findOwner(String sessionId) {
+        //1. 逐个用户目录探测 sessionId 是否存在对应子目录，命中即返回
         try (Stream<Path> users = Files.list(usersRoot)) {
             return users.filter(Files::isDirectory)
                     .map(Path::getFileName)
