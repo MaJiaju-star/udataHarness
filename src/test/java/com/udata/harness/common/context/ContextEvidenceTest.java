@@ -62,7 +62,7 @@ class ContextEvidenceTest {
         assertEquals(5000, original.getContent().length());
     }
 
-    @Test void dedupRequiresFullEvidenceStillInActiveContext() {
+    @Test void dedupRequiresReadableEvidenceStillInActiveContext() {
         ToolResultPolicy policy = new ToolResultPolicy(1000);
         ContextArtifactStore store = new ContextArtifactStore(directory);
         Map<String, Object> args = Collections.singletonMap("path", "A.java");
@@ -78,8 +78,11 @@ class ContextEvidenceTest {
         ToolMessage tiny = policy.project(tool("read", "tiny"), args, Collections.emptyList(), store);
         assertEquals("tiny", policy.project(tool("read", "tiny"), args, Collections.singletonList(tiny), store).getContent());
         ToolMessage large = policy.project(tool("read", repeat("x", 5000)), args, Collections.emptyList(), store);
+        ToolMessage repeatedPartial = policy.project(tool("read", repeat("x", 5000)), args, Collections.singletonList(large), store);
+        assertEquals("reference", repeatedPartial.getMetadataAs(ToolResultPolicy.PROJECTION));
+        assertTrue(repeatedPartial.getContent().contains("omitted content is still unavailable"));
         assertEquals("excerpt", policy.project(tool("read", repeat("x", 5000)), args,
-                Collections.singletonList(large), store).getMetadataAs(ToolResultPolicy.PROJECTION));
+                Collections.singletonList(repeatedPartial), store).getMetadataAs(ToolResultPolicy.PROJECTION));
     }
 
     @Test void largeLogKeepsDiagnosticEvidenceAndOriginalToolPairIdentity() {

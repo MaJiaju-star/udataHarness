@@ -120,10 +120,19 @@ public class ModelCallObserver implements ReActInterceptor {
     private void record(ContextMetrics metrics, ChatRequest req, String id, long start, ChatResponse response, String outcome) {
         //1. 没有可写的指标时直接跳过，不因观测失败影响正常推理链路。
         if (metrics == null) return;
+        if ("reason".equals(purpose) && "success".equals(outcome)) observePressure(req, response);
         metrics.modelCall(id, purpose, req.getConfig().getProvider(),
                 response != null && response.getModel() != null ? response.getModel() : req.getConfig().getModel(),
                 bound != null ? boundRun : String.valueOf(req.getOptions().toolContext().getOrDefault(RUN, "")),
                 System.currentTimeMillis() - start, outcome, response == null ? null : response.getUsage());
+    }
+
+    private void observePressure(ChatRequest req, ChatResponse response) {
+        Object frame = req.getOptions().toolContext().get(TokenPressureMeter.FRAME);
+        if (frame instanceof TokenPressureMeter.Frame) {
+            TokenPressureMeter.Frame value = (TokenPressureMeter.Frame) frame;
+            value.meter.observe(value, req, response);
+        }
     }
 
     /**
@@ -166,8 +175,14 @@ public class ModelCallObserver implements ReActInterceptor {
             AtomicReference<ChatResponse> response = new AtomicReference<>();
             AtomicBoolean ended = new AtomicBoolean();
             return Flux.defer(() -> chain.doIntercept(req)).doOnNext(event -> {
-                //1. 只捕获响应结束事件，用于拿到完整响应（含供应商回报的用量）。
-                if (event.getType() == ChatEventType.RESPONSE_END) { response.set(event.getResponse()); ended.set(true); }
+                // Solon internalStream's interceptor chain sees STEP_END. RESPONSE_END is emitted
+                // outside that chain by stream().tail(), so waiting only for it loses real usage.
+                // Keep RESPONSE_END support for alternate/custom transports, without double counting.
+                if (event.getType() == ChatEventType.STEP_END || event.getType() == ChatEventType.RESPONSE_END) {
+                    response.set(event.getResponse()); ended.set(true);
+                }
+            }).doOnComplete(() -> {
+                if (ended.get() && "reason".equals(purpose)) observePressure(req, response.get());
             }).doFinally(signal -> record(metrics, req, id, start, response.get(),
                     //2. 按终态信号映射结果口径：取消、异常先于“未收到结束事件”判定。
                     "cancel".equals(signal.toString()) ? "cancelled" : "onError".equals(signal.toString()) ? "failed"

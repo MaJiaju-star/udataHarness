@@ -201,6 +201,7 @@ public class ContextMetrics {
         Map<String, Map<String, Long>> byModelAndPurpose = new LinkedHashMap<>();
         long unknownCalls = 0;
         Map<String, Object> lastRequest = null;
+        Map<String, Object> lastPressure = null, lastSummaryPrefix = null;
         if (Files.exists(path)) {
             try (BufferedReader reader = Files.newBufferedReader(path, StandardCharsets.UTF_8)) {
                 String line;
@@ -211,6 +212,8 @@ public class ContextMetrics {
                     String type = record.get("type").getString();
                     counts.put(type, counts.getOrDefault(type, 0L) + 1);
                     if ("request".equals(type)) lastRequest = record.toBean(Map.class);
+                    if ("context_pressure".equals(type) || "budget_compression".equals(type)) lastPressure = record.toBean(Map.class);
+                    if ("summary_prefix".equals(type)) lastSummaryPrefix = record.toBean(Map.class);
                     if ("model_call".equals(type)) {
                         //3. 调用按供应商/模型/用途分桶；用量未知的只计调用数，不参与 Token 累加。
                         String bucket = record.get("provider").getString() + "/" + record.get("model").getString() + "/" + record.get("purpose").getString();
@@ -236,6 +239,8 @@ public class ContextMetrics {
         report.put("providerUsageByModelAndPurpose", byModelAndPurpose);
         report.put("callsWithoutUsage", unknownCalls);
         report.put("lastRequest", lastRequest);
+        report.put("lastContextPressure", lastPressure);
+        report.put("lastSummaryPrefix", lastSummaryPrefix);
         report.put("costMeasurementComplete", false);
         report.put("limitations", "model_call records cover observed reason and summary calls, including failure/cancellation. Legacy usage records cover successful reasoning only. Missing usage and provider-internal retries cannot be billed locally. Provider token conventions differ. No currency cost or cache hit rate is inferred.");
         return report;

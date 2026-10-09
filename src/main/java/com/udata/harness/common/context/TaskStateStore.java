@@ -15,9 +15,13 @@ import java.util.*;
  * 避免状态引用到不存在的证据；每次更新都会递增 {@code revision}。</p>
  *
  * <p>状态是 Agent 自行维护的记录，<b>不是任务已正确完成的自动证明</b>；
- * 目标根本变化时建议新建任务，当前版本没有覆盖目标或移除约束的工具。</p>
+ * 普通 update 保护既有目标；用户明确变更要求时可用 revise，留下原子审计记录。
+ * 引用原文用于来源追溯，不自动证明改动获得了语义上的授权。</p>
  */
 public class TaskStateStore {
+    private static final Object[] LOCKS = new Object[64];
+    static { for (int i = 0; i < LOCKS.length; i++) LOCKS[i] = new Object(); }
+    private Object writeLock() { return LOCKS[(path.toAbsolutePath().normalize().hashCode() & Integer.MAX_VALUE) % LOCKS.length]; }
     /**
      * 单值字段：以 patch 直接覆盖。
      */
@@ -56,7 +60,94 @@ public class TaskStateStore {
      */
     @SuppressWarnings("unchecked")
     public synchronized Map<String, Object> get() {
-        return Files.exists(path) ? ContextFiles.read(path).toBean(Map.class) : new LinkedHashMap<>();
+        Map<String,Object> document = document();
+        return document.get("formatVersion") instanceof Number && ((Number) document.get("formatVersion")).intValue() == 2
+                ? new LinkedHashMap<>((Map<String,Object>) document.get("state")) : document;
+    }
+
+    @SuppressWarnings("unchecked")
+    private Map<String,Object> document() { return Files.exists(path) ? ContextFiles.read(path).toBean(Map.class) : new LinkedHashMap<>(); }
+
+    @SuppressWarnings("unchecked")
+    private List<Map<String,Object>> history() {
+        Object history = document().get("history");
+        return history instanceof List ? new ArrayList<>((List<Map<String,Object>>) history) : new ArrayList<>();
+    }
+
+    /** Full audit persists with state in one atomic file; model sees bounded previews only on request. */
+    public synchronized Map<String,Object> historyPreview(int limit) {
+        if (limit < 1 || limit > 20) throw new IllegalArgumentException("History limit must be 1..20");
+        List<Map<String,Object>> history = history(), result = new ArrayList<>();
+        for (int i = history.size() - 1; i >= 0 && result.size() < limit; i--) {
+            Map<String,Object> record = history.get(i), preview = new LinkedHashMap<>();
+            preview.put("revision", record.get("revision")); preview.put("source", record.get("source"));
+            preview.put("reason", record.get("reason"));
+            String changes = ONode.serialize(record.get("changes"));
+            preview.put("changesPreview", changes.substring(0, Math.min(800, changes.length())));
+            preview.put("changesTruncated", changes.length() > 800);
+            result.add(preview);
+            if (ONode.serialize(result).length() > 14000) { result.remove(result.size()-1); break; }
+        }
+        Map<String,Object> response = new LinkedHashMap<>(); response.put("totalRevisions", history.size());
+        response.put("recent", result); response.put("returnedRevisions", result.size()); return response;
+    }
+
+    private void persist(Map<String,Object> state, List<Map<String,Object>> history) {
+        if (ONode.serialize(state).length() > 16000) throw new IllegalArgumentException("Task state exceeds 16000 characters");
+        Map<String,Object> envelope = new LinkedHashMap<>(); envelope.put("formatVersion", 2);
+        envelope.put("state", state); envelope.put("history", history); ContextFiles.write(path, envelope);
+    }
+
+    /** Amend only requirements, with optimistic concurrency and a quote from the current user request. */
+    public synchronized Map<String,Object> revise(long expectedRevision, Map<String,Object> patch, String quote, String reason, String currentUser) {
+        synchronized (writeLock()) { return reviseLocked(expectedRevision, patch, quote, reason, currentUser); }
+    }
+    @SuppressWarnings("unchecked")
+    private Map<String,Object> reviseLocked(long expectedRevision, Map<String,Object> patch, String quote, String reason, String currentUser) {
+        Map<String,Object> before = get();
+        if (((Number) before.getOrDefault("revision", 0)).longValue() != expectedRevision) throw new IllegalArgumentException("Stale task revision; read task_state_get before revising");
+        if (quote == null || quote.trim().length() < 8 || quote.length() > 2000 || currentUser == null || !currentUser.contains(quote))
+            throw new IllegalArgumentException("source_quote must cite at least 8 characters verbatim from the current user request");
+        if (reason == null || reason.trim().isEmpty() || reason.length() > 1000 || patch == null || patch.isEmpty()) throw new IllegalArgumentException("Revision patch and reason are required");
+        Map<String,Object> next = new LinkedHashMap<>(before), changes = new LinkedHashMap<>();
+        for (Map.Entry<String,Object> entry : patch.entrySet()) {
+            String key = entry.getKey(); Object value = entry.getValue();
+            if ("objective".equals(key)) {
+                if (!(value instanceof String) || ((String) value).trim().isEmpty() || ((String) value).length() > 4000) throw new IllegalArgumentException("Invalid objective");
+            } else if ("constraints".equals(key) || "acceptance".equals(key)) {
+                if (!(value instanceof List) || ((List<?>) value).size() > 100) throw new IllegalArgumentException("Invalid requirement list");
+                for (Object item : (List<?>) value) if (!(item instanceof String) || ((String) item).length() > 2000) throw new IllegalArgumentException("Invalid requirement item");
+                value = new ArrayList<>(new LinkedHashSet<>((List<?>) value));
+            } else throw new IllegalArgumentException("Only objective, constraints and acceptance can be revised");
+            if (!Objects.equals(before.get(key), value)) {
+                Map<String,Object> change = new LinkedHashMap<>(); change.put("before", before.get(key)); change.put("after", value);
+                changes.put(key, change); next.put(key, value);
+            }
+        }
+        if (changes.isEmpty()) return before;
+        long revision = expectedRevision + 1; next.put("revision", revision);
+        Map<String,Object> source = new LinkedHashMap<>(); source.put("kind", "user_quote"); source.put("quote", quote);
+        source.put("messageHash", ContextArtifactStore.digest(currentUser)); source.put("revision", revision);
+        // A quote records provenance; it is not a semantic proof that the amendment is authorized.
+        Map<String,Object> origins = new LinkedHashMap<>();
+        if (before.get("requirementSources") instanceof Map) origins.putAll((Map<String,Object>) before.get("requirementSources"));
+        for (String key : changes.keySet()) origins.put(key, source);
+        next.put("requirementSources", origins);
+        Map<String,Object> event = new LinkedHashMap<>(); event.put("revision", revision); event.put("time", System.currentTimeMillis());
+        event.put("source", source); event.put("reason", reason); event.put("changes", changes);
+        List<Map<String,Object>> history = history(); history.add(event); persist(next, history); return next;
+    }
+
+    @SuppressWarnings("unchecked")
+    private boolean retired(String key, String item, List<Map<String,Object>> history) {
+        for (Map<String,Object> event : history) {
+            Map<String,Object> changes = (Map<String,Object>) event.get("changes");
+            if (!(changes.get(key) instanceof Map)) continue;
+            Map<String,Object> change = (Map<String,Object>) changes.get(key);
+            if (change.get("before") instanceof List && ((List<?>) change.get("before")).contains(item)
+                    && !((List<?>) change.get("after")).contains(item)) return true;
+        }
+        return false;
     }
 
     /**
@@ -71,9 +162,15 @@ public class TaskStateStore {
      *                                  证据 ID 不存在，或状态总长超过 16000 字符时抛出
      */
     public synchronized Map<String, Object> update(Map<String, Object> patch) {
+        synchronized (writeLock()) { return updateLocked(patch); }
+    }
+    @SuppressWarnings("unchecked")
+    private Map<String,Object> updateLocked(Map<String,Object> patch) {
         //1. 空 patch 无意义，直接拒绝，避免白白递增 revision。
         if (patch == null || patch.isEmpty()) throw new IllegalArgumentException("Task state patch is required");
-        Map<String, Object> next = new LinkedHashMap<>(get());
+        Map<String,Object> before = get();
+        Map<String, Object> next = new LinkedHashMap<>(before);
+        List<Map<String,Object>> audit = history();
         //2. 逐个字段校验并写入临时副本：单值字段覆盖，列表字段合并或替换。
         for (Map.Entry<String, Object> entry : patch.entrySet()) {
             String key = entry.getKey();
@@ -97,6 +194,8 @@ public class TaskStateStore {
                     if (!(item instanceof String) || ((String) item).length() > 2000) throw new IllegalArgumentException("Invalid task item: " + key);
                     //5. 证据引用必须已归档，避免状态里出现无法恢复的悬空 ID。
                     if ("evidence".equals(key) && !artifacts.contains((String) item)) throw new IllegalArgumentException("Unknown evidence ID: " + item);
+                    if (("constraints".equals(key) || "acceptance".equals(key)) && !items.contains(item) && retired(key, (String) item, audit))
+                        throw new IllegalArgumentException("Superseded requirement cannot be reintroduced by update; use task_state_revise");
                     items.add((String) item);
                 }
                 next.put(key, new ArrayList<>(items));
@@ -104,8 +203,15 @@ public class TaskStateStore {
         }
         //6. 递增 revision 并做总长检查，两者都通过才落盘，保证磁盘上始终是一个完整状态。
         next.put("revision", ((Number) next.getOrDefault("revision", 0)).longValue() + 1);
-        if (ONode.serialize(next).length() > 16000) throw new IllegalArgumentException("Task state exceeds 16000 characters");
-        ContextFiles.write(path, next);
+        Map<String,Object> origins = new LinkedHashMap<>();
+        if (next.get("requirementSources") instanceof Map) origins.putAll((Map<String,Object>) next.get("requirementSources"));
+        for (String key : Arrays.asList("objective", "constraints", "acceptance")) {
+            if (patch.containsKey(key) && !Objects.equals(before.get(key), next.get(key))) {
+                Map<String,Object> origin = new LinkedHashMap<>(); origin.put("kind", "agent_maintained"); origin.put("revision", next.get("revision")); origins.put(key, origin);
+            }
+        }
+        if (!origins.isEmpty()) next.put("requirementSources", origins);
+        persist(next, audit);
         return next;
     }
 }

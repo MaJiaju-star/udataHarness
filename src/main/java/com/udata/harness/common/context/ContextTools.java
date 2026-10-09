@@ -5,7 +5,7 @@ import java.lang.reflect.Type;
 import java.util.*;
 
 /**
- * 六个上下文工具的稳定定义（名称、描述、入参 schema）。
+ * 七个上下文工具的稳定定义（名称、描述、入参 schema）。
  *
  * <p>本类只声明工具，不执行工具：{@link ContextPlanner#handle} 在 {@code onToolCallStart} 中
  * 按名称接管调用，并对当前 trace 的会话执行。因此 {@link FunctionTool#handle}
@@ -25,7 +25,7 @@ public final class ContextTools {
     private ContextTools() { }
 
     /**
-     * 返回六个上下文工具的不可变定义列表。
+     * 返回七个上下文工具的不可变定义列表。
      *
      * <p>顺序即注册顺序：任务状态（读/写）、证据（检索/恢复）、检查点、指标。
      * 返回值为 {@link Collections#unmodifiableList} 包装，避免被调用方意外改写。</p>
@@ -38,11 +38,16 @@ public final class ContextTools {
                 "\"query\":{\"type\":\"string\"},\"tool\":{\"type\":\"string\"},\"limit\":{\"type\":\"integer\",\"minimum\":1,\"maximum\":20}", "\"query\""));
         tools.add(tool("context_restore", "Restore a bounded slice of historical evidence. Verify freshness against current files/tests. Offsets and maxChars are characters; follow nextOffset for more.",
                 "\"id\":{\"type\":\"string\"},\"offset\":{\"type\":\"integer\",\"minimum\":0},\"maxChars\":{\"type\":\"integer\",\"minimum\":1,\"maximum\":16000}", "\"id\""));
-        tools.add(tool("task_state_get", "Read the durable task objective, acceptance, constraints, phase, module, decisions, completed/pending work, questions, evidence IDs and nextStep.", "", ""));
+        tools.add(tool("task_state_get", "Read active task state and requirement provenance. With includeHistory=true, return bounded amendment audit previews instead of active state.",
+                "\"includeHistory\":{\"type\":\"boolean\"},\"historyLimit\":{\"type\":\"integer\",\"minimum\":1,\"maximum\":20}", ""));
         tools.add(tool("task_state_update", "Update structured task state using a patch. Establish objective and user constraints early. Objective is immutable; constraints and acceptance accumulate. Other lists replace prior lists. Completed claims are agent-maintained, not independently verified. Evidence must reference existing artifact IDs.",
                 "\"patch\":{\"type\":\"object\",\"properties\":{"
                         + "\"objective\":{\"type\":\"string\"},\"phase\":{\"type\":\"string\"},\"module\":{\"type\":\"string\"},\"nextStep\":{\"type\":\"string\"},"
                         + listProperties() + "},\"additionalProperties\":false}", "\"patch\""));
+        tools.add(tool("task_state_revise", "Amend requirements ONLY when the current user explicitly changes them. First read current revision. source_quote must quote the current request verbatim (8..2000 characters). Quote matching records provenance, not permission proof. Patch replaces selected objective/constraints/acceptance; removed requirements are superseded. Preserve all still-applicable requirements. Active requirements override obsolete snapshots/summaries.",
+                "\"expectedRevision\":{\"type\":\"integer\",\"minimum\":0},\"source_quote\":{\"type\":\"string\"},\"reason\":{\"type\":\"string\"},"
+                        + "\"patch\":{\"type\":\"object\",\"properties\":{\"objective\":{\"type\":\"string\"},\"constraints\":{\"type\":\"array\",\"items\":{\"type\":\"string\"}},\"acceptance\":{\"type\":\"array\",\"items\":{\"type\":\"string\"}}},\"additionalProperties\":false}",
+                "\"expectedRevision\",\"source_quote\",\"reason\",\"patch\""));
         tools.add(tool("context_checkpoint", "Request a batch summary at a completed phase, closed bug or module switch AFTER updating task state. Requires a task objective. Keeps latest user request and recent tool groups. Do not call every turn: changing history rebuilds message cache prefixes. Failure retains original history.",
                 "\"reason\":{\"type\":\"string\"}", "\"reason\""));
         tools.add(tool("context_metrics", "Read context decisions, provider-reported reason token/cache usage and measurement limitations. Structural prefix reuse is not a cache hit measurement.", "", ""));

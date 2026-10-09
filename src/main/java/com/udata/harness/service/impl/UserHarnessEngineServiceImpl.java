@@ -378,7 +378,7 @@ public class UserHarnessEngineServiceImpl implements UserHarnessEngineService {
         // 仍由 ChatService 每次运行时写入 toolContext。
         PersistentContextCompressionInterceptor compression = new PersistentContextCompressionInterceptor(
                 compressionMaxMessages, compressionMaxContextRatio, modelMaxAttempts,
-                compressionMessageTriggerFactor, new CompositeCompressionStrategy()
+                compressionMessageTriggerFactor, contextManagementEnabled ? new com.udata.harness.common.context.PrefixSummaryStrategy() : new CompositeCompressionStrategy()
                 .addStrategy(new KeyInfoExtractionStrategy())
                 .addStrategy(new HierarchicalCompressionStrategy().maxSummaryLength(3000)));
         if (contextManagementEnabled) compression.contextManagement(toolResultMaxChars, checkpointRetainMessages);
@@ -386,7 +386,10 @@ public class UserHarnessEngineServiceImpl implements UserHarnessEngineService {
         if (contextManagementEnabled) effectivePrompt += "\nFor long tasks, establish task_state_update with the user's objective, acceptance and constraints. "
                 + "Track decisions, unresolved issues and evidence IDs. At completed phases, closed bugs or module switches, update task state "
                 + "and request context_checkpoint; avoid checkpointing every turn. Tool excerpts are partial: use context_search/context_restore "
-                + "when omitted evidence is needed. Historical evidence can be stale; verify current files and tests. Task state claims are not proof of completion.";
+                + "when omitted evidence is needed. Historical evidence can be stale; verify current files and tests. Task state claims are not proof of completion. "
+                + "If the user explicitly changes requirements, read task_state_get then use task_state_revise with a verbatim quote from the current request. "
+                + "Active amended requirements override older snapshots/summaries; never restore superseded constraints via task_state_update. "
+                + "Read narrow file ranges with file_path/offset/limit when only a local region is needed; reuse notices refer only to visible matching lines, not a proven unchanged whole-file version.";
         HarnessEngine.Builder builder = HarnessEngine.of(workspace.toString(), harnessHome)
                 .systemPrompt(effectivePrompt)
                 .maxTurns(maxTurns)

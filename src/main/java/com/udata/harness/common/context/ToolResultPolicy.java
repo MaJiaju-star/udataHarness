@@ -88,19 +88,25 @@ public class ToolResultPolicy {
         String text = original.getContent();
         //2. 先把完整原文写入归档，再考虑缩减：投影失败也不会丢证据。
         String id = artifacts.put(original.getName(), args, text); // Commit raw output before returning a smaller projection.
-        String reference = "Same file version and read range are already present in active context. Artifact: " + id
+        boolean partial = active.stream().anyMatch(m -> m != original && id.equals(m.getMetadataAs(ARTIFACT)) && "excerpt".equals(m.getMetadataAs(PROJECTION)));
+        String reference = (partial ? "Same partial read projection is already present in active context; omitted content is still unavailable. Artifact: "
+                : "Same read output and range are already present in active context. Artifact: ") + id
                 + ". Use context_restore if the earlier content is no longer available.";
         //3. 仅当“同版本同范围的 read 全文”仍在活跃上下文且引用确实更短时，才降级为引用。
         boolean duplicate = "read".equals(original.getName()) && text.length() > reference.length() && active.stream().anyMatch(m -> m != original
-                && id.equals(m.getMetadataAs(ARTIFACT)) && "full".equals(m.getMetadataAs(PROJECTION)));
+                && id.equals(m.getMetadataAs(ARTIFACT)) && Arrays.asList("full", "excerpt").contains(m.getMetadataAs(PROJECTION)));
         String kind = duplicate ? "reference" : text.length() > maxChars ? "excerpt" : "full";
         //4. 按工具选择片段规则：文件源码、bash 日志、匹配结果与其他文本分别处理。
         String policy = "read".equals(original.getName()) ? "source"
                 : Arrays.asList("bash", "bash_wait").contains(original.getName()) ? "diagnostics"
                 : Arrays.asList("grep", "glob", "ls", "list", "websearch", "codesearch").contains(original.getName()) ? "matches" : "generic";
         String visible = text;
+        String delta = "read".equals(original.getName()) && !duplicate ? ReadRangeReuse.delta(original, args, active, id, maxChars) : null;
         if (duplicate) {
             visible = reference;
+        } else if (delta != null) {
+            visible = delta;
+            kind = "range_delta";
         } else if ("excerpt".equals(kind)) {
             //5. 长结果加头部说明（含原文长度、证据 ID 与恢复方式），再拼接有界片段。
             String header = "[Partial tool output; " + text.length() + " original characters. Artifact: " + id
@@ -115,6 +121,10 @@ public class ToolResultPolicy {
         result.metas().put(ARTIFACT, id);
         result.metas().put(PROJECTION, kind);
         result.metas().put(POLICY, policy);
+        if ("read".equals(original.getName()) && ReadRangeReuse.path(args) != null) {
+            result.metas().put(ReadRangeReuse.PATH, ReadRangeReuse.path(args));
+            result.metas().put(ReadRangeReuse.SCOPE, ReadRangeReuse.scope(args));
+        }
         ToolMessage projected = new ToolMessage(result, original.getName(), original.getToolCallId(), false);
         return projected;
     }
@@ -132,6 +142,11 @@ public class ToolResultPolicy {
         String marker = "\n[omitted source; use context_restore for exact intervening code]\n";
         int head = (budget - marker.length()) / 2;
         int tail = budget - marker.length() - head;
+        // Keep whole lines when possible, so later range reuse never mistakes a cut suffix for a source line.
+        int headBreak = text.lastIndexOf('\n', head - 1);
+        int tailBreak = text.indexOf('\n', text.length() - tail);
+        if (headBreak >= 0) head = headBreak + 1;
+        if (tailBreak >= 0) tail = text.length() - tailBreak - 1;
         return text.substring(0, head) + marker + text.substring(text.length() - tail);
     }
 

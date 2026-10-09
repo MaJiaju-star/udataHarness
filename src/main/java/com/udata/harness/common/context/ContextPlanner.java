@@ -102,7 +102,9 @@ public class ContextPlanner {
             }
             if (!(message instanceof ToolMessage)) continue;
             ToolMessage original = (ToolMessage) message;
-            ToolMessage projected = policy.project(original, arguments.getOrDefault(original.getToolCallId(), Collections.emptyMap()),
+            Map<String,Object> scopedArgs = new LinkedHashMap<>(arguments.getOrDefault(original.getToolCallId(), Collections.emptyMap()));
+            if ("read".equals(original.getName())) scopedArgs.put("_context_cwd", trace.getOptions().getToolContext().getOrDefault(org.noear.solon.ai.harness.HarnessEngine.ATTR_CWD, ""));
+            ToolMessage projected = policy.project(original, scopedArgs,
                     memory, session.contextArtifacts());
             if (projected != original) {
                 memory.set(i, projected);
@@ -133,7 +135,7 @@ public class ContextPlanner {
     public boolean handle(ReActTrace trace, ToolExchanger call) {
         String name = call.getToolName();
         if (!Arrays.asList("context_search", "context_restore", "task_state_get", "task_state_update",
-                "context_checkpoint", "context_metrics").contains(name)) return false;
+                "task_state_revise", "context_checkpoint", "context_metrics").contains(name)) return false;
         if (call.getToolResult() != null) return true; // Respect earlier reject/skip decisions.
         ModelContextAgentSession session = session(trace);
         Map<String, Object> args = call.getArgs();
@@ -147,7 +149,27 @@ public class ContextPlanner {
                     result = session.contextArtifacts().restore(string(args, "id", null), number(args, "offset", 0), number(args, "maxChars", 4000));
                     session.contextMetrics().event("restore", Collections.singletonMap("artifact", args.get("id")));
                     break;
-                case "task_state_get": result = session.taskState().get(); break;
+                case "task_state_get":
+                    if (args.containsKey("includeHistory") && !(args.get("includeHistory") instanceof Boolean)) throw new IllegalArgumentException("includeHistory must be boolean");
+                    result = Boolean.TRUE.equals(args.get("includeHistory")) ? session.taskState().historyPreview(number(args, "historyLimit", 5)) : session.taskState().get(); break;
+                case "task_state_revise":
+                    if (!(args.get("patch") instanceof Map)) throw new IllegalArgumentException("patch must be an object");
+                    Object revision = args.get("expectedRevision");
+                    if (!(revision instanceof Number) || ((Number) revision).longValue() < 0
+                            || ((Number) revision).doubleValue() != ((Number) revision).longValue()) throw new IllegalArgumentException("expectedRevision must be a nonnegative integer");
+                    String currentUser = null;
+                    for (ChatMessage message : trace.getWorkingMemory().getMessages())
+                        if (message instanceof UserMessage && !message.hasMetadata(TASK_SNAPSHOT)
+                                && !message.hasMetadata(ContextCompressionInterceptor.META_COMPRESSED)) currentUser = message.getContent();
+                    Map<String,Object> amended = session.taskState().revise(((Number) revision).longValue(), (Map<String,Object>) args.get("patch"),
+                            string(args, "source_quote", null), string(args, "reason", null), currentUser);
+                    Map<String,Object> activeRequirements = new LinkedHashMap<>();
+                    for (String key : Arrays.asList("objective", "constraints", "acceptance", "revision", "requirementSources"))
+                        if (amended.containsKey(key)) activeRequirements.put(key, amended.get(key));
+                    activeRequirements.put("notice", "These are active requirements. Conflicting requirements in older snapshots and summaries are superseded; do not reintroduce them.");
+                    result = activeRequirements;
+                    session.contextMetrics().event("task_state_revise", Collections.singletonMap("savedRevision", amended.get("revision")));
+                    break;
                 case "task_state_update":
                     if (!(args.get("patch") instanceof Map)) throw new IllegalArgumentException("patch must be an object");
                     Map<String, Object> state = session.taskState().update((Map<String, Object>) args.get("patch"));
@@ -193,12 +215,16 @@ public class ContextPlanner {
      * @param trace 当前 ReAct 执行链路
      */
     public void refreshSnapshot(ReActTrace trace) {
+        trace.getWorkingMemory().replaceMessages(refreshedSnapshot(trace, trace.getWorkingMemory().getMessages()));
+    }
+
+    public List<ChatMessage> refreshedSnapshot(ReActTrace trace, List<ChatMessage> source) {
         Map<String, Object> state = session(trace).taskState().get();
-        if (state.isEmpty()) return;
-        List<ChatMessage> memory = new ArrayList<>(trace.getWorkingMemory().getMessages());
+        List<ChatMessage> memory = new ArrayList<>(source);
+        if (state.isEmpty()) return memory;
         memory.removeIf(m -> m.hasMetadata(TASK_SNAPSHOT));
         memory.add(0, snapshot(state));
-        trace.getWorkingMemory().replaceMessages(memory);
+        return memory;
     }
 
     /**
@@ -235,6 +261,7 @@ public class ContextPlanner {
             return;
         }
         try {
+            SummaryCommitGuard guard = new SummaryCommitGuard(trace);
             //5. 重建消息序列：快照置首，其后依次为摘要、被摘出的最新用户请求、保留的近期消息。
             List<ChatMessage> next = new ArrayList<>();
             next.add(snapshot(session(trace).taskState().get()));
@@ -243,6 +270,8 @@ public class ContextPlanner {
                 ChatMessage summary = summaryStrategy.compress(new ObservedSummaryModel(trace.getOptions().getChatModel(), session(trace).contextMetrics(), trace.getRunId()), retries, trace, old);
                 session(trace).contextMetrics().event("summary_attempt", Collections.singletonMap("durationMs", System.currentTimeMillis() - start));
                 ContextProtection.validateSummary(summary);
+                guard.check();
+                SummaryCommitGuard.shrinking(old, summary);
                 summary.addMetadata(ContextCompressionInterceptor.META_COMPRESSED, true);
                 next.add(summary);
             }
@@ -250,7 +279,10 @@ public class ContextPlanner {
             next.addAll(variable.subList(cut, variable.size()));
             //6. 先做结构校验与落盘，再替换工作记忆；任一步失败都保留原上下文前缀。
             ContextProtection.validateToolGroups(before, next);
-            session(trace).saveModelContext(next, !old.isEmpty());
+            if (TokenPressureMeter.messagesTokens(next) >= TokenPressureMeter.messagesTokens(before))
+                throw new IllegalStateException("Checkpoint does not reduce complete context tokens");
+            guard.check();
+            session(trace).saveModelContextChecked(next, !old.isEmpty(), guard.revision(), guard.archiveSize());
             trace.getWorkingMemory().replaceMessages(next);
             trace.getExtras().remove(CHECKPOINT);
             Map<String, Object> event = new LinkedHashMap<>();
@@ -261,7 +293,7 @@ public class ContextPlanner {
             session(trace).contextMetrics().event("checkpoint", event);
         } catch (Throwable e) {
             //7. 回滚工作记忆并记录失败事件：宁可保留过长上下文，也不静默裁剪历史。
-            trace.getWorkingMemory().replaceMessages(before);
+            // No live-memory edits occur before commit. Preserve concurrent changes on rejection.
             session(trace).contextMetrics().event("checkpoint_failed", Collections.singletonMap("reason", String.valueOf(reason)));
             throw new IllegalStateException("Checkpoint failed; original context retained", e);
         }

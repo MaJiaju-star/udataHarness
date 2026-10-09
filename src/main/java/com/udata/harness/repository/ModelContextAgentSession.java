@@ -36,6 +36,8 @@ public class ModelContextAgentSession extends FileAgentSession {
     private List<String> modelMessages;
     private int archiveCursor;
     private long generation;
+    private long contextRevision;
+    private final com.udata.harness.common.context.TokenPressureMeter tokenPressure = new com.udata.harness.common.context.TokenPressureMeter();
 
     public ModelContextAgentSession(String sessionId, String dir) {
         super(sessionId, dir);
@@ -52,6 +54,13 @@ public class ModelContextAgentSession extends FileAgentSession {
     public ContextArtifactStore contextArtifacts() { return artifacts; }
     public TaskStateStore taskState() { return taskState; }
     public ContextMetrics contextMetrics() { return metrics; }
+    public com.udata.harness.common.context.TokenPressureMeter tokenPressure() { return tokenPressure; }
+    public synchronized long contextRevision() { return contextRevision; }
+    public synchronized void saveModelContextChecked(List<ChatMessage> memory, boolean compressed, long expectedRevision, int expectedArchiveSize) {
+        if (contextRevision != expectedRevision || getMessages().size() != expectedArchiveSize)
+            throw new IllegalStateException("Model context changed before summary commit");
+        saveModelContext(memory, compressed);
+    }
 
     public synchronized Map<String, Object> contextReport() {
         Map<String, Object> result = new LinkedHashMap<>();
@@ -135,6 +144,7 @@ public class ModelContextAgentSession extends FileAgentSession {
             modelMessages = next;
             archiveCursor = cursor;
             generation = nextGeneration;
+            contextRevision++;
         } catch (IOException e) {
             throw new IllegalStateException("Cannot persist model context: " + contextFile, e);
         }
@@ -153,6 +163,7 @@ public class ModelContextAgentSession extends FileAgentSession {
 
     @Override
     public synchronized void clear() {
+        tokenPressure.reset();
         super.clear();
         writeModelContext(new ArrayList<>(), 0, 0);
         if (Files.exists(contextRoot)) {

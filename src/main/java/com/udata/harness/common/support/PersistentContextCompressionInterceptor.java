@@ -4,6 +4,9 @@ import com.udata.harness.repository.ModelContextAgentSession;
 import com.udata.harness.common.context.ContextPlanner;
 import com.udata.harness.common.context.ContextProtection;
 import com.udata.harness.common.context.ObservedSummaryModel;
+import com.udata.harness.common.context.TokenPressureMeter;
+import com.udata.harness.common.context.BudgetContextCompactor;
+import com.udata.harness.common.context.SummaryCommitGuard;
 import org.noear.solon.ai.agent.AgentTrace;
 import org.noear.solon.ai.agent.react.ReActTrace;
 import org.noear.solon.ai.agent.react.intercept.CompressionStrategy;
@@ -43,6 +46,7 @@ public class PersistentContextCompressionInterceptor extends ContextCompressionI
     private final CompressionStrategy strategy;
     private final int retries;
     private ContextPlanner planner;
+    private final BudgetContextCompactor budgetCompactor;
 
     /**
      * 构造拦截器，并以包装方式接管摘要策略。
@@ -72,12 +76,14 @@ public class PersistentContextCompressionInterceptor extends ContextCompressionI
             // 2. 摘要非空则记下成功标记，供后续落盘校验
             if (summary != null && summary.getContent() != null && !summary.getContent().trim().isEmpty()) {
                 ContextProtection.validateSummary(summary);
+                SummaryCommitGuard.shrinking(messages, summary);
                 trace.setExtra(SUMMARY_SUCCEEDED, true);
             }
             return summary;
         });
         this.strategy = strategy;
         this.retries = retries;
+        this.budgetCompactor = new BudgetContextCompactor(strategy, maxMessages, retries, ratio, triggerFactor);
         setMessageTriggerFactor(triggerFactor);
         // 3. 不在摘要前直接头尾截断长消息；历史退出上下文必须有摘要承接
         setPerMessageCap(Integer.MAX_VALUE);
@@ -108,9 +114,14 @@ public class PersistentContextCompressionInterceptor extends ContextCompressionI
             return;
         }
         if (planner != null) {
+            trace.setExtra(TokenPressureMeter.SYSTEM, systemPrompt == null ? "" : systemPrompt.toString());
             planner.govern(trace);
             planner.ensureSnapshot(trace);
             planner.checkpoint(trace);
+            budgetCompactor.compact(trace, systemPrompt == null ? "" : systemPrompt.toString(), false, 0, planner);
+            ((ModelContextAgentSession) trace.getSession()).saveModelContext(trace.getWorkingMemory().getMessages(), false);
+            ((ModelContextAgentSession) trace.getSession()).contextMetrics().request(trace.getWorkingMemory().getMessages());
+            return;
         }
         // 2. 进入压缩前记录基线，并解除首问的保护标记
         List<ChatMessage> before = prepareMemory(trace);
@@ -131,6 +142,11 @@ public class PersistentContextCompressionInterceptor extends ContextCompressionI
     @Override
     public boolean onReasonRetry(ReActTrace trace, Throwable error, int attempt, String systemPrompt) {
         if (!isMainSession(trace)) return super.onReasonRetry(trace, error, attempt, systemPrompt);
+        if (planner != null) {
+            if (!org.noear.solon.ai.agent.react.intercept.compress.CompressionUtil.isPromptTooLongError(error)) return false;
+            trace.setExtra(TokenPressureMeter.SYSTEM, systemPrompt);
+            return budgetCompactor.compact(trace, systemPrompt, true, attempt, planner);
+        }
         // 1. 记录基线并解除首问保护标记
         List<ChatMessage> before = prepareMemory(trace);
         // 2. 执行重试压缩，再提交结果
