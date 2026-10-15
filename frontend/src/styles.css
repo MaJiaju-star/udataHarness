@@ -1434,6 +1434,21 @@ button, input, textarea, select { outline: none; }
 .typing-row span:nth-child(3) { animation-delay: .28s; }
 
 .composer-wrap { padding: 12px max(20px, calc((100% - 850px) / 2)) 16px; background: white; }
+.prompt-queue {
+    margin-bottom: 8px;
+    padding: 8px 10px;
+    border: 1px solid var(--line);
+    border-radius: 11px;
+    background: var(--surface-2);
+}
+.prompt-queue-heading { display: flex; align-items: center; justify-content: space-between; gap: 8px; color: var(--text); font-size: 11px; }
+.prompt-queue-heading span { color: var(--muted); font-size: 10px; }
+.prompt-queue-resume { flex: 0 0 auto; padding: 4px 8px; border: 1px solid var(--line); border-radius: 6px; color: var(--accent-dark); background: var(--surface); font-size: 10px; }
+.prompt-queue-list { display: grid; max-height: 126px; gap: 4px; margin: 7px 0 0; padding: 0; overflow-y: auto; list-style: none; }
+.prompt-queue-list li { display: flex; min-width: 0; align-items: center; gap: 8px; padding: 5px 6px 5px 9px; border-radius: 7px; background: var(--surface); }
+.prompt-queue-list li > span { min-width: 0; flex: 1; overflow: hidden; color: var(--text); font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
+.prompt-queue-list button { display: grid; width: 28px; height: 28px; flex: 0 0 auto; place-items: center; border: 0; border-radius: 6px; color: var(--muted); background: transparent; }
+.prompt-queue-list button:hover, .prompt-queue-list button:focus-visible { color: var(--danger); background: color-mix(in srgb, var(--danger) 9%, transparent); }
 .permission-mode-bar {
     display: flex;
     align-items: center;

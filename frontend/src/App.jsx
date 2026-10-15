@@ -588,6 +588,11 @@ function App() {
     const [messages, setMessages] = useState([]);
     const [running, setRunning] = useState(false);
     const [stopping, setStopping] = useState(false);
+    const [pendingPrompts, setPendingPrompts] = useState([]);
+    const [queuePaused, setQueuePaused] = useState(false);
+    const [queueEpoch, setQueueEpoch] = useState(0);
+    const queueDispatchingRef = useRef(false);
+    const sendPromptRef = useRef(null);
     const streamAbortRef = useRef(null);
     const [mobile, setMobile] = useState(() => window.matchMedia("(max-width: 760px)").matches);
     const [notice, setNotice] = useState("");
@@ -848,7 +853,10 @@ function App() {
     }, [page]);
 
     async function chooseSession(session) {
-        if (running) return;
+        if (running || pendingPrompts.length > 0) {
+            notify("请先等待或取消当前会话的待发送消息");
+            return;
+        }
         setCurrent(session);
         setSelectedModel(session.model || meta?.defaultModel || "");
         setTokenUsage(emptyTokenUsage());
@@ -869,7 +877,7 @@ function App() {
     }
 
     async function switchWorkspace(workspaceId) {
-        if (running) throw new Error("请先停止当前智能体任务");
+        if (running || pendingPrompts.length > 0) throw new Error("请先等待或取消当前会话的待发送消息");
         if (hasDirtyFiles() && !await confirmAction("当前有未保存文件，切换工作区将放弃这些修改。继续吗？")) return;
         await api("/api/workspaces/activate", {
             method: "POST",
@@ -879,7 +887,7 @@ function App() {
     }
 
     async function registerWorkspace(path) {
-        if (running) throw new Error("请先停止当前智能体任务");
+        if (running || pendingPrompts.length > 0) throw new Error("请先等待或取消当前会话的待发送消息");
         if (hasDirtyFiles() && !await confirmAction("当前有未保存文件，打开新工作区将放弃这些修改。继续吗？")) return;
         const registered = await api("/api/workspaces", {method: "POST", body: toForm({path, activate: false})});
         await reloadWorkspace(registered.workspaceId);
@@ -904,6 +912,10 @@ function App() {
     }
 
     async function createSession() {
+        if (running || pendingPrompts.length > 0) {
+            notify("请先等待或取消当前会话的待发送消息");
+            return;
+        }
         const created = await api("/api/sessions", {
             method: "POST",
             body: toForm({title: "新的编码任务", model: selectedModel || meta?.defaultModel})
@@ -914,6 +926,10 @@ function App() {
 
     async function deleteSession(event, session) {
         event.stopPropagation();
+        if (session.sessionId === current?.sessionId && (running || pendingPrompts.length > 0)) {
+            notify("请先等待或取消当前会话的待发送消息");
+            return;
+        }
         if (!await confirmAction(`删除会话“${session.title}”？`)) return;
         await api(`/api/sessions?sessionId=${encodeURIComponent(session.sessionId)}`, {method: "DELETE"});
         if (current?.sessionId === session.sessionId) {
@@ -925,7 +941,7 @@ function App() {
     }
 
     async function deleteHistorySessions(ids, all) {
-        if (running) { notify("请先停止当前智能体任务"); return; }
+        if (running || pendingPrompts.length > 0) { notify("请先等待或取消当前会话的待发送消息"); return; }
         const targets = sessions.filter(item => ids.includes(item.sessionId));
         if (!targets.length) return;
         if (targets.some(item => item.active)) { notify("请先停止待删除会话中的任务"); return; }
@@ -1167,14 +1183,17 @@ function App() {
             signal: controller.signal
         });
         if (!response.ok || !response.body) throw new Error(await response.text() || "流式连接不可用");
+        let failed = false;
         await readEventStream(response.body, event => {
+            if (event.type === "error") failed = true;
             trackTokenUsage(event);
             mutateAssistant(messageId, event);
         });
+        return failed;
     }
 
-    async function sendPrompt(text) {
-        if (!current || running || stopping || current.active || !text.trim()) return false;
+    async function sendPrompt(item) {
+        if (!current || current.sessionId !== item.sessionId || running || stopping || current.active) return false;
         const controller = new AbortController();
         streamAbortRef.current = controller;
         setRunning(true);
@@ -1187,7 +1206,7 @@ function App() {
         const assistantId = uid();
         setMessages(items => [
             ...items,
-            {id: uid(), role: "user", content: text.trim(), tools: []},
+            {id: uid(), role: "user", content: item.text, tools: []},
             {
                 id: assistantId,
                 role: "assistant",
@@ -1203,24 +1222,70 @@ function App() {
             }
         ]);
         try {
-            await stream("/api/chat/stream", {
-                sessionId: current.sessionId,
-                prompt: text.trim(),
-                context: isIdea ? ideaContext : undefined,
-                model: selectedModel || current.model,
-                thinkingDepth
+            const failed = await stream("/api/chat/stream", {
+                sessionId: item.sessionId,
+                prompt: item.text,
+                context: isIdea ? item.context : undefined,
+                model: item.model,
+                thinkingDepth: item.thinkingDepth
             }, assistantId, controller);
+            if (failed) setQueuePaused(true);
         } catch (error) {
             mutateAssistant(assistantId, controller.signal.aborted ? {type: "done"} : {type: "error", message: error.message});
+            if (!controller.signal.aborted) setQueuePaused(true);
         } finally {
             if (streamAbortRef.current === controller) streamAbortRef.current = null;
             mutateAssistant(assistantId, {type: "done"});
             setRunning(false);
             await refreshAfterRun();
         }
-        setIdeaContext([]);
         return true;
     }
+
+    useEffect(() => {
+        sendPromptRef.current = sendPrompt;
+    });
+
+    function enqueuePrompt(text) {
+        if (!current || !text.trim()) return false;
+        const item = {
+            id: uid(), sessionId: current.sessionId, text: text.trim(),
+            context: isIdea ? [...ideaContext] : undefined,
+            model: selectedModel || current.model, thinkingDepth
+        };
+        setPendingPrompts(items => [...items, item]);
+        if (isIdea) setIdeaContext([]);
+        return true;
+    }
+
+    useEffect(() => {
+        if (queueDispatchingRef.current || queuePaused || running || stopping || current?.active
+            || !current || pendingPrompts.length === 0 || messages.some(message => message.hitl)) return;
+        const next = pendingPrompts[0];
+        if (next.sessionId !== current.sessionId) return;
+        queueDispatchingRef.current = true;
+        setPendingPrompts(items => items.filter(item => item.id !== next.id));
+        void sendPromptRef.current(next).then(sent => {
+            if (!sent) {
+                setPendingPrompts(items => [next, ...items]);
+                setQueuePaused(true);
+            }
+        }).catch(error => {
+            notify(error.message);
+            setQueuePaused(true);
+        }).finally(() => {
+            queueDispatchingRef.current = false;
+            setQueueEpoch(epoch => epoch + 1);
+        });
+    }, [current, messages, pendingPrompts, running, stopping, queuePaused, queueEpoch, notify]);
+
+    function cancelPendingPrompt(id) {
+        setPendingPrompts(items => items.filter(item => item.id !== id));
+    }
+
+    useEffect(() => {
+        if (pendingPrompts.length === 0 && queuePaused) setQueuePaused(false);
+    }, [pendingPrompts.length, queuePaused]);
 
     async function decideHitl(messageId, action, alwaysAllow, callUuids) {
         if (!current || running || stopping || current.active) return;
@@ -1289,6 +1354,10 @@ function App() {
     }
 
     function changeUser(nextUserId) {
+        if (running || pendingPrompts.length > 0) {
+            notify("请先等待或取消当前会话的待发送消息");
+            return;
+        }
         const value = nextUserId.trim();
         if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(value)) {
             throw new Error("userId 仅支持字母、数字、点、下划线和短横线");
@@ -1408,6 +1477,9 @@ function App() {
 
                 <section className="content-shell">
                     <ChatView api={api} current={current} messages={messages} running={running || !!current?.active}
+                              pendingPrompts={pendingPrompts.filter(item => item.sessionId === current?.sessionId)}
+                              onCancelPending={cancelPendingPrompt}
+                              queuePaused={queuePaused} onResumeQueue={() => setQueuePaused(false)}
                               stopping={stopping} onStop={() => stopRun().catch(error => notify(error.message))}
                               ideaContext={ideaContext} onRemoveContext={path => setIdeaContext(items => items.filter(item => item.path !== path))}
                               models={meta?.models || []} selectedModel={selectedModel}
@@ -1422,7 +1494,7 @@ function App() {
                                   localStorage.setItem("udataThinkingDepth", value);
                               }}
                               onOpenFile={path => openFile(path).catch(error => notify(error.message))}
-                              onSend={sendPrompt} onCreate={() => createSession().catch(error => notify(error.message))}
+                              onSend={enqueuePrompt} onCreate={() => createSession().catch(error => notify(error.message))}
                               onDecide={decideHitl}
                               onSandboxChange={enabled => changeSandbox(enabled)
                                   .catch(error => notify(error.message))}
@@ -1615,6 +1687,7 @@ function activeFileReference(path, selection) {
 }
 
 function ChatView({api, current, messages, running, stopping, onStop, models, selectedModel, thinkingDepth, ideaContext = [], onRemoveContext,
+                      pendingPrompts = [], onCancelPending, queuePaused, onResumeQueue,
                       tokenUsage, contextLength, provider, sandboxEnabled,
                       onModelChange, onThinkingDepthChange, onSend, onCreate, onDecide,
                       onPermissionMode, onSandboxChange, onOpenFile}) {
@@ -1718,7 +1791,7 @@ function ChatView({api, current, messages, running, stopping, onStop, models, se
     }, []);
 
     useEffect(() => {
-        if (!promptInsertion || running || !current || lastInsertionRef.current === promptInsertion.id) return;
+        if (!promptInsertion || !current || lastInsertionRef.current === promptInsertion.id) return;
         lastInsertionRef.current = promptInsertion.id;
         const next = isIdea
             ? insertReferenceAtSelection(prompt, promptInsertion.text, promptSelectionRef.current)
@@ -1731,7 +1804,7 @@ function ChatView({api, current, messages, running, stopping, onStop, models, se
             textarea?.focus();
             if (textarea && isIdea) textarea.setSelectionRange(next.cursor, next.cursor);
         });
-    }, [promptInsertion, consumePromptInsertion, prompt, running, current]);
+    }, [promptInsertion, consumePromptInsertion, prompt, current]);
 
     useEffect(() => {
         let cancelled = false;
@@ -1812,7 +1885,7 @@ function ChatView({api, current, messages, running, stopping, onStop, models, se
     };
 
     const submit = async () => {
-        if (!prompt.trim() || !current || running || submittingRef.current) return;
+        if (!prompt.trim() || !current || submittingRef.current) return;
         submittingRef.current = true;
         try {
             setReferenceError("");
@@ -1895,6 +1968,22 @@ function ChatView({api, current, messages, running, stopping, onStop, models, se
         </button>}
         </div>
         <div className="composer-wrap">
+            {pendingPrompts.length > 0 && <section className="prompt-queue" aria-label="待发送消息">
+                <div className="prompt-queue-heading" role="status" aria-live="polite">
+                    <b>待发送 · {pendingPrompts.length}</b>
+                    <span>{queuePaused ? "发送已暂停" : messages.some(message => message.hitl) ? "等待处理工具审批" : running ? "当前回复结束后依次发送" : "即将发送"}</span>
+                    {queuePaused && <button type="button" className="prompt-queue-resume" onClick={onResumeQueue}>继续发送</button>}
+                </div>
+                <ol className="prompt-queue-list">
+                    {pendingPrompts.map(item => <li key={item.id}>
+                        <span title={item.text}>{item.text}</span>
+                        <button type="button" onClick={() => onCancelPending(item.id)}
+                                aria-label={`取消待发送消息：${item.text}`} title="取消这条消息">
+                            <X size={14}/>
+                        </button>
+                    </li>)}
+                </ol>
+            </section>}
             <div className={`permission-mode-bar ${current.permissionMode === "full" ? "full" : ""}`}>
                 <div className="permission-mode-copy">
                     {current.permissionMode === "full" ? <Zap size={15}/> : <ShieldCheck size={15}/>}
@@ -1998,7 +2087,7 @@ function ChatView({api, current, messages, running, stopping, onStop, models, se
                     {fileReference && <div className="context-reference" title={fileReference}>
                         <FileCode2 size={14}/><code>{fileReference}</code>
                     </div>}
-                    <ComposerInput ref={textareaRef} value={prompt} disabled={running}
+                    <ComposerInput ref={textareaRef} value={prompt}
                               placeholder="输入任务，使用 / Skill、@ 文件或目录、# SubAgent…"
                               onSelect={rememberPromptSelection}
                               onBlur={event => {
@@ -2051,7 +2140,9 @@ function ChatView({api, current, messages, running, stopping, onStop, models, se
                             </button>
                             <span><Activity size={14}/>{running ? "正在执行任务" : "/ Skill · @ 文件/目录 · # SubAgent"}</span>
                         </div>
-                        <button className="send-button" onClick={submit} disabled={!prompt.trim() || running}>
+                        <button className="send-button" onClick={submit} disabled={!prompt.trim()}
+                                aria-label={running || pendingPrompts.length > 0 ? "加入待发送队列" : "发送消息"}
+                                title={running || pendingPrompts.length > 0 ? "加入待发送队列" : "发送消息"}>
                             <Send size={17}/>
                         </button>
                     </div>
