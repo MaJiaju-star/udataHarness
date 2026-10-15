@@ -25,6 +25,10 @@ import org.noear.solon.ai.harness.agent.ToolName;
 import org.noear.solon.ai.harness.permission.PermissionRule;
 import org.noear.solon.ai.mcp.client.McpServerParameters;
 import org.noear.solon.ai.talents.lsp.LspServerParameters;
+import org.noear.solon.ai.talents.cli.BoundedReadTool;
+import org.noear.solon.ai.talents.cli.TerminalTalentProxy;
+import org.noear.solon.ai.talents.cli.SafeMutationTalent;
+import org.noear.solon.ai.talents.cli.BoundedLsTool;
 import org.noear.solon.ai.talents.mount.Mount;
 import org.noear.solon.ai.talents.mount.MountType;
 import org.noear.solon.ai.talents.mount.source.FileMountSource;
@@ -180,6 +184,9 @@ public class UserHarnessEngineServiceImpl implements UserHarnessEngineService {
 
     @Inject("${agent.context.tool-results.single-max-chars:50000}")
     private int contextSingleMaxChars = 50000;
+
+    @Inject("${agent.context.tool-results.read-visible-chars:6000}")
+    private int contextReadVisibleChars = 6000;
 
     @Inject("${agent.context.tool-results.batch-max-chars:200000}")
     private int contextBatchMaxChars = 200000;
@@ -453,7 +460,7 @@ public class UserHarnessEngineServiceImpl implements UserHarnessEngineService {
 
         ContextManagementOptions contextOptions = contextToolResultsEnabled
                 ? new ContextManagementOptions(contextSingleMaxChars, contextBatchMaxChars,
-                    contextPreviewChars, contextRestoreMaxChars) : null;
+                    contextPreviewChars, contextRestoreMaxChars, contextReadVisibleChars) : null;
         ContextArtifactStore contextStore = contextToolResultsEnabled
                 ? new ContextArtifactStore(Paths.get(dataDir).resolve("users").resolve(userId)
                     .resolve("context-artifacts").resolve(workspaceId)) : null;
@@ -477,6 +484,25 @@ public class UserHarnessEngineServiceImpl implements UserHarnessEngineService {
                 .toolsAdd(Arrays.asList(ToolName.TOOL_ALL_PUBLIC.getName(), ToolName.TOOL_HITL.getName()))
                 .disallowedToolsAdd(disabledWebTools())
                 .extensionAdd((engine, agentName, agentBuilder) -> {
+                    // Only replace read when AgentFactory granted the built-in read to this agent.
+                    agentBuilder.modelOptions(options -> {
+                        java.util.Set<String> fileTools = options.talents().stream()
+                                .filter(item -> item.target instanceof TerminalTalentProxy)
+                                .flatMap(item -> item.target.getTools(null).stream())
+                                .map(tool -> tool.name())
+                                .collect(java.util.stream.Collectors.toSet());
+                        if (fileTools.contains("read")) {
+                            // Talents activate in insertion order; the later read replaces Solon's built-in one.
+                            options.talentAdd(new BoundedReadTool(engine.getTerminalTalent(), engine.getWorkspace()));
+                        }
+                        if (fileTools.contains("ls")) {
+                            options.talentAdd(new BoundedLsTool(engine.getTerminalTalent(), engine.getWorkspace()));
+                        }
+                        if (fileTools.contains("write") || fileTools.contains("edit")) {
+                            options.talentAdd(new SafeMutationTalent(engine.getTerminalTalent(),
+                                    engine.getWorkspace(), fileTools.contains("write"), fileTools.contains("edit")));
+                        }
+                    });
                     agentBuilder.defaultToolAdd(CHART_TOOL);
                     agentBuilder.defaultToolAdd(ANTV_CHART_TOOL);
                     if (contextOptions != null) {

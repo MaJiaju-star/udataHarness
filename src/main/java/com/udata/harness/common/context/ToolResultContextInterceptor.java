@@ -1,6 +1,5 @@
 package com.udata.harness.common.context;
 
-import org.noear.snack4.ONode;
 import org.noear.solon.ai.agent.AgentTrace;
 import org.noear.solon.ai.agent.react.ReActInterceptor;
 import org.noear.solon.ai.agent.react.ReActTrace;
@@ -26,7 +25,6 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
-import java.util.TreeMap;
 
 /** No execution caching; sent history changes only at explicit inactive-task boundaries. */
 public class ToolResultContextInterceptor implements ReActInterceptor {
@@ -69,18 +67,27 @@ public class ToolResultContextInterceptor implements ReActInterceptor {
                 || observation.hasMetadata(AgentTrace.META_FIRST)
                 || !eligible(exchanger.getToolName(), result)) return;
         String content = result.getContent();
-        String reason = null;
-        int preview = options.previewChars;
-        if ("read".equals(exchanger.getToolName()) && hasVisibleRead(trace, exchanger, content)) {
-            reason = "duplicate_read";
-            preview = 0;
-        } else if (content.length() > options.singleResultChars) {
-            reason = "single_result_limit";
-        }
-        if (reason == null) return;
         String wireId = observation instanceof ToolMessage
                 ? ((ToolMessage) observation).getToolCallId()
                 : exchanger.getCallId();
+        if ("read".equals(exchanger.getToolName())) {
+            ReadToolProjection plan = ReadToolProjection.choose(trace, exchanger, content, options.readVisibleChars);
+            if (plan != null) {
+                String projection = projectRead(trace, wireId, content, plan, exchanger.getArgs());
+                if (projection != null) exchanger.setResult(projection);
+            } else if (content.length() > options.readVisibleChars) {
+                String projection = project(trace, wireId, "read", content, "read_visible_limit",
+                        Math.min(options.previewChars, Math.max(0, options.readVisibleChars - 400)), exchanger.getArgs());
+                if (projection != null && projection.length() <= options.readVisibleChars) exchanger.setResult(projection);
+            }
+            return;
+        }
+        String reason = null;
+        int preview = options.previewChars;
+        if (content.length() > options.singleResultChars) {
+            reason = "single_result_limit";
+        }
+        if (reason == null) return;
         String projection = project(trace, wireId, exchanger.getToolName(), content, reason, preview, exchanger.getArgs());
         if (projection != null) exchanger.setResult(projection);
     }
@@ -299,7 +306,7 @@ public class ToolResultContextInterceptor implements ReActInterceptor {
                            String reason, int previewChars, Map<String, Object> args) {
         try {
             // Some compatible providers reuse wire call IDs across turns. Scope by run and Reason.
-            String scopedInvocation = trace.getRunId() + ":" + trace.getCurrentTurnId() + ":" + invocationId;
+            String scopedInvocation = trace.getRunId() + ":" + trace.getCurrentTurnId() + ":" + invocationId + ":" + reason;
             String sessionId = trace.getSession().getSessionId();
             Map<String, String> metadata = new HashMap<>();
             if (tasks != null) {
@@ -318,6 +325,28 @@ public class ToolResultContextInterceptor implements ReActInterceptor {
         }
     }
 
+    private String projectRead(ReActTrace trace, String invocationId, String content,
+                               ReadToolProjection plan, Map<String, Object> args) {
+        try {
+            String scopedInvocation = trace.getRunId() + ":" + trace.getCurrentTurnId() + ":" + invocationId + ":read_projection";
+            String sessionId = trace.getSession().getSessionId();
+            Map<String, String> metadata = new HashMap<>();
+            if (tasks != null) {
+                try { metadata.put("taskId", tasks.currentTaskId(sessionId)); }
+                catch (IOException ignored) { /* Projection must not depend on task bookkeeping. */ }
+            }
+            ContextSourceVersion.capture(workspace, args, metadata);
+            ContextArtifactStore.Artifact artifact = store.save(sessionId, scopedInvocation,
+                    "read", content, "read_" + plan.type, 0, metadata);
+            String projected = plan.render(artifact.id);
+            return projected.length() <= options.readVisibleChars && projected.length() < content.length()
+                    ? projected : null;
+        } catch (IOException e) {
+            LOG.warn("Read projection persistence failed; retaining original ({})", e.getClass().getSimpleName());
+            return null;
+        }
+    }
+
     private static boolean eligible(String tool, ToolResult result) {
         return TOOLS.contains(tool) && result != null && !result.isError()
                 && result.getBlocks().stream().allMatch(block -> block instanceof TextBlock)
@@ -328,35 +357,4 @@ public class ToolResultContextInterceptor implements ReActInterceptor {
         return content != null && !content.isEmpty() && !content.startsWith("<context-artifact id=\"");
     }
 
-    private static boolean hasVisibleRead(ReActTrace trace, ToolExchanger current, String content) {
-        if (trace.getWorkingMemory() == null) return false;
-        Map<String, ToolCall> reads = new HashMap<>();
-        String args = canonicalArguments(current.getArgs());
-        for (ChatMessage message : trace.getWorkingMemory().getMessages()) {
-            if (message instanceof AssistantMessage) {
-                List<ToolCall> calls = ((AssistantMessage) message).getToolCalls();
-                if (calls != null) {
-                    for (ToolCall call : calls) {
-                        if ("read".equals(call.getName()) && args.equals(canonicalArguments(call.getArguments()))) {
-                            reads.put(call.getId(), call);
-                        }
-                    }
-                }
-            } else if (message instanceof ToolMessage) {
-                ToolMessage previous = (ToolMessage) message;
-                if ("read".equals(previous.getName()) && !previous.isError()
-                        && reads.containsKey(previous.getToolCallId())
-                        && content.equals(previous.getContent())) return true;
-            }
-        }
-        return false;
-    }
-
-    private static String canonicalArguments(Map<String, Object> args) {
-        Map<String, Object> canonical = new TreeMap<>();
-        if (args != null) args.forEach((key, value) -> {
-            if (!key.startsWith("__")) canonical.put(key, value);
-        });
-        return ONode.serialize(canonical);
-    }
 }

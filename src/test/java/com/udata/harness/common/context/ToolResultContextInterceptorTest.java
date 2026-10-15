@@ -21,6 +21,9 @@ import java.nio.file.Path;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.Map;
+import java.util.LinkedHashMap;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 import static com.udata.harness.common.context.ContextArtifactStoreTest.repeat;
 import static org.junit.jupiter.api.Assertions.*;
@@ -45,7 +48,7 @@ class ToolResultContextInterceptorTest {
     }
 
     @Test
-    void onlyDeduplicatesAVisibleMatchingReadRangeAndContent() {
+    void onlyDeduplicatesAVisibleMatchingReadRangeAndContent() throws IOException {
         Trace trace = new Trace();
         String text = repeat("code", 500);
         ToolCall call = call("old", "read", Collections.singletonMap("file_path", "a.java"));
@@ -53,7 +56,10 @@ class ToolResultContextInterceptorTest {
         ToolExchanger repeated = exchange("new", "read", text);
         ToolResultContextInterceptor interceptor = interceptor(10000, 20000);
         interceptor.onToolCallEnd(trace, repeated, observation(repeated), null, 1);
-        assertTrue(repeated.getResult().contains("duplicate_read"));
+        assertTrue(repeated.getResult().contains("type=\"reference\""));
+        assertTrue(repeated.getResult().length() <= 6000);
+        assertTrue(new ContextArtifactStore(directory).restore("session-test",
+                artifactId(repeated.getResult()), 0, text.length()).endsWith(text));
 
         trace.memory.clear(); // Archived/compacted original is no longer visible.
         ToolExchanger reread = exchange("reread", "read", text);
@@ -70,6 +76,97 @@ class ToolResultContextInterceptorTest {
         differentRange.setResult(text);
         interceptor.onToolCallEnd(trace, differentRange, observation(differentRange), null, 1);
         assertEquals(text, differentRange.getResult());
+    }
+
+    @Test
+    void oversizedReadIsAnExplicitRecoverableExcerpt() throws Exception {
+        String version = repeat("a", 64);
+        String original = numberedRead(1, 140, version, 70);
+        ContextArtifactStore store = new ContextArtifactStore(directory);
+        ToolResultContextInterceptor interceptor = new ToolResultContextInterceptor(store,
+                new ContextManagementOptions(50000, 200000, 2000, 16000, 6000));
+        ToolExchanger current = exchange("excerpt", "read", original);
+        interceptor.onToolCallEnd(new Trace(), current, observation(current), null, 1);
+        String projected = current.getResult();
+        assertTrue(projected.startsWith("<read-projection type=\"excerpt\">"));
+        assertTrue(projected.contains("不代表完整文件"));
+        assertTrue(projected.length() <= 6000);
+        String id = artifactId(projected);
+        assertTrue(store.restore("session-test", id, 0, original.length()).endsWith(original));
+    }
+
+    @Test
+    void readProjectionKeepsOriginalIfSnapshotCannotBeSaved() {
+        ContextArtifactStore failed = new ContextArtifactStore(directory) {
+            @Override public synchronized Artifact save(String sessionId, String invocationId, String tool,
+                                                         String content, String reason, int preview,
+                                                         Map<String, String> metadata) throws IOException {
+                throw new IOException("simulated disk failure");
+            }
+        };
+        String original = numberedRead(1, 140, repeat("e", 64), 70);
+        ToolExchanger read = exchange("failed-read", "read", original);
+        new ToolResultContextInterceptor(failed,
+                new ContextManagementOptions(50000, 200000, 2000, 16000, 6000))
+                .onToolCallEnd(new Trace(), read, observation(read), null, 1);
+        assertEquals(original, read.getResult());
+    }
+
+    @Test
+    void batchArchivingCanRearchiveProjectedReadWithoutSnapshotCollision() {
+        Trace trace = new Trace();
+        ToolResultContextInterceptor interceptor = new ToolResultContextInterceptor(
+                new ContextArtifactStore(directory),
+                new ContextManagementOptions(50000, 500, 20, 4000, 6000));
+        ToolExchanger read = exchange("batch-read", "read",
+                numberedRead(1, 140, repeat("f", 64), 70));
+        interceptor.onToolCallEnd(trace, read, observation(read), null, 1);
+        assertTrue(read.getResult().contains("type=\"excerpt\""));
+        trace.reason = assistant(call("batch-read", "read", readArgs(1, 140)));
+        trace.memory.addMessage(trace.reason,
+                ChatMessage.ofTool(ToolResult.success(read.getResult()), "read", "batch-read", false));
+        interceptor.onActionEnd(trace, Collections.singletonList(read));
+        assertTrue(((ToolMessage) trace.memory.getMessages().get(1)).getContent()
+                .contains("batch_result_limit"));
+    }
+
+    @Test
+    void overlappingVisibleLinesBecomeRangeDeltaOnlyForSameVersion() throws IOException {
+        String version = repeat("b", 64);
+        String previous = numberedRead(1, 100, version, 32);
+        String current = numberedRead(80, 150, version, 32);
+        Trace trace = new Trace();
+        trace.memory.addMessage(assistant(call("old", "read", readArgs(1, 100))),
+                ChatMessage.ofTool(ToolResult.success(previous), "read", "old", false));
+        ToolExchanger read = new ToolExchanger("new", "read", readArgs(80, 71));
+        read.setResult(current);
+        interceptor(50000, 200000).onToolCallEnd(trace, read, observation(read), null, 1);
+        assertTrue(read.getResult().contains("type=\"range_delta\""));
+        assertTrue(read.getResult().length() <= 6000);
+        assertTrue(read.getResult().contains("可复用的完整行：80-100"));
+        assertTrue(read.getResult().contains("   101 | "));
+        assertFalse(read.getResult().contains("    80 | "));
+        assertTrue(new ContextArtifactStore(directory).restore("session-test",
+                artifactId(read.getResult()), 0, current.length()).endsWith(current));
+
+        ToolExchanger changed = new ToolExchanger("changed", "read", readArgs(80, 71));
+        changed.setResult(numberedRead(80, 150, repeat("c", 64), 32));
+        interceptor(50000, 200000).onToolCallEnd(trace, changed, observation(changed), null, 1);
+        assertEquals(numberedRead(80, 150, repeat("c", 64), 32), changed.getResult());
+    }
+
+    @Test
+    void projectedOrIncompleteOldReadCannotAuthorizeRangeReuse() {
+        String version = repeat("d", 64);
+        String current = numberedRead(80, 110, version, 32);
+        Trace trace = new Trace();
+        trace.memory.addMessage(assistant(call("old", "read", readArgs(1, 100))),
+                ChatMessage.ofTool(ToolResult.success("<read-projection type=\"excerpt\">only a preview</read-projection>"),
+                        "read", "old", false));
+        ToolExchanger read = new ToolExchanger("new", "read", readArgs(80, 31));
+        read.setResult(current);
+        interceptor(50000, 200000).onToolCallEnd(trace, read, observation(read), null, 1);
+        assertEquals(current, read.getResult());
     }
 
     @Test
@@ -223,6 +320,30 @@ class ToolResultContextInterceptorTest {
 
     static ToolCall call(String id, String name, Map<String, Object> args) {
         return new ToolCall("0", id, name, null, args);
+    }
+
+    private static Map<String, Object> readArgs(int offset, int limit) {
+        Map<String, Object> args = new LinkedHashMap<>();
+        args.put("file_path", "a.java");
+        args.put("offset", offset);
+        args.put("limit", limit);
+        return args;
+    }
+
+    private static String numberedRead(int start, int end, String version, int width) {
+        StringBuilder result = new StringBuilder("--- File: a.java (Lines: " + start + " - " + end
+                + ", Size: 1.00 KB) ---\n--------------------------------------------------\n");
+        for (int line = start; line <= end; line++) {
+            result.append(String.format("%6d | line-%d-%s\n", line, line, repeat("x", width)));
+        }
+        return result.append("\n--- [文件读取完毕] ---\n文件版本 SHA-256: ")
+                .append(version).toString();
+    }
+
+    private static String artifactId(String output) {
+        Matcher match = Pattern.compile("artifact_id=\\\"([a-f0-9]{64})\\\"").matcher(output);
+        assertTrue(match.find());
+        return match.group(1);
     }
 
     static AssistantMessage assistant(ToolCall... calls) {
