@@ -18,6 +18,30 @@ SolonCode、Solon Harness 和 `D:\code\dev-agent` 实现。
 
 架构与安全边界见 [docs/architecture.md](docs/architecture.md)。
 
+## 上下文工具结果治理
+
+设计与分期计划见 [docs/context-management-plan.md](docs/context-management-plan.md)。首批已在
+应用层接入大工具结果外置、读取结果去重、本批总预算和 `context_restore` 分页恢复；
+原有框架压缩器继续承担全局容量兜底。该实现不跳过工具执行，不依赖额外模型调用。
+
+`model.yml` 的 `agent.context.tool-results` 控制开关和字符预算：默认单条 50,000、
+本批 200,000、预览 2,000、恢复正文最多 16,000 字符。字符数不是 Token 数。
+预算为软限制：受保护、错误、媒体、直接返回、未知工具及引用本身无法再缩短的结果保留原样。
+当前治理的工具为 read/bash/grep/glob/ls/webfetch/websearch/codesearch/lsp；图表、Todo、
+恢复工具和自定义工具保持原行为。原文在保存失败时也保持原样。
+
+原文与稳定预览保存在 `<agent.data-dir>/users/<userId>/context-artifacts/<workspaceId>/` 下，
+按会话隔离。模型用返回的 artifact ID 调用 `context_restore(artifact_id, offset, limit)`；
+offset/limit 使用 UTF-16 字符位置，并根据 next_offset 继续读取。
+恢复内容是历史快照，需要当前文件时仍应重新 read。读取去重仅在同参数、同正文的
+旧 Read 结果仍可见于 WorkingMemory 时生效；正文已退出后会重新提供结果。
+
+批量治理在 Native Tool 模式的 ActionEnd 安全边界执行，只改变下一次请求将使用的本批结果。
+单条外置也支持文本 Observation 模式；文本模式批量治理暂不启用。
+同一引擎的子代理使用自身会话范围，未提供跨会话访问。快照目前无自动过期删除，
+应纳入现有数据目录权限与备份策略。关闭开关也会移除恢复工具；需要恢复旧快照时重新启用。
+任务阶段归档、关键词检索、版本有效性判断、Cache 成本决策与可视化属于后续阶段。
+
 ## IntelliJ IDEA 插件
 
 网页工作台继续独立使用；新增 IDEA 侧栏通过 HTTP/SSE 连接同一个本地 Solon 服务，支持项目绑定、

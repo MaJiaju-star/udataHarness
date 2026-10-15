@@ -1,6 +1,7 @@
 package com.udata.harness.service.impl;
 
 import com.udata.harness.repository.SessionRepository;
+import com.udata.harness.common.context.ToolResultContextInterceptor;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import org.noear.solon.Utils;
@@ -42,6 +43,10 @@ class UserHarnessEngineServiceImplTest {
         inject(service, "model", "deepseek-v4-flash");
 
         assertNotNull(service.get("alice"));
+        assertNotNull(service.get("alice").getMainAgent().getConfig().getDefaultOptions().getTool("context_restore"));
+        org.junit.jupiter.api.Assertions.assertTrue(service.get("alice").getMainAgent().getConfig()
+                .getDefaultOptions().getInterceptors().stream()
+                .anyMatch(item -> item.target instanceof ToolResultContextInterceptor));
         assertEquals(4, service.get("alice").getModelRetries());
         org.noear.solon.ai.harness.HarnessEngine original = service.get("alice");
         UserWorkspaceServiceImpl workspaces = (UserWorkspaceServiceImpl) read(service, "workspaces");
@@ -69,6 +74,21 @@ class UserHarnessEngineServiceImplTest {
         assertEquals(2, models.size());
         assertEquals("deepseek-flash", models.get(0).getNameOrModel());
         assertEquals("deepseek-v4-pro", models.get(1).getModel());
+    }
+
+    @Test
+    void canDisableContextResultManagement() throws Exception {
+        UserHarnessEngineServiceImpl service = configuredService();
+        inject(service, "sessionRepository", new SessionRepository(tempDir.resolve("data")));
+        inject(service, "workspaces", new UserWorkspaceServiceImpl(tempDir.resolve("workspace")));
+        inject(service, "dataDir", tempDir.resolve("data").toString());
+        inject(service, "harnessHome", ".soloncode");
+        inject(service, "contextToolResultsEnabled", false);
+        org.noear.solon.ai.agent.react.ReActOptions options = service.get("alice")
+                .getMainAgent().getConfig().getDefaultOptions();
+        org.junit.jupiter.api.Assertions.assertNull(options.getTool("context_restore"));
+        assertFalse(options.getInterceptors().stream()
+                .anyMatch(item -> item.target instanceof ToolResultContextInterceptor));
     }
 
     @Test

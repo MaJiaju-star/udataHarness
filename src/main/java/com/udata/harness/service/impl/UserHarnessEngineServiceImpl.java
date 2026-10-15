@@ -2,6 +2,10 @@ package com.udata.harness.service.impl;
 
 import com.udata.harness.common.support.AntVChartTool;
 import com.udata.harness.common.support.ChartTool;
+import com.udata.harness.common.context.ContextArtifactStore;
+import com.udata.harness.common.context.ContextManagementOptions;
+import com.udata.harness.common.context.ContextRestoreTool;
+import com.udata.harness.common.context.ToolResultContextInterceptor;
 import com.udata.harness.repository.SessionRepository;
 import com.udata.harness.service.UserHarnessEngineService;
 import com.udata.harness.service.UserWorkspaceService;
@@ -144,6 +148,21 @@ public class UserHarnessEngineServiceImpl implements UserHarnessEngineService {
      */
     @Inject("${agent.context.compression-max-context-ratio:0.75}")
     private double compressionMaxContextRatio;
+
+    @Inject("${agent.context.tool-results.enabled:true}")
+    private boolean contextToolResultsEnabled = true;
+
+    @Inject("${agent.context.tool-results.single-max-chars:50000}")
+    private int contextSingleMaxChars = 50000;
+
+    @Inject("${agent.context.tool-results.batch-max-chars:200000}")
+    private int contextBatchMaxChars = 200000;
+
+    @Inject("${agent.context.tool-results.preview-chars:2000}")
+    private int contextPreviewChars = 2000;
+
+    @Inject("${agent.context.tool-results.restore-max-chars:16000}")
+    private int contextRestoreMaxChars = 16000;
 
     /**
      * 模型声明的物理上下文窗口，用于让压缩器按模型能力计算安全余量。
@@ -406,6 +425,13 @@ public class UserHarnessEngineServiceImpl implements UserHarnessEngineService {
             throw new IllegalStateException("Cannot create Harness capability directories", e);
         }
 
+        ContextManagementOptions contextOptions = contextToolResultsEnabled
+                ? new ContextManagementOptions(contextSingleMaxChars, contextBatchMaxChars,
+                    contextPreviewChars, contextRestoreMaxChars) : null;
+        ContextArtifactStore contextStore = contextToolResultsEnabled
+                ? new ContextArtifactStore(Paths.get(dataDir).resolve("users").resolve(userId)
+                    .resolve("context-artifacts").resolve(workspaceId)) : null;
+
         //1. 工具、沙箱、HITL 和 Subagent 在引擎创建时一次性启用；会话级 cwd
         // 仍由 ChatService 每次运行时写入 toolContext。
         HarnessEngine.Builder builder = HarnessEngine.of(workspace.toString(), harnessHome)
@@ -420,6 +446,11 @@ public class UserHarnessEngineServiceImpl implements UserHarnessEngineService {
                 .extensionAdd((engine, agentName, agentBuilder) -> {
                     agentBuilder.defaultToolAdd(CHART_TOOL);
                     agentBuilder.defaultToolAdd(ANTV_CHART_TOOL);
+                    if (contextOptions != null) {
+                        agentBuilder.defaultInterceptorAdd(1000,
+                                new ToolResultContextInterceptor(contextStore, contextOptions));
+                        agentBuilder.defaultToolAdd(new ContextRestoreTool(contextStore, contextOptions.restoreMaxChars));
+                    }
                 })
                 .sandboxEnabled(isSandboxEnabled(userId))
                 .sandboxAllowUserHome(false)
