@@ -40,7 +40,7 @@ class StreamEventMapperTest {
     @Test
     void identifiesOnlyTheSuspendedReasonAsReplay() {
         ReActTrace trace = new ReActTrace();
-        String reasonId = trace.getCurrentReasonId();
+        String reasonId = trace.getCurrentTurnId();
         ReasonStartEvent originalReason = new ReasonStartEvent(trace, "system");
 
         assertTrue(StreamEventMapper.isReasonReplay(originalReason, reasonId));
@@ -95,9 +95,6 @@ class StreamEventMapperTest {
         AssistantMessage thinkingWithToolCall = new AssistantMessage(
                 "",
                 "我需要根据第一次工具结果继续分析。",
-                true,
-                null,
-                null,
                 toolCallMessage.getToolCalls(),
                 null);
         ReasonEndEvent reason = new ReasonEndEvent(
@@ -121,7 +118,7 @@ class StreamEventMapperTest {
                 trace,
                 ChatMessage.ofAssistant("高危操作，需要人工介入确认。"));
 
-        ONode event = ONode.ofJson(StreamEventMapper.map(new RunEndEvent(response)));
+        ONode event = ONode.ofJson(StreamEventMapper.map(new RunEndEvent(trace, response)));
 
         assertEquals("run_pending", event.get("type").getString());
         assertFalse(event.hasKey("content"));
@@ -219,14 +216,17 @@ class StreamEventMapperTest {
         ReActResponse runResponse = new ReActResponse(
                 session, new ReActTrace(), ChatMessage.ofAssistant("完成"));
         runResponse.getMetrics().setPromptTokens(100);
+        runResponse.getMetrics().setThinkTokens(20);
         runResponse.getMetrics().setCompletionTokens(40);
         runResponse.getMetrics().setTotalTokens(140);
         runResponse.getMetrics().setCacheCreationInputTokens(5);
         runResponse.getMetrics().setCacheReadInputTokens(60);
         runResponse.getMetrics().setTotalDuration(2000);
-        ONode runEvent = ONode.ofJson(StreamEventMapper.map(new RunEndEvent(runResponse)));
+        ONode runEvent = ONode.ofJson(StreamEventMapper.map(new RunEndEvent(
+                runResponse.getTrace(), runResponse)));
 
         assertEquals(2000, runEvent.get("durationMs").getInt());
+        assertEquals(20, runEvent.get("usage").get("thinkTokens").getInt());
         assertEquals(20D, runEvent.get("tokensPerSecond").getDouble());
         assertEquals(5, runEvent.get("usage").get("cacheCreationInputTokens").getInt());
         assertEquals(60, runEvent.get("usage").get("cacheReadInputTokens").getInt());

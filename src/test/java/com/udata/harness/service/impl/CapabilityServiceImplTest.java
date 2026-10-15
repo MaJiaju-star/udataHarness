@@ -5,6 +5,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import org.noear.solon.ai.harness.HarnessEngine;
 import org.noear.solon.ai.mcp.client.McpServerParameters;
+import org.noear.solon.ai.talents.lsp.LspServerParameters;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -65,6 +66,14 @@ class CapabilityServiceImplTest {
 
             @Override
             public void removeMcp(String name) {
+            }
+
+            @Override
+            public void putLsp(String name, LspServerParameters parameters) {
+            }
+
+            @Override
+            public void removeLsp(String name) {
             }
 
         };

@@ -1620,6 +1620,24 @@ button, input, textarea, select { outline: none; }
 .composer-token-meter b { color: #4b5b56; font-size: 9px; font-weight: 650; }
 .composer-token-meter > span { padding-left: 8px; border-left: 1px solid #dde4e1; }
 .composer-token-meter i { margin-left: auto; padding: 2px 5px; border-radius: 5px; color: #537268; background: #eaf4f0; font-size: 8px; font-style: normal; font-weight: 650; }
+.token-audit-button { flex: 0 0 auto; padding: 2px 5px; border: 0; border-radius: 5px; color: #176f59; background: #eaf4f0; font-size: 9px; cursor: pointer; }
+.token-audit-backdrop { z-index: 98; }
+.token-audit-dialog { display: flex; width: min(850px, calc(100vw - 32px)); max-height: min(760px, calc(100vh - 32px)); flex-direction: column; overflow: hidden; border-radius: 14px; background: var(--surface, white); box-shadow: 0 24px 70px rgba(0,0,0,.25); }
+.token-audit-dialog > header { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; padding: 18px 20px 12px; }
+.token-audit-dialog h2 { margin: 0; font-size: 18px; }
+.token-audit-dialog header p { margin: 5px 0 0; color: var(--muted); font-size: 11px; }
+.token-audit-controls { display: flex; align-items: center; justify-content: space-between; padding: 8px 20px; border-block: 1px solid var(--line); font-size: 11px; }
+.token-audit-controls label, .token-audit-controls button { display: inline-flex; align-items: center; gap: 6px; }
+.token-audit-summary { display: flex; flex-wrap: wrap; gap: 8px 18px; padding: 12px 20px; font-size: 11px; font-weight: 650; }
+.token-audit-list { min-height: 100px; overflow: auto; padding: 0 20px 18px; }
+.token-audit-list > p { color: var(--muted); font-size: 11px; }
+.token-audit-list .token-audit-error { color: #b34a4a; }
+.token-audit-row { display: grid; grid-template-columns: minmax(0, 1.3fr) minmax(0, 1fr) auto; align-items: center; gap: 12px; padding: 11px 0; border-top: 1px solid var(--line); font-size: 11px; }
+.token-audit-row > div { min-width: 0; }
+.token-audit-row b, .token-audit-row span { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.token-audit-row span, .token-audit-row small { margin-top: 3px; color: var(--muted); font-size: 10px; }
+.token-audit-row small { max-width: 160px; overflow: hidden; text-overflow: ellipsis; }
+@media (max-width: 620px) { .token-audit-row { grid-template-columns: 1fr; gap: 4px; } }
 
 .panel-page { height: 100%; padding: 30px 34px 34px; overflow: auto; }
 .panel-header { display: flex; align-items: flex-end; justify-content: space-between; gap: 20px; max-width: 1400px; margin: 0 auto 24px; }
@@ -1743,6 +1761,8 @@ button, input, textarea, select { outline: none; }
     background: #f0ecff;
 }
 .integration-icon.skill { color: var(--accent-dark); background: var(--accent-soft); }
+.integration-icon.lsp { color: #2563a6; background: #e8f2ff; }
+.lsp-config-tip { margin: -2px 0 11px; color: var(--muted); font-size: 11px; }
 .integration-icon.agent { color: #7252c1; background: #f0ecff; }
 .json-editor, .markdown-editor {
     width: 100%;

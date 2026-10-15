@@ -12,8 +12,10 @@ import org.noear.solon.ai.harness.HarnessEngine;
 import org.noear.solon.ai.harness.agent.ToolName;
 import org.noear.solon.ai.harness.permission.PermissionRule;
 import org.noear.solon.ai.mcp.client.McpServerParameters;
-import org.noear.solon.ai.talents.mount.MountDir;
+import org.noear.solon.ai.talents.lsp.LspServerParameters;
+import org.noear.solon.ai.talents.mount.Mount;
 import org.noear.solon.ai.talents.mount.MountType;
+import org.noear.solon.ai.talents.mount.source.FileMountSource;
 import org.noear.solon.annotation.Component;
 import org.noear.solon.annotation.Inject;
 import org.noear.solon.core.Props;
@@ -196,6 +198,11 @@ public class UserHarnessEngineServiceImpl implements UserHarnessEngineService {
     private final Map<String, McpServerParameters> mcpServers = new ConcurrentHashMap<>();
 
     /**
+     * 服务级 LSP 定义。各工作区引擎分别使用自己的工作目录启动语言服务器。
+     */
+    private final Map<String, LspServerParameters> lspServers = new ConcurrentHashMap<>();
+
+    /**
      * 各用户沙箱开关偏好缓存，来源于用户设置文件。
      */
     private final Map<String, Boolean> sandboxPreferences = new ConcurrentHashMap<>();
@@ -219,7 +226,8 @@ public class UserHarnessEngineServiceImpl implements UserHarnessEngineService {
         String safeUserId = UserWorkspaceService.requireUserId(userId);
         com.udata.harness.common.domain.WorkspaceMetadata workspace = workspaces.resolve(safeUserId, workspaceId);
         String key = safeUserId + ":" + workspace.getWorkspaceId();
-        return engines.computeIfAbsent(key, ignored -> build(safeUserId, Paths.get(workspace.getPath())));
+        return engines.computeIfAbsent(key, ignored -> build(
+                safeUserId, workspace.getWorkspaceId(), Paths.get(workspace.getPath())));
     }
 
     /**
@@ -308,7 +316,7 @@ public class UserHarnessEngineServiceImpl implements UserHarnessEngineService {
     /**
      * 保存运行时 MCP 定义并热更新所有现存引擎。
      *
-     * <p>尚未创建的用户引擎会在 {@link #build(String, Path)} 时读取缓存中的同一份配置。</p>
+     * <p>尚未创建的用户引擎会在 {@link #build(String, String, Path)} 时读取缓存中的同一份配置。</p>
      *
      * @param name MCP Server 名称
      * @param parameters MCP 连接参数
@@ -332,6 +340,47 @@ public class UserHarnessEngineServiceImpl implements UserHarnessEngineService {
     }
 
     /**
+     * 注册或替换 LSP 服务，并更新已经创建的工作区引擎。
+     *
+     * @param name LSP 服务名称
+     * @param parameters 语言服务器启动参数
+     */
+    @Override
+    public void putLsp(String name, LspServerParameters parameters) {
+        lspServers.put(name, parameters);
+        engines.values().forEach(engine -> {
+            engine.removeLspServer(name);
+            engine.addLspServer(name, parameters);
+        });
+    }
+
+    /**
+     * 删除 LSP 服务，并更新已经创建的工作区引擎。
+     *
+     * @param name LSP 服务名称
+     */
+    @Override
+    public void removeLsp(String name) {
+        lspServers.remove(name);
+        engines.forEach((key, engine) -> {
+            engine.removeLspServer(name);
+            if ("java".equals(name)) {
+                int separator = key.indexOf(':');
+                LspServerParameters bundled = BundledJavaLsp.forWorkspace(
+                        dataDir, key.substring(0, separator), key.substring(separator + 1));
+                if (bundled != null) {
+                    engine.addLspServer("java", bundled);
+                }
+            } else if ("typescript".equals(name)) {
+                LspServerParameters bundled = BundledTypeScriptLsp.forWorkspace();
+                if (bundled != null) {
+                    engine.addLspServer("typescript", bundled);
+                }
+            }
+        });
+    }
+
+    /**
      * 构建完整的用户级 HarnessEngine。
      *
      * <p>该方法集中建立以下不变量：</p>
@@ -340,13 +389,14 @@ public class UserHarnessEngineServiceImpl implements UserHarnessEngineService {
      *   <li>会话持久化委托给带用户隔离的 {@link SessionRepository}；</li>
      *   <li>文件、终端、HITL、Subagent 与图表 Tool 在主 Agent 创建时一次注册；</li>
      *   <li>沙箱禁止访问用户主目录，写操作仍受权限规则约束；</li>
-     *   <li>已保存的 MCP 定义在引擎对外可见前全部挂载。</li>
+     *   <li>已保存的 MCP 与 LSP 定义在引擎对外可见前全部注册。</li>
      * </ul>
      *
      * @param userId 已校验的目标用户标识
+     * @param workspaceId 已注册工作区标识
      * @return 完整初始化的用户级 HarnessEngine
      */
-    private HarnessEngine build(String userId, Path workspace) {
+    private HarnessEngine build(String userId, String workspaceId, Path workspace) {
         Path skills = workspace.resolve(".soloncode").resolve("skills");
         Path agents = Paths.get(dataDir).toAbsolutePath().normalize().resolve("capabilities").resolve("agents");
         try {
@@ -392,23 +442,36 @@ public class UserHarnessEngineServiceImpl implements UserHarnessEngineService {
         HarnessEngine engine = builder.defaultModel(defaultModel).build();
 
         //3. 用户技能使用独立可写挂载，共享 Agent 使用服务级只读语义目录。
-        engine.addMount(MountDir.builder()
+        engine.addMount(Mount.builder()
                 .alias("@workspace-skills")
                 .description("Activated Skills for " + userId)
                 .type(MountType.SKILLS)
-                .path(skills.toString())
+                .source(FileMountSource.of(skills))
                 .primary(true)
                 .writeable(true)
                 .build());
-        engine.addMount(MountDir.builder()
+        engine.addMount(Mount.builder()
                 .alias("@shared-agents")
                 .description("Service-wide Subagent library")
                 .type(MountType.AGENTS)
-                .path(agents.toString())
+                .source(FileMountSource.of(agents))
                 .primary(true)
                 .writeable(true)
                 .build());
         mcpServers.forEach(engine::addMcpServer);
+        lspServers.forEach(engine::addLspServer);
+        if (!lspServers.containsKey("java")) {
+            LspServerParameters bundled = BundledJavaLsp.forWorkspace(dataDir, userId, workspaceId);
+            if (bundled != null) {
+                engine.addLspServer("java", bundled);
+            }
+        }
+        if (!lspServers.containsKey("typescript")) {
+            LspServerParameters bundled = BundledTypeScriptLsp.forWorkspace();
+            if (bundled != null) {
+                engine.addLspServer("typescript", bundled);
+            }
+        }
         return engine;
     }
 

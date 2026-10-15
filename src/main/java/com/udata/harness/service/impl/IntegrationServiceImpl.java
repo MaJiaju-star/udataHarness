@@ -2,10 +2,12 @@ package com.udata.harness.service.impl;
 
 import org.noear.snack4.ONode;
 import com.udata.harness.common.request.McpConfigRequest;
+import com.udata.harness.common.request.LspConfigRequest;
 import com.udata.harness.service.IntegrationService;
 import com.udata.harness.service.UserHarnessEngineService;
 import org.noear.solon.Utils;
 import org.noear.solon.ai.mcp.client.McpServerParameters;
+import org.noear.solon.ai.talents.lsp.LspServerParameters;
 import org.noear.solon.annotation.Component;
 import org.noear.solon.annotation.Init;
 import org.noear.solon.annotation.Inject;
@@ -24,7 +26,7 @@ import java.util.stream.Stream;
 /**
  * MCP 配置持久化实现。
  *
- * <p>配置写入 data/integrations，启动时恢复到内存并同步进 HarnessEngine。
+ * <p>MCP 与 LSP 配置写入 data/integrations，启动时恢复到内存并同步进 HarnessEngine。
  * 列表只暴露摘要和 hasSecrets 标记，不返回 Header/环境变量的具体秘密值。</p>
  */
 @Component
@@ -52,7 +54,12 @@ public class IntegrationServiceImpl implements IntegrationService {
     private final Map<String, McpServerParameters> mcpServers = new LinkedHashMap<>();
 
     /**
-     * 启动时从独立的 MCP 配置目录恢复定义并同步到引擎管理器。
+     * 服务级 LSP 定义，启动时从数据目录恢复。
+     */
+    private final Map<String, LspServerParameters> lspServers = new LinkedHashMap<>();
+
+    /**
+     * 启动时从 MCP 和 LSP 配置目录恢复定义并同步到引擎管理器。
      */
     @Init
     public void init() {
@@ -60,6 +67,7 @@ public class IntegrationServiceImpl implements IntegrationService {
         configRoot = Paths.get(dataDir).toAbsolutePath().normalize().resolve("integrations");
         try {
             Files.createDirectories(configRoot.resolve("mcp"));
+            Files.createDirectories(configRoot.resolve("lsp"));
             //2. 恢复历史配置并同步到引擎管理器。
             loadAll();
         } catch (IOException e) {
@@ -160,6 +168,88 @@ public class IntegrationServiceImpl implements IntegrationService {
     }
 
     /**
+     * 列出 LSP 服务的非敏感配置。
+     *
+     * @return LSP 服务摘要列表
+     */
+    @Override
+    public List<Map<String, Object>> listLsp() {
+        List<Map<String, Object>> result = new ArrayList<>();
+        lspServers.forEach((name, value) -> {
+            Map<String, Object> item = new LinkedHashMap<>();
+            item.put("name", name);
+            item.put("command", value.getCommand());
+            item.put("extensions", value.getExtensions());
+            item.put("enabled", value.isEnabled());
+            item.put("hasEnv", !value.getEnv().isEmpty());
+            result.add(item);
+        });
+        if (!lspServers.containsKey("java") && BundledJavaLsp.isBundled()) {
+            Map<String, Object> bundled = new LinkedHashMap<>();
+            bundled.put("name", "java");
+            bundled.put("command", java.util.Collections.singletonList("内置 JDT LS"));
+            bundled.put("extensions", java.util.Collections.singletonList(".java"));
+            bundled.put("enabled", true);
+            bundled.put("hasEnv", false);
+            bundled.put("managed", true);
+            result.add(bundled);
+        }
+        if (!lspServers.containsKey("typescript") && BundledTypeScriptLsp.isBundled()) {
+            Map<String, Object> bundled = new LinkedHashMap<>();
+            bundled.put("name", "typescript");
+            bundled.put("command", java.util.Collections.singletonList("内置 TypeScript LS"));
+            bundled.put("extensions", java.util.Arrays.asList(
+                    ".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".mts", ".cts"));
+            bundled.put("enabled", true);
+            bundled.put("hasEnv", false);
+            bundled.put("managed", true);
+            result.add(bundled);
+        }
+        return result;
+    }
+
+    /**
+     * 保存语言服务器，并热更新当前已创建的工作区引擎。
+     *
+     * @param name 服务名称
+     * @param command 启动命令及参数
+     * @param extensions 文件扩展名
+     * @param env 额外环境变量的 JSON 文本
+     * @param enabled 是否启用
+     */
+    @Override
+    public void saveLsp(String name, List<String> command, List<String> extensions,
+                        String env, boolean enabled) {
+        String safeName = requireName(name);
+        if (command == null || command.isEmpty() || extensions == null || extensions.isEmpty()) {
+            throw new IllegalArgumentException("LSP command and extensions are required");
+        }
+        LspConfigRequest request = new LspConfigRequest();
+        request.setName(safeName);
+        request.setCommand(command);
+        request.setExtensions(extensions);
+        request.setEnv(parseMap(env));
+        request.setEnabled(enabled);
+        LspServerParameters parameters = toLsp(request);
+        write("lsp", safeName, request);
+        lspServers.put(safeName, parameters);
+        engines.putLsp(safeName, parameters);
+    }
+
+    /**
+     * 删除语言服务器配置，并从工作区引擎移除它。
+     *
+     * @param name 服务名称
+     */
+    @Override
+    public void removeLsp(String name) {
+        String safeName = requireName(name);
+        delete("lsp", safeName);
+        lspServers.remove(safeName);
+        engines.removeLsp(safeName);
+    }
+
+    /**
      * 恢复全部配置文件。
      *
      * <p>先解析为请求 DTO，再转换成框架参数，确保启动恢复与 HTTP 保存走同一套规则。</p>
@@ -167,6 +257,7 @@ public class IntegrationServiceImpl implements IntegrationService {
      * @throws IOException 读取配置目录失败时抛出
      */
     private void loadAll() throws IOException {
+        //1. 恢复 MCP 配置。
         try (Stream<Path> paths = Files.list(configRoot.resolve("mcp"))) {
             paths.filter(path -> path.toString().endsWith(".json")).forEach(path -> {
                 try {
@@ -181,6 +272,35 @@ public class IntegrationServiceImpl implements IntegrationService {
                 }
             });
         }
+        //2. 恢复 LSP 配置，未创建的工作区引擎稍后也会继承这些服务。
+        try (Stream<Path> paths = Files.list(configRoot.resolve("lsp"))) {
+            paths.filter(path -> path.toString().endsWith(".json")).forEach(path -> {
+                try {
+                    String content = new String(Files.readAllBytes(path), StandardCharsets.UTF_8);
+                    LspConfigRequest request = ONode.ofJson(content).toBean(LspConfigRequest.class);
+                    String name = requireName(request.getName());
+                    LspServerParameters parameters = toLsp(request);
+                    lspServers.put(name, parameters);
+                    engines.putLsp(name, parameters);
+                } catch (Exception e) {
+                    throw new IllegalStateException("Cannot load " + path, e);
+                }
+            });
+        }
+    }
+
+    /**
+     * 将保存的 LSP 配置转换为框架参数。
+     *
+     * @param request 已读取的配置
+     * @return LSP 服务参数
+     */
+    private LspServerParameters toLsp(LspConfigRequest request) {
+        LspServerParameters parameters = new LspServerParameters(
+                request.getCommand(), request.getExtensions());
+        parameters.setEnv(request.getEnv());
+        parameters.setEnabled(request.isEnabled());
+        return parameters;
     }
 
     /**

@@ -99,4 +99,57 @@ public class IntegrationController {
         return Result.succeed();
     }
 
+    /**
+     * 查询已配置的语言服务器。
+     *
+     * @param userId 当前调用用户
+     * @return LSP 服务摘要
+     */
+    @Get
+    @Mapping("/lsp")
+    public Result<List<Map<String, Object>>> lsp(@Header("X-User-Id") String userId) {
+        UserWorkspaceService.requireUserId(userId);
+        return Result.succeed(configs.listLsp());
+    }
+
+    /**
+     * 保存并注册语言服务器，配置由所有工作区引擎共享。
+     *
+     * @param userId 当前调用用户
+     * @param name 服务名称
+     * @param command 启动命令及参数
+     * @param extensions 处理的文件扩展名
+     * @param env 额外环境变量的 JSON 文本
+     * @param enabled 是否启用
+     * @return 无响应数据
+     */
+    @Post
+    @Mapping("/lsp")
+    public Result<Void> saveLsp(@Header("X-User-Id") String userId,
+                                @Param("name") String name,
+                                @Param("command") List<String> command,
+                                @Param("extensions") List<String> extensions,
+                                @Param(value = "env", required = false) String env,
+                                @Param(value = "enabled", required = false) Boolean enabled) {
+        UserWorkspaceService.requireUserId(userId);
+        configs.saveLsp(name, command, extensions, env, enabled == null || enabled);
+        return Result.succeed();
+    }
+
+    /**
+     * 删除语言服务器配置。
+     *
+     * @param userId 当前调用用户
+     * @param name 服务名称
+     * @return 无响应数据
+     */
+    @Delete
+    @Mapping("/lsp")
+    public Result<Void> deleteLsp(@Header("X-User-Id") String userId,
+                                  @Param("name") String name) {
+        UserWorkspaceService.requireUserId(userId);
+        configs.removeLsp(name);
+        return Result.succeed();
+    }
+
 }

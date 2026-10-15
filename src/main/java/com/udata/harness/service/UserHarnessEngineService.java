@@ -2,6 +2,7 @@ package com.udata.harness.service;
 
 import org.noear.solon.ai.harness.HarnessEngine;
 import org.noear.solon.ai.mcp.client.McpServerParameters;
+import org.noear.solon.ai.talents.lsp.LspServerParameters;
 
 import java.util.Collection;
 
@@ -95,5 +96,20 @@ public interface UserHarnessEngineService {
      * @param name MCP Server 名称
      */
     void removeMcp(String name);
+
+    /**
+     * 向所有已创建的工作区引擎注册 LSP 服务。
+     *
+     * @param name LSP 服务名称
+     * @param parameters 语言服务器启动参数
+     */
+    void putLsp(String name, LspServerParameters parameters);
+
+    /**
+     * 从所有已创建的工作区引擎移除 LSP 服务。
+     *
+     * @param name LSP 服务名称
+     */
+    void removeLsp(String name);
 
 }

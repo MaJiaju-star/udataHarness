@@ -181,11 +181,23 @@ public class SessionRepository implements AgentSessionProvider {
         }
         try (Stream<Path> paths = Files.list(sessionsRoot)) {
             paths.filter(Files::isDirectory)
-                    .map(Path::getFileName)
-                    .map(Path::toString)
-                    .filter(SessionRepository::isValidId)
-                    .map(id -> read(safeUserId, id))
-                    .forEach(result::add);
+                    .filter(path -> isValidId(path.getFileName().toString()))
+                    .forEach(path -> {
+                        Path metaPath = path.resolve(META_FILE);
+                        // A crashed or interrupted session creation can leave a valid-looking
+                        // directory without metadata. It is not a listable session.
+                        if (!Files.isRegularFile(metaPath)) {
+                            return;
+                        }
+                        try {
+                            result.add(read(safeUserId, path.getFileName().toString()));
+                        } catch (IllegalArgumentException e) {
+                            // A concurrent delete may remove metadata after the check above.
+                            if (Files.isRegularFile(metaPath)) {
+                                throw e;
+                            }
+                        }
+                    });
         } catch (IOException e) {
             throw new IllegalStateException("Cannot list sessions", e);
         }

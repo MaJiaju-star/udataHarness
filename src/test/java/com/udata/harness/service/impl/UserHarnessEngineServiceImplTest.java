@@ -5,9 +5,11 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import org.noear.solon.Utils;
 import org.noear.solon.ai.chat.ChatConfig;
+import org.noear.solon.ai.talents.lsp.LspServerParameters;
 import org.noear.solon.core.Props;
 
 import java.lang.reflect.Field;
+import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
 
@@ -97,8 +99,76 @@ class UserHarnessEngineServiceImplTest {
         assertFalse(reloaded.isSandboxEnabled("alice"));
     }
 
+    @Test
+    void registersLspForExistingAndFutureWorkspaces() throws Exception {
+        UserHarnessEngineServiceImpl service = configuredService();
+        UserWorkspaceServiceImpl workspaces = new UserWorkspaceServiceImpl(tempDir.resolve("workspace"));
+        inject(service, "sessionRepository", new SessionRepository(tempDir.resolve("data")));
+        inject(service, "workspaces", workspaces);
+        inject(service, "dataDir", tempDir.resolve("data").toString());
+        inject(service, "harnessHome", ".soloncode");
+
+        org.noear.solon.ai.harness.HarnessEngine first = service.get("alice");
+        LspServerParameters javaServer = new LspServerParameters(
+                Utils.asList("jdtls"), Utils.asList(".java"));
+        service.putLsp("java", javaServer);
+
+        String workspaceId = workspaces.register("alice",
+                java.nio.file.Files.createDirectories(tempDir.resolve("project-b")).toString(),
+                false).getWorkspaceId();
+        org.noear.solon.ai.harness.HarnessEngine second = service.get("alice", workspaceId);
+        assertEquals(javaServer, first.getLspServers().get("java"));
+        assertEquals(javaServer, second.getLspServers().get("java"));
+
+        service.removeLsp("java");
+        assertFalse(first.getLspServers().containsKey("java"));
+        assertFalse(second.getLspServers().containsKey("java"));
+    }
+
+    @Test
+    void restoresBundledTypeScriptAfterRemovingOverride() throws Exception {
+        String previous = System.getProperty("udata.bundle.dir");
+        Path bundle = tempDir.resolve("bundle");
+        Path plugins = Files.createDirectories(bundle.resolve("jdtls/plugins"));
+        Files.createDirectories(bundle.resolve(System.getProperty("os.name", "")
+                .toLowerCase().contains("win") ? "jdtls/config_win" : "jdtls/config_linux"));
+        Files.createFile(plugins.resolve("org.eclipse.equinox.launcher_1.0.jar"));
+        Path script = bundle.resolve(
+                "typescript-lsp/node_modules/typescript-language-server/lib/cli.mjs");
+        Files.createDirectories(script.getParent());
+        Files.createFile(script);
+        try {
+            System.setProperty("udata.bundle.dir", bundle.toString());
+            UserHarnessEngineServiceImpl service = configuredService();
+            inject(service, "sessionRepository", new SessionRepository(tempDir.resolve("data")));
+            inject(service, "workspaces", new UserWorkspaceServiceImpl(tempDir.resolve("workspace")));
+            inject(service, "dataDir", tempDir.resolve("data").toString());
+            inject(service, "harnessHome", ".soloncode");
+
+            org.noear.solon.ai.harness.HarnessEngine engine = service.get("alice");
+            assertEquals(script.toString(), engine.getLspServers()
+                    .get("typescript").getCommand().get(1));
+
+            service.putLsp("typescript", new LspServerParameters(
+                    Utils.asList("custom-tsls"), Utils.asList(".js")));
+            assertEquals("custom-tsls", engine.getLspServers()
+                    .get("typescript").getCommand().get(0));
+
+            service.removeLsp("typescript");
+            assertEquals(script.toString(), engine.getLspServers()
+                    .get("typescript").getCommand().get(1));
+        } finally {
+            if (previous == null) {
+                System.clearProperty("udata.bundle.dir");
+            } else {
+                System.setProperty("udata.bundle.dir", previous);
+            }
+        }
+    }
+
     private UserHarnessEngineServiceImpl configuredService() throws Exception {
         UserHarnessEngineServiceImpl service = new UserHarnessEngineServiceImpl();
+        inject(service, "compressionMaxContextRatio", 0.75D);
         inject(service, "modelContextLength", 1000000L);
         inject(service, "modelMaxAttempts", 3);
         inject(service, "modelName", "deepseek-flash");

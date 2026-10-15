@@ -146,7 +146,12 @@ public final class StreamEventMapper {
      * @return 序列化后的 SSE 事件 JSON
      */
     public static String map(AgentEvent agentEvent) {
-        return ONode.serialize(mapEvent(agentEvent));
+        return ONode.serialize(mapData(agentEvent));
+    }
+
+    /** Map one event before serialization so the same fields can be persisted for audit. */
+    public static Map<String, Object> mapData(AgentEvent agentEvent) {
+        return mapEvent(agentEvent);
     }
 
     /**
@@ -297,6 +302,7 @@ public final class StreamEventMapper {
         }
         Map<String, Object> data = new LinkedHashMap<>();
         data.put("promptTokens", metrics.getPromptTokens());
+        data.put("thinkTokens", metrics.getThinkTokens());
         data.put("completionTokens", metrics.getCompletionTokens());
         data.put("totalTokens", metrics.getTotalTokens());
         data.put("cacheCreationInputTokens", metrics.getCacheCreationInputTokens());

@@ -7,10 +7,12 @@ import com.udata.harness.common.support.ActiveRunRegistry;
 import com.udata.harness.common.support.ToolCallStreamInterceptor;
 import com.udata.harness.common.util.StreamEventMapper;
 import com.udata.harness.repository.SessionRepository;
+import com.udata.harness.repository.UsageAuditRepository;
 import com.udata.harness.service.ChatService;
 import com.udata.harness.service.UserHarnessEngineService;
 import com.udata.harness.service.UserWorkspaceService;
 import org.noear.solon.Utils;
+import org.noear.snack4.ONode;
 import org.noear.solon.ai.agent.AgentSession;
 import org.noear.solon.ai.agent.AgentEvent;
 import org.noear.solon.ai.agent.react.ReActTrace;
@@ -87,6 +89,9 @@ public class ChatServiceImpl implements ChatService {
      */
     @Inject
     private SessionRepository sessionRepository;
+
+    @Inject
+    private UsageAuditRepository usageAuditRepository;
 
     /**
      * 活动运行注册表，用于占位、校验与取消正在进行的运行。
@@ -216,7 +221,7 @@ public class ChatServiceImpl implements ChatService {
             //4. 记录挂起前的 reasonId 用于过滤恢复时的重放文本，再清除 pending 并恢复运行。
             HarnessEngine engine = engines.get(userId, metadata.getWorkspaceId());
             ReActTrace trace = engine.getMainAgent().getTrace(session);
-            String suspendedReasonId = trace == null ? null : trace.getCurrentReasonId();
+            String suspendedReasonId = trace == null ? null : trace.getCurrentTurnId();
             // 只有整批任务都有决策后才能清除 pending 并恢复。否则 ReAct 会重新 Reason，
             // 产生新的 tool call UUID，看起来像前端不断重复要求审批。
             session.pending(false, null);
@@ -341,7 +346,12 @@ public class ChatServiceImpl implements ChatService {
                 // SSE 分段发给浏览器，必须在映射前过滤，避免前端再次追加。
                 .filter(chunk -> !StreamEventMapper.isReasonReplay(chunk, suspendedReasonId))
                 .doOnNext(chunk -> trackFileActivity(workspace, session, chunk))
-                .map(StreamEventMapper::map);
+                .map(chunk -> {
+                    Map<String, Object> event = StreamEventMapper.mapData(chunk);
+                    usageAuditRepository.record(userId, session.getSessionId(),
+                            metadata.getWorkspaceId(), selectedModel, event);
+                    return ONode.serialize(event);
+                });
 
         //2. 过滤 HITL 恢复重放的 Reason 文本，跟踪文件活动并映射为标准 SSE JSON；
         //   随后在流结束时检查是否出现新的挂起任务。
@@ -382,7 +392,7 @@ public class ChatServiceImpl implements ChatService {
                         HITLDecision.approve(false).comment(approvalComment));
             }
             ReActTrace trace = engine.getMainAgent().getTrace(session);
-            String nextSuspendedReasonId = trace == null ? null : trace.getCurrentReasonId();
+            String nextSuspendedReasonId = trace == null ? null : trace.getCurrentTurnId();
             session.pending(false, null);
             return runSegments(
                     userId,

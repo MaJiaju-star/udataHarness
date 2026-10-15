@@ -1,6 +1,7 @@
 package com.udata.harness.config;
 
 import com.udata.harness.repository.SessionRepository;
+import com.udata.harness.repository.UsageAuditRepository;
 import com.udata.harness.service.UserWorkspaceService;
 import com.udata.harness.service.impl.UserWorkspaceServiceImpl;
 import org.noear.solon.annotation.Bean;
@@ -37,6 +38,11 @@ public class HarnessConfiguration {
     @Bean
     public SessionRepository sessionRepository() {
         return new SessionRepository(resolve(dataDir));
+    }
+
+    @Bean
+    public UsageAuditRepository usageAuditRepository() {
+        return new UsageAuditRepository(resolve(dataDir));
     }
 
     /**

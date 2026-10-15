@@ -5,6 +5,8 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import org.noear.solon.ai.chat.message.ChatMessage;
 
+import java.io.IOException;
+import java.nio.file.Files;
 import java.nio.file.Path;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -37,6 +39,19 @@ class SessionRepositoryTest {
     void rejectsPathTraversalSessionIds() {
         SessionRepository store = new SessionRepository(tempDir);
         assertThrows(IllegalArgumentException.class, () -> store.getSession("../outside"));
+    }
+
+    @Test
+    void listSkipsOrphanDirectoriesWithoutHidingStrictReadErrors() throws IOException {
+        SessionRepository store = new SessionRepository(tempDir);
+        SessionMetadata valid = store.create("alice", "Valid", "test-model");
+        String orphanId = "web-9451cd6b-16b0-437f-9f7d-abd4469237cd";
+        Files.createDirectories(store.getSessionsRoot().resolve("alice")
+                .resolve("sessions").resolve(orphanId));
+
+        assertEquals(1, store.list("alice").size());
+        assertEquals(valid.getSessionId(), store.list("alice").get(0).getSessionId());
+        assertThrows(IllegalArgumentException.class, () -> store.read("alice", orphanId));
     }
 
     @Test

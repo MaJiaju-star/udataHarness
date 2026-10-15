@@ -267,7 +267,8 @@ public class SessionServiceImpl implements SessionService {
             Map<String, Object> item = new LinkedHashMap<>();
             item.put("role", message.getRole().name().toLowerCase());
             item.put("content", message.getContent());
-            item.put("thinking", message.isThinking());
+            item.put("thinking", message instanceof AssistantMessage
+                    && ((AssistantMessage) message).isThinkingOnly());
             if (message instanceof AssistantMessage
                     && ((AssistantMessage) message).getToolCalls() != null
                     && !((AssistantMessage) message).getToolCalls().isEmpty()) {

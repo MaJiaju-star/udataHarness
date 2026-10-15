@@ -41,4 +41,30 @@ public interface IntegrationService {
      * @param name MCP Server 名称
      */
     void removeMcp(String name);
+
+    /**
+     * 返回已配置的 LSP 服务摘要。
+     *
+     * @return LSP 配置列表
+     */
+    List<Map<String, Object>> listLsp();
+
+    /**
+     * 保存 LSP 服务并更新所有工作区引擎。
+     *
+     * @param name 服务名称
+     * @param command 启动命令及参数
+     * @param extensions 处理的文件扩展名
+     * @param env 额外环境变量的 JSON 文本
+     * @param enabled 是否启用
+     */
+    void saveLsp(String name, List<String> command, List<String> extensions,
+                 String env, boolean enabled);
+
+    /**
+     * 删除 LSP 服务。
+     *
+     * @param name 服务名称
+     */
+    void removeLsp(String name);
 }

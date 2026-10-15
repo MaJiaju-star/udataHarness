@@ -10,6 +10,7 @@ import IdeaToolbar from "./IdeaToolbar.jsx";
 import SessionHistory from "./SessionHistory.jsx";
 import ReferenceInput from "./ReferenceInput.jsx";
 import {usePageDialog} from "./usePageDialog.jsx";
+import {accumulateTokenUsage, emptyTokenUsage, summarizeAudit} from "./tokenUsage.js";
 import {formatIdeaReference, readManualIdeaReference, withAutoReference, insertReferenceText, insertReferenceAtSelection, createReferenceReceiver} from "./ideaReferences.js";
 import {
     Activity, ArrowDown, ArrowLeft, Bot, Box, BrainCircuit, Check, ChevronDown, ChevronRight, Circle, CircleStop, Code2,
@@ -56,17 +57,6 @@ const toForm = (data = {}) => {
     });
     return params;
 };
-const emptyTokenUsage = () => ({
-    promptTokens: 0,
-    thinkTokens: 0,
-    completionTokens: 0,
-    totalTokens: 0,
-    cacheCreationInputTokens: 0,
-    cacheReadInputTokens: 0,
-    modelCallCount: 0,
-    tokensPerSecond: 0,
-    durationMs: 0
-});
 const formatTokens = value => new Intl.NumberFormat("zh-CN", {
     notation: Number(value || 0) >= 10000 ? "compact" : "standard",
     maximumFractionDigits: 1
@@ -636,41 +626,7 @@ function App() {
 
     const trackTokenUsage = useCallback(event => {
         if (!event?.usage) return;
-        const usage = event.usage;
-        setTokenUsage(currentUsage => {
-            if (event.usageScope === "run") {
-                const hasModelCallUsage = currentUsage.modelCallCount > 0;
-                return {
-                    ...currentUsage,
-                    promptTokens: hasModelCallUsage
-                        ? currentUsage.promptTokens : Number(usage.promptTokens ?? 0),
-                    completionTokens: hasModelCallUsage
-                        ? currentUsage.completionTokens : Number(usage.completionTokens ?? 0),
-                    totalTokens: hasModelCallUsage
-                        ? currentUsage.totalTokens : Number(usage.totalTokens ?? 0),
-                    cacheCreationInputTokens: hasModelCallUsage
-                        ? currentUsage.cacheCreationInputTokens
-                        : Number(usage.cacheCreationInputTokens ?? 0),
-                    cacheReadInputTokens: hasModelCallUsage
-                        ? currentUsage.cacheReadInputTokens
-                        : Number(usage.cacheReadInputTokens ?? 0),
-                    tokensPerSecond: Number(event.tokensPerSecond || 0),
-                    durationMs: Number(event.durationMs || 0)
-                };
-            }
-            return {
-                ...currentUsage,
-                promptTokens: currentUsage.promptTokens + Number(usage.promptTokens || 0),
-                thinkTokens: currentUsage.thinkTokens + Number(usage.thinkTokens || 0),
-                completionTokens: currentUsage.completionTokens + Number(usage.completionTokens || 0),
-                totalTokens: currentUsage.totalTokens + Number(usage.totalTokens || 0),
-                cacheCreationInputTokens: currentUsage.cacheCreationInputTokens
-                    + Number(usage.cacheCreationInputTokens || 0),
-                cacheReadInputTokens: currentUsage.cacheReadInputTokens
-                    + Number(usage.cacheReadInputTokens || 0),
-                modelCallCount: currentUsage.modelCallCount + 1
-            };
-        });
+        setTokenUsage(currentUsage => accumulateTokenUsage(currentUsage, event));
     }, []);
 
     const api = useCallback(async (path, options = {}) => {
@@ -1498,6 +1454,7 @@ function AdminShell({api, notify, userId, workspace, onBack}) {
     const [section, setSection] = useState("mcp");
     const sections = [
         {id: "mcp", label: "MCP 管理", description: "外部工具服务", icon: Network},
+        {id: "lsp", label: "LSP 管理", description: "代码理解服务", icon: FileCode2},
         {id: "skills", label: "Skill 管理", description: "可复用能力包", icon: Sparkles},
         {id: "subagents", label: "SubAgent 管理", description: "专项智能体", icon: Bot}
     ];
@@ -1537,6 +1494,7 @@ function AdminShell({api, notify, userId, workspace, onBack}) {
             </header>
             <section className="admin-content">
                 {section === "mcp" && <IntegrationsView api={api} notify={notify}/>}
+                {section === "lsp" && <LspView api={api} notify={notify}/>}
                 {section === "skills" && <CapabilitiesView api={api} notify={notify} section="skills"/>}
                 {section === "subagents" && <CapabilitiesView api={api} notify={notify} section="subagents"/>}
             </section>
@@ -1661,6 +1619,7 @@ function ChatView({api, current, messages, running, stopping, onStop, models, se
                       onModelChange, onThinkingDepthChange, onSend, onCreate, onDecide,
                       onPermissionMode, onSandboxChange, onOpenFile}) {
     const [prompt, setPrompt] = useState("");
+    const [auditOpen, setAuditOpen] = useState(false);
     const [nativeReference, setNativeReference] = useState(null);
     const [referenceError, setReferenceError] = useState("");
     const submittingRef = useRef(false);
@@ -2099,7 +2058,9 @@ function ChatView({api, current, messages, running, stopping, onStop, models, se
                 </div>
             </div>
             <TokenMeter usage={tokenUsage} contextLength={contextLength}
-                        provider={provider} running={running}/>
+                        provider={provider} running={running} onOpenAudit={() => setAuditOpen(true)}/>
+            {auditOpen && <UsageAuditDialog api={api} currentSessionId={current?.sessionId}
+                                            onClose={() => setAuditOpen(false)}/>}
         </div>
     </div>;
 }
@@ -2108,7 +2069,7 @@ function Feature({icon: Icon, title, text}) {
     return <div className="feature-card"><Icon size={19}/><div><b>{title}</b><span>{text}</span></div></div>;
 }
 
-function TokenMeter({usage, contextLength, provider, running}) {
+function TokenMeter({usage, contextLength, provider, running, onOpenAudit}) {
     const cacheTokens = usage.cacheReadInputTokens + usage.cacheCreationInputTokens;
     const hitRate = cacheHitRate(usage, provider);
     const hitRateText = hitRate == null ? "—" : `${hitRate.toFixed(1)}%`;
@@ -2124,7 +2085,7 @@ function TokenMeter({usage, contextLength, provider, running}) {
         `缓存创建 ${formatTokens(usage.cacheCreationInputTokens)}`,
         `缓存命中率 ${hitRateText}`,
         `命中率口径 ${hitRateFormula}`,
-        `平均速度 ${speed}`,
+        `整轮平均输出速度 ${speed}（输出 token ÷ 活跃执行耗时，含工具执行，不含审批挂起等待）`,
         `模型上下文 ${formatTokens(contextLength)}`
     ].join(" · ");
     return <div className={`composer-token-meter ${running ? "running" : ""}`} role="status" title={details}>
@@ -2134,8 +2095,64 @@ function TokenMeter({usage, contextLength, provider, running}) {
         <span>输出 {formatTokens(usage.completionTokens)}</span>
         <span>缓存 {formatTokens(cacheTokens)}</span>
         <span>命中 {hitRateText}</span>
-        <span>{speed}</span>
+        <span title="输出 token ÷ 活跃执行耗时，含工具执行，不含审批挂起等待">整轮 {speed}</span>
         <i>上下文 {formatTokens(contextLength)}</i>
+        <button type="button" className="token-audit-button" onClick={onOpenAudit}>审计台账</button>
+    </div>;
+}
+
+function UsageAuditDialog({api, currentSessionId, onClose}) {
+    const [records, setRecords] = useState([]);
+    const [sessionOnly, setSessionOnly] = useState(false);
+    const [error, setError] = useState("");
+    const [loading, setLoading] = useState(true);
+    const reload = useCallback(() => {
+        setLoading(true);
+        api("/api/usage/audit").then(data => {
+            setRecords(data || []);
+            setError("");
+        }).catch(err => setError(err.message)).finally(() => setLoading(false));
+    }, [api]);
+    useEffect(() => { reload(); }, [reload]);
+    const shown = sessionOnly && currentSessionId
+        ? records.filter(row => row.sessionId === currentSessionId) : records;
+    const runs = summarizeAudit(shown);
+    const totals = runs.reduce((sum, row) => ({
+        promptTokens: sum.promptTokens + Number(row.usage.promptTokens || 0),
+        completionTokens: sum.completionTokens + Number(row.usage.completionTokens || 0),
+        totalTokens: sum.totalTokens + Number(row.usage.totalTokens || 0),
+        cacheReadInputTokens: sum.cacheReadInputTokens + Number(row.usage.cacheReadInputTokens || 0)
+    }), {promptTokens: 0, completionTokens: 0, totalTokens: 0, cacheReadInputTokens: 0});
+    return <div className="modal-backdrop token-audit-backdrop" onClick={onClose}>
+        <section className="token-audit-dialog" role="dialog" aria-modal="true" aria-label="Token 审计台账"
+                 onClick={event => event.stopPropagation()}>
+            <header><div><h2>Token 审计台账</h2><p>按用户持久保存；完整轮次以最终汇总为准，中断轮次按已记录调用统计。</p></div>
+                <button type="button" className="icon-button" aria-label="关闭" onClick={onClose}><X size={18}/></button></header>
+            <div className="token-audit-controls">
+                <label><input type="checkbox" checked={sessionOnly} disabled={!currentSessionId}
+                              onChange={event => setSessionOnly(event.target.checked)}/>仅当前会话</label>
+                <button type="button" onClick={reload}><RefreshCw size={14}/>刷新</button>
+            </div>
+            <div className="token-audit-summary">
+                <span>{runs.length} 轮</span><span>总量 {formatTokens(totals.totalTokens)}</span>
+                <span>输入 {formatTokens(totals.promptTokens)}</span>
+                <span>输出 {formatTokens(totals.completionTokens)}</span>
+                <span>缓存读取 {formatTokens(totals.cacheReadInputTokens)}</span>
+            </div>
+            <div className="token-audit-list">
+                {loading && <p>正在读取审计记录…</p>}
+                {error && <p className="token-audit-error">{error}</p>}
+                {!loading && !error && runs.length === 0 && <p>暂无 Token 记录</p>}
+                {runs.slice(0, 100).map(row => <div className="token-audit-row" key={row.runId}>
+                    <div><b>{row.selectedModel || "默认模型"}</b>
+                        <span>{new Date(row.timestamp).toLocaleString("zh-CN")} · {row.sessionId}</span></div>
+                    <div><b>{formatTokens(row.usage.totalTokens)} tokens</b>
+                        <span>输入 {formatTokens(row.usage.promptTokens)} · 输出 {formatTokens(row.usage.completionTokens)} · 缓存读取 {formatTokens(row.usage.cacheReadInputTokens)}</span></div>
+                    <small title={row.runId}>{row.source === "run" ? "最终汇总" : "已记录调用"} · {row.modelCallCount} 次调用<br/>运行 {row.runId}</small>
+                </div>)}
+                {runs.length > 100 && <p>仅显示最近 100 轮；汇总包含全部记录。</p>}
+            </div>
+        </section>
     </div>;
 }
 
@@ -3228,6 +3245,63 @@ function IntegrationsView({api, notify}) {
                     {items.map(item => <div className="connection-item" key={item.name}>
                         <span className="connection-status"/><div><b>{item.name}</b><small>{item.url || (item.command || []).join?.(" ") || item.command}</small></div>
                         <button className="icon-button" onClick={() => remove(item.name).catch(e => notify(e.message))}><Trash2 size={15}/></button>
+                    </div>)}
+                </div>
+            </section>
+        </div>
+    </div>;
+}
+
+function LspView({api, notify}) {
+    const [items, setItems] = useState([]);
+    const [json, setJson] = useState("");
+    const load = useCallback(async () => {
+        const configured = await api("/api/integrations/lsp") || [];
+        setItems(configured);
+        if (configured.length === 1 && !configured[0].hasEnv && !configured[0].managed) {
+            const {name, command, extensions, enabled} = configured[0];
+            setJson(current => current || JSON.stringify({name, command, extensions, enabled}, null, 2));
+        }
+    }, [api]);
+    useEffect(() => { load().catch(error => notify(error.message)); }, [load, notify]);
+
+    async function save() {
+        if (!json.trim()) throw new Error("请输入 LSP 配置");
+        let config;
+        try { config = JSON.parse(json); } catch { throw new Error("请输入有效 JSON"); }
+        await api("/api/integrations/lsp", {method: "POST", body: toForm(config)});
+        notify("LSP 配置已保存");
+        await load();
+    }
+
+    async function remove(name) {
+        await api(`/api/integrations/lsp?name=${encodeURIComponent(name)}`, {method: "DELETE"});
+        await load();
+    }
+
+    return <div className="panel-page">
+        <PanelHeader eyebrow="CODE INTELLIGENCE" title="LSP" description="连接语言服务器，让智能体查定义、引用和诊断。命令在后端机器上运行。"
+                     actions={<button onClick={() => load()}><RefreshCw size={16}/>刷新配置</button>}/>
+        <div className="integration-panels">
+            <section className="surface integration-surface">
+                <div className="integration-heading">
+                    <span className="integration-icon lsp"><FileCode2 size={20}/></span>
+                    <div><h3>Language Servers</h3><p>先在后端安装语言服务器，再填写启动命令和扩展名</p></div>
+                </div>
+                <textarea className="json-editor" value={json} onChange={event => setJson(event.target.value)}
+                          placeholder='{"name":"java","command":["jdtls"],"extensions":[".java"],"enabled":true}'/>
+                <p className="lsp-config-tip">保存同名服务会覆盖现有命令；请确认填写的是后端实际可执行的路径。</p>
+                <button className="primary-button full-button" onClick={() => save().catch(error => notify(error.message))}>
+                    <Save size={16}/>保存 LSP
+                </button>
+                <div className="connection-list">
+                    {items.length === 0 && <span className="muted-empty">还没有配置语言服务器</span>}
+                    {items.map(item => <div className="connection-item" key={item.name}>
+                        <span className="connection-status"/>
+                        <div><b>{item.name}{item.managed ? "（内置）" : item.enabled ? "" : "（已停用）"}</b>
+                            <small>{item.extensions?.join(", ")} · {item.command?.join(" ")}</small></div>
+                        {item.managed ? <span/> : <button className="icon-button"
+                            onClick={() => remove(item.name).catch(error => notify(error.message))}><Trash2 size={15}/></button>}
                     </div>)}
                 </div>
             </section>

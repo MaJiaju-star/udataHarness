@@ -6,6 +6,7 @@ import com.udata.harness.common.request.HitlDecisionRequest;
 import com.udata.harness.common.support.ActiveRunRegistry;
 import com.udata.harness.common.util.StreamEventMapper;
 import com.udata.harness.repository.SessionRepository;
+import com.udata.harness.repository.UsageAuditRepository;
 import com.udata.harness.service.ChatService;
 import com.udata.harness.service.SessionService;
 import org.noear.solon.ai.agent.AgentSession;
@@ -60,6 +61,18 @@ public class SessionController {
      */
     @Inject
     private SessionRepository sessionRepository;
+
+    @Inject
+    private UsageAuditRepository usageAuditRepository;
+
+    /** List durable token events for the current user, optionally restricted to one session. */
+    @Get
+    @Mapping("/usage/audit")
+    public Result<List<Map<String, Object>>> usageAudit(
+            @Header("X-User-Id") String userId,
+            @Param(value = "sessionId", required = false) String sessionId) {
+        return Result.succeed(usageAuditRepository.list(userId, sessionId));
+    }
 
     /**
      * 进程内活跃运行注册表，用于判断会话当前是否有进行中的 Flux。

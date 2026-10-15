@@ -92,7 +92,8 @@ class ChatServiceImplTest {
         Map<String, Object> args = Utils.asMap("file_path", filePath);
         service.trackFileActivity(tempDir, session, new ToolCallStartEvent(trace, callId, toolName, args));
         service.trackFileActivity(tempDir, session, new ToolCallEndEvent(
-                trace, callId, toolName, args, ChatMessage.ofTool("ok", toolName, callId), null, 10));
+                trace, callId, toolName, args, ChatMessage.ofTool("ok", toolName, callId),
+                false, null, 10));
     }
 
     private static HITLTask task(String callUuid, String toolName) {
