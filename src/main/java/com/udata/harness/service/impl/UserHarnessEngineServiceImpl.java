@@ -8,6 +8,9 @@ import com.udata.harness.common.context.ContextManagementOptions;
 import com.udata.harness.common.context.ContextRestoreTool;
 import com.udata.harness.common.context.ContextTaskStore;
 import com.udata.harness.common.context.ContextMemoryTool;
+import com.udata.harness.common.context.ContextCacheConfiguration;
+import com.udata.harness.common.context.ContextTelemetryInterceptor;
+import com.udata.harness.common.context.ContextUsage;
 import com.udata.harness.common.context.ToolResultContextInterceptor;
 import com.udata.harness.repository.SessionRepository;
 import com.udata.harness.repository.UsageAuditRepository;
@@ -171,6 +174,9 @@ public class UserHarnessEngineServiceImpl implements UserHarnessEngineService {
 
     @Inject("${agent.context.tool-results.enabled:true}")
     private boolean contextToolResultsEnabled = true;
+
+    @Inject
+    private ContextCacheConfiguration contextCacheConfiguration;
 
     @Inject("${agent.context.tool-results.single-max-chars:50000}")
     private int contextSingleMaxChars = 50000;
@@ -475,7 +481,11 @@ public class UserHarnessEngineServiceImpl implements UserHarnessEngineService {
                     agentBuilder.defaultToolAdd(ANTV_CHART_TOOL);
                     if (contextOptions != null) {
                         agentBuilder.defaultInterceptorAdd(1000,
-                                new ToolResultContextInterceptor(contextStore, contextOptions, contextTasks, workspace));
+                                new ToolResultContextInterceptor(contextStore, contextOptions, contextTasks, workspace, contextCacheConfiguration));
+                        if (contextCacheConfiguration != null) {
+                            agentBuilder.defaultInterceptorAdd(Integer.MAX_VALUE,
+                                    new ContextTelemetryInterceptor(contextStore, contextCacheConfiguration));
+                        }
                         agentBuilder.defaultToolAdd(new ContextRestoreTool(contextStore, contextOptions.restoreMaxChars, workspace));
                         agentBuilder.defaultToolAdd(new ContextMemoryTool(contextStore, contextTasks));
                     }
@@ -500,7 +510,9 @@ public class UserHarnessEngineServiceImpl implements UserHarnessEngineService {
                                            long afterTokens, boolean cacheAligned, AiUsage usage) {
                             if (usageAuditRepository != null) {
                                 usageAuditRepository.recordCompaction(userId, workspaceId, sessionId,
-                                        model, beforeTokens, afterTokens, cacheAligned, usage);
+                                        model, beforeTokens, afterTokens, cacheAligned, usage,
+                                        contextCacheConfiguration == null ? null : ContextUsage.normalize(usage,
+                                                contextCacheConfiguration.policy(model).prices));
                             }
                         }
 

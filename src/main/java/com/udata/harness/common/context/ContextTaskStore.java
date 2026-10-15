@@ -60,6 +60,21 @@ public final class ContextTaskStore {
         return read(sessionId).getProperty(taskId + ".state", "");
     }
 
+    public synchronized java.util.List<java.util.Map<String, Object>> summaries(String sessionId) throws IOException {
+        Properties ledger = read(sessionId);
+        java.util.List<java.util.Map<String, Object>> result = new java.util.ArrayList<>();
+        for (String key : new java.util.TreeSet<>(ledger.stringPropertyNames())) {
+            if (!key.endsWith(".state")) continue;
+            String id = key.substring(0, key.length() - 6);
+            java.util.Map<String, Object> task = new java.util.LinkedHashMap<>();
+            task.put("taskId", id); task.put("state", ledger.getProperty(key));
+            task.put("module", ledger.getProperty(id + ".module", ""));
+            task.put("updatedAt", ledger.getProperty(id + ".updatedAt", ""));
+            result.add(task);
+        }
+        return result;
+    }
+
     public synchronized String snapshot(String sessionId, String taskId) throws IOException {
         Properties ledger = read(sessionId);
         String id = taskId == null || taskId.trim().isEmpty() ? ledger.getProperty("activeTaskId", "") : taskId;

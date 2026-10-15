@@ -22,6 +22,21 @@ agent:
       threshold-ratio: 0.8
       retain-ratio: 0.16
       output-reserve: 65536
+    cache:
+      enabled: true
+      expected-remaining-calls: 4
+      restore-budget-tokens: 2000
+      safety-margin: 1.2
+      pressure-ratio: 0.8
+      # 必须按实际模型别名配置单价及计费口径。未配置时费用显示未知，容量压力之外保留旧前缀。
+      # models:
+      #   your-model-alias:
+      #     accounting: inclusive # promptTokens 是否包含缓存读写；不包含时填写 exclusive
+      #     currency: USD
+      #     input-per-million: <普通输入单价>
+      #     cache-read-per-million: <缓存读取单价>
+      #     cache-write-per-million: <缓存写入完整单价>
+      #     output-per-million: <输出单价>
     # 入场治理：完整原文保存在应用数据目录，模型只接收稳定预览并可按会话恢复。
     # 字符预算是保守的源头控制，不等同于模型实际 Token 数；原有压缩器继续兜底。
     tool-results:

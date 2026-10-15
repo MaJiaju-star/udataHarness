@@ -64,16 +64,7 @@ public class ContextArtifactStore {
         } else {
             writeBody(body, content);
         }
-        int end = safeEnd(content, Math.min(content.length(), previewChars));
-        String projection = "<context-artifact id=\"" + id + "\">\n"
-                + "Tool result archived (" + reason + "). chars=" + content.length()
-                + "; sha256=" + hash + "\n"
-                + "This is an immutable historical tool-result snapshot, not the current workspace file.\n"
-                + "Use context_restore(artifact_id=\"" + id
-                + "\", offset=0, limit=4000) to retrieve a bounded range.\n"
-                + "Preview:\n" + content.substring(0, end)
-                + (end < content.length() ? "\n[Preview truncated]" : "")
-                + "\n</context-artifact>";
+        String projection = preview(invocationId, content, reason, previewChars);
         Properties values = new Properties();
         values.setProperty("tool", toolName);
         values.setProperty("invocationId", invocationId);
@@ -89,6 +80,19 @@ public class ContextArtifactStore {
         writeProperties(metadata, values);
         recordAction(sessionId, "archive", id, reason, content.length());
         return load(sessionId, id);
+    }
+
+    static String preview(String invocationId, String content, String reason, int previewChars) {
+        int end = safeEnd(content, Math.min(content.length(), previewChars));
+        String id = digest(invocationId);
+        return "<context-artifact id=\"" + id + "\">\n"
+                + "Tool result archived (" + reason + "). chars=" + content.length()
+                + "; sha256=" + digest(content) + "\n"
+                + "This is an immutable historical tool-result snapshot, not the current workspace file.\n"
+                + "Use context_restore(artifact_id=\"" + id
+                + "\", offset=0, limit=4000) to retrieve a bounded range.\n"
+                + "Preview:\n" + content.substring(0, end)
+                + (end < content.length() ? "\n[Preview truncated]" : "") + "\n</context-artifact>";
     }
 
     public Artifact load(String sessionId, String artifactId) throws IOException {
@@ -280,6 +284,46 @@ public class ContextArtifactStore {
         } catch (IOException e) {
             LOG.warn("Context action audit failed ({})", e.getClass().getSimpleName());
         }
+    }
+
+    public synchronized void recordObservation(String sessionId, Map<String, Object> event) {
+        appendEvent(sessionId, "context-observations.jsonl", event);
+    }
+
+    synchronized void recordDecision(String sessionId, Map<String, Object> event) {
+        appendEvent(sessionId, "context-actions.jsonl", event);
+    }
+
+    private void appendEvent(String sessionId, String filename, Map<String, Object> event) {
+        try {
+            Path directory = sessionDirectory(sessionId);
+            Files.createDirectories(directory);
+            Files.write(directory.resolve(filename), (ONode.serialize(event) + "\n").getBytes(StandardCharsets.UTF_8),
+                    StandardOpenOption.CREATE, StandardOpenOption.APPEND);
+        } catch (IOException e) {
+            LOG.warn("Context telemetry unavailable ({})", e.getClass().getSimpleName());
+        }
+    }
+
+    /** Keep only a bounded tail in memory; tolerate an interrupted final JSONL write. */
+    public List<Map<String, Object>> observations(String sessionId, boolean actions, int limit) throws IOException {
+        Path file = sessionDirectory(sessionId).resolve(actions ? "context-actions.jsonl" : "context-observations.jsonl");
+        java.util.Deque<Map<String, Object>> tail = new java.util.ArrayDeque<>();
+        if (!Files.exists(file)) return new ArrayList<>();
+        int count = Math.max(1, Math.min(limit, 500));
+        try (java.io.BufferedReader reader = Files.newBufferedReader(file, StandardCharsets.UTF_8)) {
+            String line;
+            while ((line = reader.readLine()) != null) {
+                try {
+                    if (line.trim().isEmpty()) continue;
+                    Map<String, Object> event = ONode.ofJson(line).toBean(Map.class);
+                    if (event == null) continue;
+                    tail.addLast(event);
+                    if (tail.size() > count) tail.removeFirst();
+                } catch (RuntimeException ignored) { /* A malformed record does not hide healthy telemetry. */ }
+            }
+        }
+        return new ArrayList<>(tail);
     }
 
     private static void requireSession(String sessionId) throws IOException {

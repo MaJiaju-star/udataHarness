@@ -2329,6 +2329,95 @@ html[data-mode="dark"] .media-preview { background: var(--surface-2); }
 .page-dialog input { width: 100%; box-sizing: border-box; padding: 10px 12px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface, #fff); color: inherit; font: inherit; }
 .page-dialog footer { display: flex; justify-content: flex-end; gap: 8px; margin-top: 22px; }
 .page-dialog footer button { min-height: 36px; padding: 7px 18px; border: 1px solid var(--line); border-radius: 8px; }
+
+/* Context observatory uses the same theme tokens as the workspace. */
+.composer-token-meter { flex-wrap: wrap; overflow: visible; white-space: normal; }
+.composer-token-meter > span, .composer-token-meter > b { white-space: nowrap; }
+.composer-token-meter .token-audit-button { min-height: 28px; padding: 4px 8px; font-size: 10px; }
+.context-panel-backdrop { z-index: 110; padding: 16px; }
+.context-panel { --context-highlight: var(--accent-dark); --context-selected-bg: var(--accent-soft); display: flex; flex-direction: column; width: min(1080px, 100%); max-height: calc(100dvh - 32px); overflow: hidden; border: 1px solid var(--line); border-radius: 16px; background: var(--surface); color: var(--text); box-shadow: var(--shadow); }
+html[data-mode="dark"] .context-panel { --context-highlight: var(--success); --context-selected-bg: color-mix(in srgb, var(--success) 14%, var(--surface)); }
+.context-panel button, .context-panel select { min-height: 34px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); color: var(--text); padding: 6px 10px; font: inherit; font-size: 12px; }
+.context-panel button { cursor: pointer; }
+.context-panel button:hover { background: var(--surface-soft); }
+.context-panel button:disabled { opacity: .5; cursor: default; }
+.context-panel button:focus-visible, .context-panel select:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+.context-panel-header { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; padding: 24px; border-bottom: 1px solid var(--line); }
+.context-eyebrow { display: flex; align-items: center; gap: 7px; color: var(--context-highlight); font-size: 10px; font-weight: 650; letter-spacing: .1em; }
+.context-panel h2 { margin: 8px 0 6px; font-size: 23px; letter-spacing: -.03em; }
+.context-panel-header p { margin: 0; color: var(--muted); font-size: 12px; }
+.context-panel-tools { display: flex; gap: 8px; }
+.context-panel-tools button { display: inline-flex; align-items: center; justify-content: center; gap: 6px; }
+.context-panel-scroll { padding: 0 24px 24px; overflow: auto; min-height: 100px; }
+.context-status-row { display: flex; flex-wrap: wrap; align-items: center; gap: 16px; padding: 16px 0; color: var(--muted); font-size: 11px; }
+.context-status-row label { display: flex; align-items: center; gap: 8px; margin-left: auto; }
+.context-live { color: var(--context-highlight); }
+.context-live::before { content: ''; display: inline-block; width: 6px; height: 6px; margin-right: 7px; border-radius: 50%; background: var(--accent); }
+.context-metrics { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; margin-bottom: 24px; }
+.context-metric { display: flex; min-width: 0; flex-direction: column; gap: 8px; padding: 16px; border: 1px solid var(--line); border-radius: 12px; background: var(--surface-soft); }
+.context-metric > span { font-size: 11px; color: var(--muted); }
+.context-metric strong { font-size: 23px; font-weight: 600; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+.context-metric small { font-size: 10px; line-height: 1.6; color: var(--muted); }
+.context-chart-card { padding: 18px; border: 1px solid var(--line); border-radius: 12px; }
+.context-section-heading { display: flex; justify-content: space-between; align-items: center; gap: 12px; margin-bottom: 18px; }
+.context-panel h3 { margin: 0; font-size: 13px; font-weight: 650; }
+.context-section-heading > span, .context-chart-scale { font-size: 10px; color: var(--muted); }
+.context-chart-scale { display: flex; justify-content: space-between; flex-wrap: wrap; gap: 8px; }
+.context-trend { display: block; width: 100%; height: auto; margin-top: 10px; overflow: visible; }
+.context-legend { display: flex; flex-wrap: wrap; gap: 16px; margin-top: 8px; font-size: 11px; }
+.context-legend > span { display: flex; gap: 7px; align-items: center; }
+.context-legend i, .context-composition-labels i { display: inline-block; flex-shrink: 0; width: 8px; height: 8px; border-radius: 3px; }
+.context-caption { margin: 14px 0 0; color: var(--muted); font-size: 10px; line-height: 1.7; }
+.context-composition { margin: 24px 0; }
+.context-composition-bar { display: flex; width: 100%; height: 12px; gap: 3px; margin: 14px 0; overflow: hidden; border-radius: 6px; background: var(--surface-soft); }
+.context-composition-bar span { flex-basis: 0; }
+.context-color-0 { background: var(--text-secondary); }
+.context-color-1 { background: var(--purple); }
+.context-color-2 { background: var(--info); }
+.context-color-3 { background: var(--warning); }
+.context-color-4 { background: var(--accent); }
+.context-color-5 { background: var(--text-subtle); }
+.context-composition-labels { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px 24px; }
+.context-composition-labels > span { display: flex; align-items: center; gap: 8px; font-size: 11px; }
+.context-composition-labels b { margin-left: auto; font-weight: 500; color: var(--muted); font-variant-numeric: tabular-nums; }
+.context-tabs { display: flex; flex-wrap: wrap; gap: 6px; padding-bottom: 12px; border-bottom: 1px solid var(--line); }
+.context-tabs button { border-color: transparent; color: var(--muted); }
+.context-tabs button[aria-pressed='true'] { background: var(--context-selected-bg); color: var(--context-highlight); }
+.context-action-list { max-height: 340px; overflow: auto; }
+.context-action { padding: 14px 0; border-bottom: 1px solid var(--line); }
+.context-action > div { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; font-size: 12px; }
+.context-action time { margin-left: auto; font-size: 10px; color: var(--muted); }
+.context-action p { margin: 7px 0; font-size: 12px; }
+.context-action small { display: block; color: var(--muted); font-size: 10px; line-height: 1.7; overflow-wrap: anywhere; }
+.context-decision { padding: 3px 7px; border-radius: 5px; font-size: 10px; }
+.context-decision.allow { background: var(--context-selected-bg); color: var(--context-highlight); }
+.context-decision.retain { background: var(--surface-soft); color: var(--text-secondary); }
+.context-table-scroll { overflow: auto; max-height: 340px; }
+.context-table { width: 100%; border-collapse: collapse; font-size: 11px; white-space: nowrap; }
+.context-table caption { text-align: left; color: var(--muted); padding: 12px 0; font-size: 10px; white-space: normal; }
+.context-table td, .context-table th { text-align: left; padding: 12px 8px; border-bottom: 1px solid var(--line); font-variant-numeric: tabular-nums; }
+.context-table th { color: var(--muted); font-weight: 500; }
+.context-table small { display: block; color: var(--muted); margin-top: 4px; }
+.context-task-list article { display: flex; align-items: center; gap: 12px; padding: 14px 0; border-bottom: 1px solid var(--line); font-size: 12px; }
+.context-task-list article > span { margin-left: auto; color: var(--muted); font-size: 11px; }
+.context-task-list article small { display: block; margin-top: 4px; color: var(--muted); font-size: 10px; }
+.context-empty { padding: 24px 0; margin: 0; color: var(--muted); font-size: 12px; line-height: 1.7; }
+.context-error { padding: 12px; border: 1px solid var(--danger); border-radius: 8px; color: var(--danger); font-size: 12px; }
+@media (max-width: 760px) {
+    .context-metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .context-composition-labels { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+@media (max-width: 480px) {
+    .context-panel-backdrop { padding: 8px; }
+    .context-panel { max-height: calc(100dvh - 16px); border-radius: 12px; }
+    .context-panel-header { padding: 16px; }
+    .context-panel-scroll { padding: 0 16px 16px; }
+    .context-panel-header p { max-width: 200px; line-height: 1.6; }
+    .context-panel-tools { gap: 4px; }
+    .context-metric { padding: 12px; }
+    .context-metric strong { font-size: 20px; }
+    .context-chart-card { padding: 12px; }
+}
 .session-history { width: min(620px, 100%); max-height: calc(100dvh - 40px); display: flex; flex-direction: column; background: var(--surface-1); color: var(--text); border: 1px solid var(--line); border-radius: 14px; box-shadow: 0 20px 70px rgba(0,0,0,.25); overflow: hidden; }
 .session-history header { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 18px; }
 .session-history h2 { margin: 0 0 6px; font-size: 18px; }

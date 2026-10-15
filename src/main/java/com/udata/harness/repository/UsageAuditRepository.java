@@ -73,6 +73,12 @@ public class UsageAuditRepository {
     public synchronized void recordCompaction(String userId, String workspaceId, String sessionId,
                                               String model, long beforeTokens, long afterTokens,
                                               boolean cacheAligned, AiUsage usage) {
+        recordCompaction(userId, workspaceId, sessionId, model, beforeTokens, afterTokens, cacheAligned, usage, null);
+    }
+
+    public synchronized void recordCompaction(String userId, String workspaceId, String sessionId,
+                                              String model, long beforeTokens, long afterTokens,
+                                              boolean cacheAligned, AiUsage usage, Map<String, Object> normalizedUsage) {
         String safeUserId = UserWorkspaceService.requireUserId(userId);
         Map<String, Object> record = new LinkedHashMap<>();
         record.put("id", sessionId + ":compaction:" + UUID.randomUUID());
@@ -85,6 +91,7 @@ public class UsageAuditRepository {
         record.put("beforeTokens", beforeTokens);
         record.put("afterTokens", afterTokens);
         record.put("cacheAligned", cacheAligned);
+        if (normalizedUsage != null) record.put("normalizedUsage", normalizedUsage);
         if (usage != null) {
             Map<String, Object> tokens = new LinkedHashMap<>();
             tokens.put("promptTokens", usage.promptTokens());
@@ -155,6 +162,25 @@ public class UsageAuditRepository {
             throw new IllegalStateException("Cannot load token audit IDs", e);
         }
         return ids;
+    }
+
+    public synchronized List<Map<String, Object>> recentCompactions(String userId, String sessionId, int limit) {
+        Path path = journal(UserWorkspaceService.requireUserId(userId));
+        java.util.Deque<Map<String, Object>> tail = new java.util.ArrayDeque<>();
+        if (!Files.exists(path)) return new ArrayList<>();
+        try (java.io.BufferedReader reader = Files.newBufferedReader(path, StandardCharsets.UTF_8)) {
+            String line;
+            while ((line = reader.readLine()) != null) {
+                try {
+                    ONode node = ONode.ofJson(line);
+                    if (!"compaction".equals(node.get("scope").getString())
+                            || !sessionId.equals(node.get("sessionId").getString())) continue;
+                    tail.addLast(node.toBean(Map.class));
+                    if (tail.size() > Math.max(1, Math.min(500, limit))) tail.removeFirst();
+                } catch (RuntimeException ignored) { }
+            }
+        } catch (IOException e) { throw new IllegalStateException("Cannot read compaction audit", e); }
+        return new ArrayList<>(tail);
     }
 
     private Path journal(String userId) {

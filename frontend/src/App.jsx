@@ -8,6 +8,7 @@ import {useWorkspaceStore} from "./workspaceStore.js";
 import {callIdea, isIdea, initialUserId, initialWorkspaceId} from "./host.js";
 import IdeaToolbar from "./IdeaToolbar.jsx";
 import SessionHistory from "./SessionHistory.jsx";
+import ContextPanel from "./ContextPanel.jsx";
 import ReferenceInput from "./ReferenceInput.jsx";
 import {usePageDialog} from "./usePageDialog.jsx";
 import {accumulateTokenUsage, emptyTokenUsage, summarizeAudit} from "./tokenUsage.js";
@@ -1693,6 +1694,7 @@ function ChatView({api, current, messages, running, stopping, onStop, models, se
                       onPermissionMode, onSandboxChange, onOpenFile}) {
     const [prompt, setPrompt] = useState("");
     const [auditOpen, setAuditOpen] = useState(false);
+    const [contextOpen, setContextOpen] = useState(false);
     const [nativeReference, setNativeReference] = useState(null);
     const [referenceError, setReferenceError] = useState("");
     const submittingRef = useRef(false);
@@ -2149,7 +2151,10 @@ function ChatView({api, current, messages, running, stopping, onStop, models, se
                 </div>
             </div>
             <TokenMeter usage={tokenUsage} contextLength={contextLength}
-                        provider={provider} running={running} onOpenAudit={() => setAuditOpen(true)}/>
+                        provider={provider} running={running} onOpenAudit={() => setAuditOpen(true)}
+                        onOpenContext={current?.sessionId ? () => setContextOpen(true) : null}/>
+            {contextOpen && current?.sessionId && <ContextPanel key={current.sessionId} api={api}
+                sessionId={current.sessionId} running={running} onClose={() => setContextOpen(false)}/>}
             {auditOpen && <UsageAuditDialog api={api} currentSessionId={current?.sessionId}
                                             onClose={() => setAuditOpen(false)}/>}
         </div>
@@ -2160,7 +2165,7 @@ function Feature({icon: Icon, title, text}) {
     return <div className="feature-card"><Icon size={19}/><div><b>{title}</b><span>{text}</span></div></div>;
 }
 
-function TokenMeter({usage, contextLength, provider, running, onOpenAudit}) {
+function TokenMeter({usage, contextLength, provider, running, onOpenAudit, onOpenContext}) {
     const cacheTokens = usage.cacheReadInputTokens + usage.cacheCreationInputTokens;
     const hitRate = cacheHitRate(usage, provider);
     const hitRateText = hitRate == null ? "—" : `${hitRate.toFixed(1)}%`;
@@ -2189,6 +2194,7 @@ function TokenMeter({usage, contextLength, provider, running, onOpenAudit}) {
         <span title="输出 token ÷ 活跃执行耗时，含工具执行，不含审批挂起等待">整轮 {speed}</span>
         <i>上下文 {formatTokens(contextLength)}</i>
         <button type="button" className="token-audit-button" onClick={onOpenAudit}>审计台账</button>
+        <button type="button" className="token-audit-button" disabled={!onOpenContext} onClick={onOpenContext}>上下文观察</button>
     </div>;
 }
 

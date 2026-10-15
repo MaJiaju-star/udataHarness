@@ -60,7 +60,7 @@ offset/limit 使用 UTF-16 字符位置，并根据 next_offset 继续读取。
   动作审计不包含正文，审计写入失败不阻止恢复或导致原文清理。旧归档仍可恢复和检索，缺失来源信息显示 unknown。
 
 任务状态由 Agent 显式调用工具维护，不做自动语义识别；任务档案最多 100 项、每个字段最多 4,000 字符。
-任务档案与阶段归档不额外调用摘要模型。按费用自动选择压缩策略、结构化依赖图和上下文可视化属于后续阶段。
+任务档案与阶段归档不额外调用摘要模型。阶段归档现在受 Cache 成本门槛控制；结构化依赖图仍属后续阶段。
 
 会话压缩可通过 `agent.context.compaction.mode` 选择 `cache-aligned`（默认）或 `legacy`。
 前者在上下文压力下使用一次模型摘要请求：重放与前次正式请求匹配的 system、工具定义和较早消息前缀，
@@ -68,6 +68,40 @@ offset/limit 使用 UTF-16 字符位置，并根据 next_offset 继续读取。
 `agent.context.compaction.threshold-ratio`、`retain-ratio` 与 `output-reserve` 控制触发、近期原文和输出余量；
 `/api/usage/audit` 中 `scope=compaction` 记录摘要调用、前缀匹配及失败。前缀匹配不保证提供方缓存命中，
 实际效果应以模型返回的缓存 Usage 为准。摘要请求当前为同步调用，取消需等待该请求返回。
+
+### Cache 成本决策与观察台
+
+聊天输入区下方点击 **上下文观察**，查看本会话的上下文组成与趋势、逐请求 Usage、管理动作及决策原因、
+任务状态和独立压缩开销。运行时面板每 3 秒刷新，停止后补取最后一批记录。
+接口为 `GET /api/context/overview?sessionId=...&limit=200`；校验会话归属，最多返回每类最近 500 项。
+
+`agent.context.cache.enabled` 默认开启，控制的是任务暂停/关闭后的历史工具正文重组，不影响新工具结果入场预算，
+也不取代 `compaction.mode` 的容量兜底。策略比较未来输入节省与缓存重建、按需恢复开销，只有预计收益大于
+开销乘安全系数才允许重组；估算上下文达到模型窗口的 `pressure-ratio` 时容量优先。
+价格或最近一次缓存 Usage 未知时保留旧前缀，关闭此开关可恢复原阶段归档规则。
+
+价格按模型配置中的 **name 别名** 设置在 `agent.context.cache.models.<name>`，不自动获取报价，也不预填真实价格：
+
+| 配置项 | 含义 |
+|---|---|
+| `accounting` | `inclusive` 表示 promptTokens 包含缓存读写；`exclusive` 表示普通输入与缓存读写分别报告 |
+| `currency` | 三位币种代码；不同币种分别汇总 |
+| `input-per-million` | 每百万普通输入 Token 单价 |
+| `cache-read-per-million` | 每百万缓存读取 Token 单价 |
+| `cache-write-per-million` | 每百万缓存写入 Token 的完整单价，包含该类别的输入费用 |
+| `output-per-million` | 每百万输出 Token 单价；不重复加计 thinking Token |
+
+单价必须为非负有限数；缺失或错误配置显示未知，不作为零。可以先只配置 accounting 以观察归一后的输入与命中率。
+缓存字段未报告时保持未知；inclusive 口径下未报告单独缓存写入类别时按 0 处理。
+`expected-remaining-calls` 默认 4、`restore-budget-tokens` 默认 2000、`safety-margin` 默认 1.2、
+`pressure-ratio` 默认 0.8，都是可调的工程假设，不是实际收益保证。
+
+观察记录写入会话目录 `context-observations.jsonl`，包含 runId/reasonId、模型、各类上下文估算、实际 Usage 与价格快照，
+不保存正文。`context-actions.jsonl` 增加成本决策；reasonId 表示产生决策的调用，历史重组影响后续请求。
+上下文和公共前缀是应用层工作记忆估算，未覆盖所有路由及供应商协议变化，不能据此前缀长度宣称实际 Cache 命中。
+费用是已返回 Usage 按配置单价计算的估算，窗口内的主/子 Agent 调用与压缩调用分别计入，
+未返回 Usage 的重试、未记录的工具费用及账单调整不在覆盖范围内。旧压缩记录缺少价格快照时明确按当前配置估价。
+JSONL 读取限制返回条数和内存占用，但仍顺序扫描文件；长期高频使用需配合日志轮转或数据库索引。
 
 ## IntelliJ IDEA 插件
 

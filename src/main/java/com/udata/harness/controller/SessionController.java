@@ -9,6 +9,7 @@ import com.udata.harness.repository.SessionRepository;
 import com.udata.harness.repository.UsageAuditRepository;
 import com.udata.harness.service.ChatService;
 import com.udata.harness.service.SessionService;
+import com.udata.harness.service.impl.ContextDashboardService;
 import org.noear.solon.ai.agent.AgentSession;
 import org.noear.solon.ai.agent.react.intercept.HITL;
 import org.noear.solon.annotation.Body;
@@ -64,6 +65,17 @@ public class SessionController {
 
     @Inject
     private UsageAuditRepository usageAuditRepository;
+
+    @Inject
+    private ContextDashboardService contextDashboard;
+
+    @Get
+    @Mapping("/context/overview")
+    public Result<Map<String, Object>> contextOverview(@Header("X-User-Id") String userId,
+            @Param("sessionId") String sessionId,
+            @Param(value = "limit", required = false, defaultValue = "200") int limit) throws java.io.IOException {
+        return Result.succeed(contextDashboard.overview(userId, sessionId, limit));
+    }
 
     /** List durable token events for the current user, optionally restricted to one session. */
     @Get

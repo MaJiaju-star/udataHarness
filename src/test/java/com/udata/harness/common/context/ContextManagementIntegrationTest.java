@@ -43,6 +43,15 @@ class ContextManagementIntegrationTest {
 
     @Test
     void switchesTasksSearchesAndRestoresArchivedHistoryThroughRealHarness() throws Throwable {
+        runLifecycle(false);
+    }
+
+    @Test
+    void persistsTelemetryWithTheProductionFileSession() throws Throwable {
+        runLifecycle(true);
+    }
+
+    private void runLifecycle(boolean fileSession) throws Throwable {
         String original = repeat("code line\n", 600) + "MIDDLE_EVIDENCE" + repeat("tail\n", 600);
         AtomicInteger sequence = new AtomicInteger();
         AtomicReference<Throwable> failure = new AtomicReference<>();
@@ -85,7 +94,8 @@ class ContextManagementIntegrationTest {
                 String message = name == null ? "{\"role\":\"assistant\",\"content\":\"done\"}"
                         : "{\"role\":\"assistant\",\"content\":null,\"tool_calls\":[" + toolCall("call-" + step, name, args) + "]}";
                 byte[] response = ("{\"id\":\"response-" + step + "\",\"object\":\"chat.completion\",\"choices\":[{\"index\":0,\"message\":"
-                        + message + ",\"finish_reason\":\"" + (name == null ? "stop" : "tool_calls") + "\"}]}").getBytes(StandardCharsets.UTF_8);
+                        + message + ",\"finish_reason\":\"" + (name == null ? "stop" : "tool_calls")
+                        + "\"}],\"usage\":{\"prompt_tokens\":2000,\"completion_tokens\":10,\"total_tokens\":2010,\"prompt_tokens_details\":{\"cached_tokens\":250}}}").getBytes(StandardCharsets.UTF_8);
                 exchange.getResponseHeaders().set("Content-Type", "application/json");
                 exchange.sendResponseHeaders(200, response.length);
                 exchange.getResponseBody().write(response);
@@ -97,6 +107,12 @@ class ContextManagementIntegrationTest {
         try {
             ContextArtifactStore store = new ContextArtifactStore(directory.resolve("artifacts"));
             ContextTaskStore tasks = new ContextTaskStore(store);
+            ContextCacheConfiguration cache = new ContextCacheConfiguration() {
+                @Override public ContextCostPolicy policy(String model) {
+                    return new ContextCostPolicy(true, 4, 0, 1.2, .8,
+                            new ContextCostPolicy.Prices(10, 1, 12, 20, "inclusive", "USD"));
+                }
+            };
             ContextManagementOptions limits = new ContextManagementOptions(20000, 40000, 20, 1000);
             ChatConfig config = new ChatConfig();
             config.setName("local-stub"); config.setModel("local-stub"); config.setProvider("openai");
@@ -109,17 +125,30 @@ class ContextManagementIntegrationTest {
                         builder.defaultToolAdd(new SearchFixture(original));
                         builder.defaultToolAdd(new ContextMemoryTool(store, tasks));
                         builder.defaultToolAdd(new ContextRestoreTool(store, 1000));
-                        builder.defaultInterceptorAdd(1000, new ToolResultContextInterceptor(store, limits, tasks, directory));
+                        builder.defaultInterceptorAdd(1000, new ToolResultContextInterceptor(store, limits, tasks, directory, cache));
+                        builder.defaultInterceptorAdd(Integer.MAX_VALUE, new ContextTelemetryInterceptor(store, cache));
                     }).build();
             try {
                 engine.prompt("Fix A, switch to B, recover A evidence and constraints.")
-                        .session(InMemoryAgentSession.of("lifecycle-session")).call();
+                        .session(fileSession ? new com.udata.harness.repository.CompactingFileAgentSession(
+                                "lifecycle-session", directory.resolve("session").toString())
+                                : InMemoryAgentSession.of("lifecycle-session")).call();
             } catch (Throwable e) {
                 if (failure.get() != null) throw new AssertionError("Loopback model assertion failed", failure.get());
                 throw e;
             }
             assertNull(failure.get()); assertEquals(7, sequence.get());
             assertEquals("B", tasks.currentTaskId("lifecycle-session"));
+            List<java.util.Map<String, Object>> observations = store.observations("lifecycle-session", false, 100);
+            assertEquals(7, observations.size());
+            assertEquals(7, observations.stream().map(row -> row.get("id")).distinct().count());
+            assertTrue(observations.stream().allMatch(row -> row.get("estimatedTokens") instanceof Number));
+            assertTrue(store.observations("lifecycle-session", true, 100).stream()
+                    .anyMatch(row -> "cache_decision".equals(row.get("action")) && Boolean.TRUE.equals(row.get("allow"))));
+            assertTrue(store.observations("lifecycle-session", true, 100).stream()
+                    .anyMatch(row -> "context_rewrite".equals(row.get("action"))
+                            && ((Number) row.get("charsBefore")).longValue() > ((Number) row.get("charsAfter")).longValue()));
+            assertTrue(observations.stream().allMatch(row -> ((java.util.Map<?, ?>) row.get("usage")).get("estimatedCost") instanceof Number));
             assertFalse(store.search("other-session", "MIDDLE_EVIDENCE", null, null, 0, 5).contains(recoveredId.get()));
         } finally { server.stop(0); }
     }
@@ -197,6 +226,8 @@ class ContextManagementIntegrationTest {
                         builder.defaultToolAdd(new SearchFixture(original));
                         builder.defaultToolAdd(new ContextRestoreTool(store, limits.restoreMaxChars));
                         builder.defaultInterceptorAdd(1000, new ToolResultContextInterceptor(store, limits));
+                        builder.defaultInterceptorAdd(Integer.MAX_VALUE,
+                                new ContextTelemetryInterceptor(store, new ContextCacheConfiguration()));
                     }).build();
             try {
                 engine.prompt("Run the search and recover the evidence.")
@@ -207,6 +238,9 @@ class ContextManagementIntegrationTest {
             }
             assertNull(failure.get());
             assertEquals(3, requests.size());
+            assertEquals(3, store.observations("integration-session", false, 100).size());
+            assertTrue(store.observations("integration-session", false, 100).stream()
+                    .allMatch(row -> ((java.util.Map<?, ?>) row.get("usage")).get("estimatedCost") == null));
             assertFalse(requests.get(0).contains("__sessionId"));
         } finally {
             server.stop(0);

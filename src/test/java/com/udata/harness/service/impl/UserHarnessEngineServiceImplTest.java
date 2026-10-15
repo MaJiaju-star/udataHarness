@@ -40,6 +40,7 @@ class UserHarnessEngineServiceImplTest {
         inject(service, "apiUrl", "https://api.deepseek.com");
         inject(service, "apiKey", "");
         inject(service, "provider", "openai");
+        inject(service, "contextCacheConfiguration", new com.udata.harness.common.context.ContextCacheConfiguration());
         inject(service, "model", "deepseek-v4-flash");
 
         assertNotNull(service.get("alice"));
@@ -50,6 +51,9 @@ class UserHarnessEngineServiceImplTest {
         org.junit.jupiter.api.Assertions.assertTrue(service.get("alice").getMainAgent().getConfig()
                 .getDefaultOptions().getInterceptors().stream()
                 .anyMatch(item -> item.target instanceof ToolResultContextInterceptor));
+        org.junit.jupiter.api.Assertions.assertTrue(service.get("alice").getMainAgent().getConfig()
+                .getDefaultOptions().getInterceptors().stream()
+                .anyMatch(item -> item.target instanceof com.udata.harness.common.context.ContextTelemetryInterceptor));
         assertEquals(4, service.get("alice").getModelRetries());
         org.noear.solon.ai.harness.HarnessEngine original = service.get("alice");
         UserWorkspaceServiceImpl workspaces = (UserWorkspaceServiceImpl) read(service, "workspaces");

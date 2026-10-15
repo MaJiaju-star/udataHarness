@@ -37,6 +37,7 @@ public class ToolResultContextInterceptor implements ReActInterceptor {
     private final ContextManagementOptions options;
     private final ContextTaskStore tasks;
     private final Path workspace;
+    private final ContextCacheConfiguration cacheConfig;
     private final ContextLifecyclePolicy lifecycle = new ContextLifecyclePolicy();
     private static final String TASK_META = "context_task_id";
     private static final String INVOCATION_META = "context_invocation_id";
@@ -47,10 +48,16 @@ public class ToolResultContextInterceptor implements ReActInterceptor {
 
     public ToolResultContextInterceptor(ContextArtifactStore store, ContextManagementOptions options,
                                         ContextTaskStore tasks, Path workspace) {
+        this(store, options, tasks, workspace, null);
+    }
+
+    public ToolResultContextInterceptor(ContextArtifactStore store, ContextManagementOptions options,
+                                        ContextTaskStore tasks, Path workspace, ContextCacheConfiguration cacheConfig) {
         this.store = store;
         this.options = options;
         this.tasks = tasks;
         this.workspace = workspace;
+        this.cacheConfig = cacheConfig;
     }
 
     @Override
@@ -167,6 +174,8 @@ public class ToolResultContextInterceptor implements ReActInterceptor {
             boolean mixedSwitch = calls.stream().anyMatch(call -> "context_task_update".equals(call.getToolName()));
             List<ChatMessage> view = new ArrayList<>(messages);
             Map<String, String> states = new HashMap<>();
+            List<ArchivePlan> plans = new ArrayList<>();
+            int appliedCount = 0;
             boolean changed = false;
             for (int i = 0; i < messages.size(); i++) {
                 if (!(messages.get(i) instanceof ToolMessage)) continue;
@@ -206,20 +215,83 @@ public class ToolResultContextInterceptor implements ReActInterceptor {
                     Object value = tool.getMetadata().get("context_" + key);
                     if (value instanceof String) metadata.put(key, (String) value);
                 }
-                ContextArtifactStore.Artifact artifact = store.save(sessionId, invocation.toString(), tool.getName(),
-                        tool.getContent(), "task_" + state, Math.min(options.previewChars, 400), metadata);
+                String reason = "task_" + state;
+                String preview = ContextArtifactStore.preview(invocation.toString(), tool.getContent(), reason, Math.min(options.previewChars, 400));
+                if (preview.length() < tool.getContent().length()
+                        && org.noear.solon.ai.agent.react.intercept.compress.CompressionUtil.countTokens(preview)
+                        < org.noear.solon.ai.agent.react.intercept.compress.CompressionUtil.countTokens(tool.getContent()))
+                    plans.add(new ArchivePlan(i, tool, invocation.toString(), reason, metadata, preview));
+            }
+            if (plans.isEmpty() || !approveRewrite(trace, messages, plans, active)) return;
+            for (ArchivePlan plan : plans) {
+                ToolMessage tool = plan.tool;
+                ContextArtifactStore.Artifact artifact = store.save(sessionId, plan.invocation, tool.getName(),
+                        tool.getContent(), plan.reason, Math.min(options.previewChars, 400), plan.metadata);
                 if (artifact.projection.length() >= tool.getContent().length()) continue;
                 ToolMessage replacement = ChatMessage.ofTool(ToolResult.success(artifact.projection),
                         tool.getName(), tool.getToolCallId(), false);
                 tool.getMetadata().forEach((key, value) -> {
                     if (!"token_size".equals(key)) replacement.addMetadata(key, value);
                 });
-                view.set(i, replacement);
+                view.set(plan.index, replacement);
+                appliedCount++;
                 changed = true;
             }
-            if (changed) trace.getWorkingMemory().replaceMessages(view);
+            if (changed) {
+                long beforeChars = messages.stream().mapToLong(message -> message.getContent() == null ? 0 : message.getContent().length()).sum();
+                trace.getWorkingMemory().replaceMessages(view);
+                Map<String, Object> applied = new java.util.LinkedHashMap<>();
+                applied.put("timestamp", System.currentTimeMillis()); applied.put("action", "context_rewrite");
+                applied.put("reason", "task_lifecycle"); applied.put("runId", trace.getRunId());
+                applied.put("reasonId", trace.getCurrentTurnId()); applied.put("appliedCount", appliedCount);
+                applied.put("charsBefore", beforeChars);
+                applied.put("charsAfter", view.stream().mapToLong(message -> message.getContent() == null ? 0 : message.getContent().length()).sum());
+                store.recordDecision(sessionId, applied);
+            }
         } catch (IOException e) {
             LOG.warn("Task context convergence failed; retaining original history ({})", e.getClass().getSimpleName());
+            Map<String, Object> failed = new java.util.LinkedHashMap<>();
+            failed.put("timestamp", System.currentTimeMillis()); failed.put("action", "rewrite_failed");
+            failed.put("reason", "artifact_io"); failed.put("runId", trace.getRunId()); failed.put("reasonId", trace.getCurrentTurnId());
+            store.recordDecision(trace.getSession().getSessionId(), failed);
+        }
+    }
+
+    private boolean approveRewrite(ReActTrace trace, List<ChatMessage> messages, List<ArchivePlan> plans, String active) {
+        if (cacheConfig == null) return true;
+        String model = ContextTelemetryInterceptor.model(trace);
+        ContextCostPolicy policy = cacheConfig.policy(model);
+        long before = ((Number) ContextTelemetryInterceptor.footprint(messages, "", trace.getOptions().getTools(),
+                trace.getProtocolTools(), model).view.get("estimatedTokens")).longValue();
+        ContextTelemetryInterceptor.Footprint previous = trace.getExtraAs(ContextTelemetryInterceptor.SNAPSHOT);
+        if (previous != null) {
+            Map<String, Number> categories = (Map<String, Number>) previous.view.get("categories");
+            before += categories.get("system").longValue();
+        }
+        long saved = 0;
+        for (ArchivePlan plan : plans) {
+            saved += org.noear.solon.ai.agent.react.intercept.compress.CompressionUtil.countTokens(plan.tool.getContent())
+                    - org.noear.solon.ai.agent.react.intercept.compress.CompressionUtil.countTokens(plan.preview);
+        }
+        Map<String, Object> usage = trace.getExtraAs(ContextTelemetryInterceptor.LAST_USAGE);
+        if (usage != null && !model.equals(usage.get("model"))) usage = null;
+        Map<String, Object> decision = policy.decide(before, saved,
+                trace.getOptions().getChatModel().getConfig().getContextLength(), usage);
+        decision.put("timestamp", System.currentTimeMillis()); decision.put("action", "cache_decision");
+        decision.put("runId", trace.getRunId()); decision.put("reasonId", trace.getCurrentTurnId());
+        decision.put("model", model); decision.put("activeTaskId", active); decision.put("candidateCount", plans.size());
+        store.recordDecision(trace.getSession().getSessionId(), decision);
+        return Boolean.TRUE.equals(decision.get("allow"));
+    }
+
+    private static final class ArchivePlan {
+        final int index;
+        final ToolMessage tool;
+        final String invocation, reason, preview;
+        final Map<String, String> metadata;
+        ArchivePlan(int index, ToolMessage tool, String invocation, String reason, Map<String, String> metadata, String preview) {
+            this.index = index; this.tool = tool; this.invocation = invocation; this.reason = reason;
+            this.metadata = metadata; this.preview = preview;
         }
     }
 
