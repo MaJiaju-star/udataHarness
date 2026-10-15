@@ -41,6 +41,89 @@ class ContextManagementIntegrationTest {
         runScenario(2, 20000, 11000);
     }
 
+    @Test
+    void switchesTasksSearchesAndRestoresArchivedHistoryThroughRealHarness() throws Throwable {
+        String original = repeat("code line\n", 600) + "MIDDLE_EVIDENCE" + repeat("tail\n", 600);
+        AtomicInteger sequence = new AtomicInteger();
+        AtomicReference<Throwable> failure = new AtomicReference<>();
+        AtomicReference<String> recoveredId = new AtomicReference<>();
+        HttpServer server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+        server.createContext("/", exchange -> {
+            try {
+                String body = read(exchange.getRequestBody());
+                int step = sequence.getAndIncrement();
+                assertFalse(body.contains("\"__sessionId\""));
+                String name;
+                String args;
+                if (step == 0) {
+                    name = "context_task_update";
+                    args = "{\"task_id\":\"A\",\"state\":\"active\",\"requirements\":\"Keep public API\"}";
+                } else if (step == 1) {
+                    assertTrue(toolContents(body).stream().anyMatch(text -> text.contains("task_id=A")));
+                    name = "grep"; args = "{\"pattern\":\"test\"}";
+                } else if (step == 2) {
+                    assertTrue(toolContents(body).contains(original));
+                    name = "context_task_update"; args = "{\"task_id\":\"B\",\"state\":\"active\"}";
+                } else if (step == 3) {
+                    assertFalse(toolContents(body).contains(original));
+                    assertTrue(toolContents(body).stream().anyMatch(text -> text.contains("task_paused")));
+                    name = "context_search"; args = "{\"query\":\"MIDDLE_EVIDENCE\",\"task_id\":\"A\"}";
+                } else if (step == 4) {
+                    String search = toolContents(body).stream().filter(text -> text.startsWith("Literal,")).findFirst().get();
+                    Matcher match = Pattern.compile("artifact_id=([a-f0-9]{64})").matcher(search);
+                    assertTrue(match.find()); recoveredId.set(match.group(1));
+                    name = "context_restore";
+                    args = "{\"artifact_id\":\"" + recoveredId.get() + "\",\"offset\":"
+                            + original.indexOf("MIDDLE_EVIDENCE") + ",\"limit\":32}";
+                } else if (step == 5) {
+                    assertTrue(toolContents(body).stream().anyMatch(text -> text.startsWith("Historical") && text.contains("MIDDLE_EVIDENCE")));
+                    name = "context_task_snapshot"; args = "{\"task_id\":\"A\"}";
+                } else {
+                    assertTrue(toolContents(body).stream().anyMatch(text -> text.contains("state: paused") && text.contains("Keep public API")));
+                    name = null; args = null;
+                }
+                String message = name == null ? "{\"role\":\"assistant\",\"content\":\"done\"}"
+                        : "{\"role\":\"assistant\",\"content\":null,\"tool_calls\":[" + toolCall("call-" + step, name, args) + "]}";
+                byte[] response = ("{\"id\":\"response-" + step + "\",\"object\":\"chat.completion\",\"choices\":[{\"index\":0,\"message\":"
+                        + message + ",\"finish_reason\":\"" + (name == null ? "stop" : "tool_calls") + "\"}]}").getBytes(StandardCharsets.UTF_8);
+                exchange.getResponseHeaders().set("Content-Type", "application/json");
+                exchange.sendResponseHeaders(200, response.length);
+                exchange.getResponseBody().write(response);
+            } catch (Throwable e) {
+                failure.compareAndSet(null, e); exchange.sendResponseHeaders(500, -1);
+            } finally { exchange.close(); }
+        });
+        server.start();
+        try {
+            ContextArtifactStore store = new ContextArtifactStore(directory.resolve("artifacts"));
+            ContextTaskStore tasks = new ContextTaskStore(store);
+            ContextManagementOptions limits = new ContextManagementOptions(20000, 40000, 20, 1000);
+            ChatConfig config = new ChatConfig();
+            config.setName("local-stub"); config.setModel("local-stub"); config.setProvider("openai");
+            config.setApiUrl("http://127.0.0.1:" + server.getAddress().getPort() + "/v1/chat/completions");
+            config.setContextLength(128000L);
+            HarnessEngine engine = HarnessEngine.of(directory.resolve("workspace").toString(), ".soloncode")
+                    .sessionProvider(InMemoryAgentSession::of).systemPrompt("Use tools, then answer done.")
+                    .modelAdd(config).defaultModel("local-stub").modelRetries(1).maxTurns(8)
+                    .extensionAdd((owner, agentName, builder) -> {
+                        builder.defaultToolAdd(new SearchFixture(original));
+                        builder.defaultToolAdd(new ContextMemoryTool(store, tasks));
+                        builder.defaultToolAdd(new ContextRestoreTool(store, 1000));
+                        builder.defaultInterceptorAdd(1000, new ToolResultContextInterceptor(store, limits, tasks, directory));
+                    }).build();
+            try {
+                engine.prompt("Fix A, switch to B, recover A evidence and constraints.")
+                        .session(InMemoryAgentSession.of("lifecycle-session")).call();
+            } catch (Throwable e) {
+                if (failure.get() != null) throw new AssertionError("Loopback model assertion failed", failure.get());
+                throw e;
+            }
+            assertNull(failure.get()); assertEquals(7, sequence.get());
+            assertEquals("B", tasks.currentTaskId("lifecycle-session"));
+            assertFalse(store.search("other-session", "MIDDLE_EVIDENCE", null, null, 0, 5).contains(recoveredId.get()));
+        } finally { server.stop(0); }
+    }
+
     private void runScenario(int tools, int singleLimit, int batchLimit) throws Throwable {
         String original = repeat("log line\n", 600) + "MIDDLE_EVIDENCE" + repeat("tail\n", 600);
         List<String> requests = Collections.synchronizedList(new ArrayList<>());

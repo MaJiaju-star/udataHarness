@@ -47,6 +47,7 @@ public class SessionRepository implements AgentSessionProvider {
      * 数据根下的用户目录，每个用户一个子目录存放其会话。
      */
     private final Path usersRoot;
+    private final boolean cacheAlignedCompaction;
 
     /**
      * 活动 AgentSession 内存缓存，键为会话 ID；真实消息由 FileAgentSession 落盘。
@@ -64,7 +65,12 @@ public class SessionRepository implements AgentSessionProvider {
      * @param dataRoot 应用数据根目录
      */
     public SessionRepository(Path dataRoot) {
+        this(dataRoot, false);
+    }
+
+    public SessionRepository(Path dataRoot, boolean cacheAlignedCompaction) {
         this.usersRoot = dataRoot.resolve("users").toAbsolutePath().normalize();
+        this.cacheAlignedCompaction = cacheAlignedCompaction;
         try {
             Files.createDirectories(usersRoot);
         } catch (IOException e) {
@@ -149,8 +155,9 @@ public class SessionRepository implements AgentSessionProvider {
             throw new IllegalArgumentException("Session not found: " + sessionId);
         }
         owners.put(sessionId, userId);
-        return sessions.computeIfAbsent(sessionId,
-                key -> new FileAgentSession(key, sessionDir.toString()));
+        return sessions.computeIfAbsent(sessionId, key -> cacheAlignedCompaction
+                ? new CompactingFileAgentSession(key, sessionDir.toString())
+                : new FileAgentSession(key, sessionDir.toString()));
     }
 
     /**

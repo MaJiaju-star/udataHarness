@@ -2,6 +2,7 @@ package com.udata.harness.repository;
 
 import com.udata.harness.service.UserWorkspaceService;
 import org.noear.snack4.ONode;
+import org.noear.solon.ai.AiUsage;
 
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
@@ -15,6 +16,7 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.UUID;
 
 /** Append-only, user-scoped token usage journal. Session deletion does not erase audit records. */
 public class UsageAuditRepository {
@@ -64,6 +66,64 @@ public class UsageAuditRepository {
         } catch (IOException e) {
             ids.remove(id);
             throw new IllegalStateException("Cannot write token audit record", e);
+        }
+    }
+
+    /** Record the separate model call that creates a durable compaction checkpoint. */
+    public synchronized void recordCompaction(String userId, String workspaceId, String sessionId,
+                                              String model, long beforeTokens, long afterTokens,
+                                              boolean cacheAligned, AiUsage usage) {
+        String safeUserId = UserWorkspaceService.requireUserId(userId);
+        Map<String, Object> record = new LinkedHashMap<>();
+        record.put("id", sessionId + ":compaction:" + UUID.randomUUID());
+        record.put("timestamp", System.currentTimeMillis());
+        record.put("userId", safeUserId);
+        record.put("workspaceId", workspaceId);
+        record.put("sessionId", sessionId);
+        record.put("selectedModel", model);
+        record.put("scope", "compaction");
+        record.put("beforeTokens", beforeTokens);
+        record.put("afterTokens", afterTokens);
+        record.put("cacheAligned", cacheAligned);
+        if (usage != null) {
+            Map<String, Object> tokens = new LinkedHashMap<>();
+            tokens.put("promptTokens", usage.promptTokens());
+            tokens.put("completionTokens", usage.completionTokens());
+            tokens.put("totalTokens", usage.totalTokens());
+            tokens.put("cacheReadInputTokens", usage.cacheReadInputTokens());
+            tokens.put("cacheCreationInputTokens", usage.cacheCreationInputTokens());
+            record.put("usage", tokens);
+        }
+        Path path = journal(safeUserId);
+        try {
+            Files.createDirectories(path.getParent());
+            Files.write(path, (ONode.serialize(record) + "\n").getBytes(StandardCharsets.UTF_8),
+                    StandardOpenOption.CREATE, StandardOpenOption.APPEND);
+        } catch (IOException e) {
+            throw new IllegalStateException("Cannot write compaction audit record", e);
+        }
+    }
+
+    public synchronized void recordCompactionFailure(String userId, String workspaceId,
+                                                     String sessionId, String model, String code) {
+        String safeUserId = UserWorkspaceService.requireUserId(userId);
+        Map<String, Object> record = new LinkedHashMap<>();
+        record.put("id", sessionId + ":compaction:" + UUID.randomUUID());
+        record.put("timestamp", System.currentTimeMillis());
+        record.put("userId", safeUserId);
+        record.put("workspaceId", workspaceId);
+        record.put("sessionId", sessionId);
+        record.put("selectedModel", model);
+        record.put("scope", "compaction");
+        record.put("status", "failed");
+        record.put("reason", code);
+        Path path = journal(safeUserId);
+        try {
+            Files.createDirectories(path.getParent());
+            Files.write(path, (ONode.serialize(record) + "\n").getBytes(StandardCharsets.UTF_8),
+                    StandardOpenOption.CREATE, StandardOpenOption.APPEND);
+        } catch (IOException e) {
+            throw new IllegalStateException("Cannot write compaction audit record", e);
         }
     }
 

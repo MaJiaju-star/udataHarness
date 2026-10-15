@@ -12,9 +12,20 @@ import java.nio.file.StandardCopyOption;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.util.Properties;
+import java.util.Map;
+import java.util.Collections;
+import java.util.List;
+import java.util.ArrayList;
+import java.util.Comparator;
+import java.util.stream.Stream;
+import java.nio.file.StandardOpenOption;
+import org.noear.snack4.ONode;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /** Full text and frozen projections, scoped by the owning engine and session. */
 public class ContextArtifactStore {
+    private static final Logger LOG = LoggerFactory.getLogger(ContextArtifactStore.class);
     private final Path root;
 
     public ContextArtifactStore(Path root) {
@@ -24,6 +35,12 @@ public class ContextArtifactStore {
     /** Commit content before metadata. An incomplete write never authorizes removal. */
     public synchronized Artifact save(String sessionId, String invocationId, String toolName,
                                       String content, String reason, int previewChars) throws IOException {
+        return save(sessionId, invocationId, toolName, content, reason, previewChars, Collections.emptyMap());
+    }
+
+    public synchronized Artifact save(String sessionId, String invocationId, String toolName,
+                                      String content, String reason, int previewChars,
+                                      Map<String, String> source) throws IOException {
         requireSession(sessionId);
         if (invocationId == null || invocationId.isEmpty()) throw new IOException("Missing invocation ID");
         String id = digest(invocationId);
@@ -65,15 +82,12 @@ public class ContextArtifactStore {
         values.setProperty("reason", reason);
         values.setProperty("createdAt", Long.toString(System.currentTimeMillis()));
         values.setProperty("projection", projection);
-        Path temporary = Files.createTempFile(directory, "metadata-", ".tmp");
-        try {
-            try (OutputStream out = Files.newOutputStream(temporary)) {
-                values.store(out, "Context artifact v1");
-            }
-            commit(temporary, metadata);
-        } finally {
-            Files.deleteIfExists(temporary);
+        for (String key : new String[]{"taskId", "sourcePath", "sourceHash", "sourceRange"}) {
+            String value = source.get(key);
+            if (value != null && value.length() <= 4000) values.setProperty(key, value);
         }
+        writeProperties(metadata, values);
+        recordAction(sessionId, "archive", id, reason, content.length());
         return load(sessionId, id);
     }
 
@@ -83,10 +97,7 @@ public class ContextArtifactStore {
             throw new IOException("Invalid context artifact ID");
         }
         Path directory = sessionDirectory(sessionId);
-        Properties values = new Properties();
-        try (InputStream in = Files.newInputStream(directory.resolve(artifactId + ".properties"))) {
-            values.load(in);
-        }
+        Properties values = readProperties(directory.resolve(artifactId + ".properties"));
         Path body = directory.resolve(artifactId + ".txt");
         if (!Files.isRegularFile(body)) throw new IOException("Context artifact content is missing");
         try {
@@ -96,7 +107,7 @@ public class ContextArtifactStore {
             int chars = Integer.parseInt(values.getProperty("chars"));
             if (tool == null || hash == null || !hash.matches("[a-f0-9]{64}")
                     || projection == null || chars < 0) throw new IllegalArgumentException("Incomplete metadata");
-            return new Artifact(artifactId, tool, hash, chars, projection, body);
+            return new Artifact(artifactId, tool, hash, chars, projection, body, values);
         } catch (RuntimeException e) {
             throw new IOException("Invalid context artifact metadata", e);
         }
@@ -137,14 +148,138 @@ public class ContextArtifactStore {
         if (text.isEmpty() && next < artifact.chars) {
             throw new IOException("Range too small for a Unicode character; use limit >= 2");
         }
+        recordAction(sessionId, "restore", artifactId, "range:" + start, text.length());
         return "Historical tool-result snapshot; tool=" + artifact.toolName
                 + "; sha256=" + artifact.sha256 + "; total_chars=" + artifact.chars
                 + "; offset=" + start + "; next_offset=" + next
                 + "; has_more=" + (next < artifact.chars) + "\n" + text;
     }
 
-    private Path sessionDirectory(String sessionId) {
+    Path sessionDirectory(String sessionId) throws IOException {
+        requireSession(sessionId);
         return root.resolve(digest(sessionId));
+    }
+
+    static void writeProperties(Path target, Properties values) throws IOException {
+        Files.createDirectories(target.getParent());
+        Path temporary = Files.createTempFile(target.getParent(), "metadata-", ".tmp");
+        try {
+            try (OutputStream out = Files.newOutputStream(temporary)) { values.store(out, "Context metadata v2"); }
+            commit(temporary, target);
+        } finally { Files.deleteIfExists(temporary); }
+    }
+
+    static Properties readProperties(Path file) throws IOException {
+        Properties values = new Properties();
+        try (InputStream in = Files.newInputStream(file)) {
+            values.load(in);
+        } catch (IllegalArgumentException e) {
+            throw new IOException("Invalid context metadata encoding", e);
+        }
+        return values;
+    }
+
+    Properties metadata(String sessionId, String artifactId) throws IOException {
+        return (Properties) load(sessionId, artifactId).metadata.clone();
+    }
+
+    /** Bounded literal search. Cursor is an artifact-list offset; body scan truncation is explicit. */
+    public String search(String sessionId, String query, String taskId, String sourcePath, int offset, int limit)
+            throws IOException {
+        return search(sessionId, query, taskId, sourcePath, offset, limit, 0);
+    }
+
+    public String search(String sessionId, String query, String taskId, String sourcePath, int offset, int limit,
+                         int bodyOffset) throws IOException {
+        if (query == null || query.isEmpty() || query.length() > 256 || offset < 0 || limit < 1 || bodyOffset < 0) {
+            throw new IOException("Invalid search arguments");
+        }
+        Path directory = sessionDirectory(sessionId);
+        if (!Files.exists(directory)) return "No context artifacts in this session.";
+        List<Path> files = new ArrayList<>();
+        try (Stream<Path> paths = Files.list(directory)) {
+            paths.filter(p -> p.getFileName().toString().matches("[a-f0-9]{64}\\.properties"))
+                    .sorted(Comparator.comparing(p -> p.getFileName().toString())).forEach(files::add);
+        }
+        StringBuilder result = new StringBuilder("Literal, case-sensitive historical search; snapshots are not current files.\n");
+        int cursor = Math.min(offset, files.size());
+        int scanned = 0;
+        int matches = 0;
+        int truncated = 0;
+        int nextBodyOffset = 0;
+        while (cursor < files.size() && scanned < 20 && matches < Math.min(limit, 10)) {
+            String id = files.get(cursor++).getFileName().toString().substring(0, 64);
+            scanned++;
+            Artifact artifact;
+            try { artifact = load(sessionId, id); }
+            catch (IOException e) { continue; } // One incomplete artifact does not hide healthy snapshots.
+            Properties meta = artifact.metadata;
+            if (taskId != null && !taskId.isEmpty() && !taskId.equals(meta.getProperty("taskId", ""))) continue;
+            if (sourcePath != null && !sourcePath.isEmpty()
+                    && !meta.getProperty("sourcePath", "").contains(sourcePath)) continue;
+            int base = cursor - 1 == offset ? bodyOffset : 0;
+            if (base > artifact.chars) throw new IOException("Invalid body offset");
+            int cap = Math.min(artifact.chars - base, 100000);
+            StringBuilder body = new StringBuilder(cap);
+            try (Reader reader = Files.newBufferedReader(artifact.body, StandardCharsets.UTF_8)) {
+                long remaining = base;
+                while (remaining > 0) {
+                    long skipped = reader.skip(remaining);
+                    if (skipped == 0) throw new IOException("Incomplete context body");
+                    remaining -= skipped;
+                }
+                char[] buffer = new char[4096];
+                while (body.length() < cap) {
+                    int count = reader.read(buffer, 0, Math.min(buffer.length, cap - body.length()));
+                    if (count < 0) break;
+                    body.append(buffer, 0, count);
+                }
+            }
+            boolean incomplete = artifact.chars > base + body.length();
+            if (incomplete) truncated++;
+            int hit = body.indexOf(query);
+            if (hit >= 0) {
+                matches++;
+                int start = Math.max(0, hit - 120);
+                if (start > 0 && Character.isLowSurrogate(body.charAt(start))) start++;
+                int end = safeEnd(body.toString(), Math.min(body.length(), hit + query.length() + 240));
+                result.append("artifact_id=").append(id).append("; offset=").append(base + start)
+                        .append("; match_offset=").append(base + hit).append("; task_id=").append(meta.getProperty("taskId", ""))
+                        .append("; source_path=").append(meta.getProperty("sourcePath", ""))
+                        .append("\n").append(body.substring(start, end)).append("\n\n");
+            } else if (incomplete) {
+                // Continue the same body next call, overlapping to find keywords across chunk boundaries.
+                cursor--;
+                nextBodyOffset = base + body.length() - query.length() + 1;
+                break;
+            }
+        }
+        result.append("matches=").append(matches).append("; next_offset=").append(cursor)
+                .append("; has_more=").append(cursor < files.size()).append("; body_scan_truncated=").append(truncated)
+                .append("; next_body_offset=").append(nextBodyOffset)
+                .append("\nSearch scans at most 20 artifacts and 100000 UTF-16 characters per body per call. "
+                        + "Continue with offset=next_offset and body_offset=next_body_offset. One match per artifact.");
+        recordAction(sessionId, "search", "", "matches:" + matches + "; scanned:" + scanned, 0);
+        return result.toString();
+    }
+
+    /** Audit is best effort: audit failures must never destroy a usable original or restored result. */
+    synchronized void recordAction(String sessionId, String action, String id, String reason, int chars) {
+        try {
+            Path directory = sessionDirectory(sessionId);
+            Files.createDirectories(directory);
+            Map<String, Object> event = new java.util.LinkedHashMap<>();
+            event.put("timestamp", System.currentTimeMillis());
+            event.put("action", action);
+            event.put("id", id);
+            event.put("reason", reason);
+            event.put("chars", chars);
+            Files.write(directory.resolve("context-actions.jsonl"),
+                    (ONode.serialize(event) + "\n").getBytes(StandardCharsets.UTF_8),
+                    StandardOpenOption.CREATE, StandardOpenOption.APPEND);
+        } catch (IOException e) {
+            LOG.warn("Context action audit failed ({})", e.getClass().getSimpleName());
+        }
     }
 
     private static void requireSession(String sessionId) throws IOException {
@@ -163,9 +298,9 @@ public class ContextArtifactStore {
 
     private static void commit(Path from, Path to) throws IOException {
         try {
-            Files.move(from, to, StandardCopyOption.ATOMIC_MOVE);
+            Files.move(from, to, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
         } catch (AtomicMoveNotSupportedException e) {
-            Files.move(from, to);
+            Files.move(from, to, StandardCopyOption.REPLACE_EXISTING);
         }
     }
 
@@ -175,11 +310,19 @@ public class ContextArtifactStore {
     }
 
     static String digest(String value) {
+        return digestBytes(value.getBytes(StandardCharsets.UTF_8));
+    }
+
+    static String digestBytes(byte[] value) {
         try {
-            byte[] bytes = MessageDigest.getInstance("SHA-256").digest(value.getBytes(StandardCharsets.UTF_8));
-            StringBuilder result = new StringBuilder(64);
-            for (byte b : bytes) result.append(String.format("%02x", b & 0xff));
-            return result.toString();
+            byte[] bytes = MessageDigest.getInstance("SHA-256").digest(value);
+            char[] hex = "0123456789abcdef".toCharArray();
+            char[] result = new char[bytes.length * 2];
+            for (int i = 0; i < bytes.length; i++) {
+                result[i * 2] = hex[(bytes[i] & 0xff) >>> 4];
+                result[i * 2 + 1] = hex[bytes[i] & 15];
+            }
+            return new String(result);
         } catch (NoSuchAlgorithmException e) {
             throw new IllegalStateException(e);
         }
@@ -192,14 +335,16 @@ public class ContextArtifactStore {
         public final int chars;
         public final String projection;
         private final Path body;
+        private final Properties metadata;
 
-        private Artifact(String id, String toolName, String sha256, int chars, String projection, Path body) {
+        private Artifact(String id, String toolName, String sha256, int chars, String projection, Path body, Properties metadata) {
             this.id = id;
             this.toolName = toolName;
             this.sha256 = sha256;
             this.chars = chars;
             this.projection = projection;
             this.body = body;
+            this.metadata = metadata;
         }
     }
 }

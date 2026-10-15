@@ -15,6 +15,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.io.IOException;
+import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collection;
@@ -27,17 +28,29 @@ import java.util.Map;
 import java.util.Set;
 import java.util.TreeMap;
 
-/** Stateless projection: no execution caching and no rewrites of already-sent history. */
+/** No execution caching; sent history changes only at explicit inactive-task boundaries. */
 public class ToolResultContextInterceptor implements ReActInterceptor {
     private static final Logger LOG = LoggerFactory.getLogger(ToolResultContextInterceptor.class);
     private static final Set<String> TOOLS = Collections.unmodifiableSet(new HashSet<>(Arrays.asList(
             "read", "bash", "grep", "glob", "ls", "webfetch", "websearch", "codesearch", "lsp")));
     private final ContextArtifactStore store;
     private final ContextManagementOptions options;
+    private final ContextTaskStore tasks;
+    private final Path workspace;
+    private final ContextLifecyclePolicy lifecycle = new ContextLifecyclePolicy();
+    private static final String TASK_META = "context_task_id";
+    private static final String INVOCATION_META = "context_invocation_id";
 
     public ToolResultContextInterceptor(ContextArtifactStore store, ContextManagementOptions options) {
+        this(store, options, null, null);
+    }
+
+    public ToolResultContextInterceptor(ContextArtifactStore store, ContextManagementOptions options,
+                                        ContextTaskStore tasks, Path workspace) {
         this.store = store;
         this.options = options;
+        this.tasks = tasks;
+        this.workspace = workspace;
     }
 
     @Override
@@ -61,7 +74,7 @@ public class ToolResultContextInterceptor implements ReActInterceptor {
         String wireId = observation instanceof ToolMessage
                 ? ((ToolMessage) observation).getToolCallId()
                 : exchanger.getCallId();
-        String projection = project(trace, wireId, exchanger.getToolName(), content, reason, preview);
+        String projection = project(trace, wireId, exchanger.getToolName(), content, reason, preview, exchanger.getArgs());
         if (projection != null) exchanger.setResult(projection);
     }
 
@@ -103,13 +116,17 @@ public class ToolResultContextInterceptor implements ReActInterceptor {
                     && tool.getBlocks().stream().allMatch(block -> block instanceof TextBlock)
                     && isRawText(tool.getContent())) candidates.add(tool);
         }
-        if (totalChars <= options.batchResultChars) return;
+        if (totalChars <= options.batchResultChars) {
+            convergeTasks(trace, batchStart, toolCalls);
+            return;
+        }
         candidates.sort(Comparator.comparingInt((ToolMessage value) -> value.getContent().length()).reversed());
         Map<String, ToolMessage> replacements = new HashMap<>();
         for (ToolMessage tool : candidates) {
             if (totalChars <= options.batchResultChars) break;
+            ToolExchanger source = exchangersById.get(tool.getToolCallId());
             String projection = project(trace, tool.getToolCallId(), tool.getName(), tool.getContent(),
-                    "batch_result_limit", options.previewChars);
+                    "batch_result_limit", options.previewChars, source == null ? null : source.getArgs());
             if (projection == null) continue;
             ToolResult replacementResult = ToolResult.success(projection);
             if (tool.getMetadata() != null) tool.getMetadata().forEach((key, value) -> {
@@ -137,15 +154,90 @@ public class ToolResultContextInterceptor implements ReActInterceptor {
             trace.getWorkingMemory().replaceMessages(projected);
         }
         // Non-reducible results may exceed the soft budget. Existing compression remains the safety net.
+        convergeTasks(trace, batchStart, toolCalls);
+    }
+
+    /** Explicit task boundaries may rewrite old tool bodies; ordinary rounds keep sent history frozen. */
+    private void convergeTasks(ReActTrace trace, int batchStart, Collection<ToolExchanger> calls) {
+        if (tasks == null) return;
+        try {
+            String sessionId = trace.getSession().getSessionId();
+            String active = tasks.currentTaskId(sessionId);
+            List<ChatMessage> messages = trace.getWorkingMemory().getMessages();
+            boolean mixedSwitch = calls.stream().anyMatch(call -> "context_task_update".equals(call.getToolName()));
+            List<ChatMessage> view = new ArrayList<>(messages);
+            Map<String, String> states = new HashMap<>();
+            boolean changed = false;
+            for (int i = 0; i < messages.size(); i++) {
+                if (!(messages.get(i) instanceof ToolMessage)) continue;
+                ToolMessage tool = (ToolMessage) messages.get(i);
+                if (tool.isError() || tool.isReturnDirect() || tool.hasMetadata(AgentTrace.META_FIRST)
+                        || tool.isMultiModal() || !TOOLS.contains(tool.getName())
+                        || !tool.getBlocks().stream().allMatch(block -> block instanceof TextBlock)) continue;
+                if (i >= batchStart) {
+                    // Concurrent task switches and reads have ambiguous ownership: do not guess.
+                    if (!mixedSwitch && !active.isEmpty()) {
+                        tool.addMetadata(TASK_META, active);
+                        tool.addMetadata(INVOCATION_META, trace.getRunId() + ":" + trace.getCurrentTurnId() + ":" + tool.getToolCallId());
+                        if ("read".equals(tool.getName()) && isRawText(tool.getContent()) && tool.getContent().length() > 1000) {
+                            Map<String, String> source = new HashMap<>();
+                            for (ToolCall wire : trace.getLastReasonMessage().getToolCalls()) {
+                                if (!tool.getToolCallId().equals(wire.getId())) continue;
+                                for (ToolExchanger call : calls) {
+                                    if (wire.getUuid().equals(call.getCallId())) ContextSourceVersion.capture(workspace, call.getArgs(), source);
+                                }
+                            }
+                            source.forEach((key, value) -> tool.addMetadata("context_" + key, value));
+                        }
+                    }
+                    continue;
+                }
+                if (!isRawText(tool.getContent()) || tool.getMetadata() == null) continue;
+                Object owner = tool.getMetadata().get(TASK_META);
+                Object invocation = tool.getMetadata().get(INVOCATION_META);
+                if (!(owner instanceof String) || !(invocation instanceof String)) continue;
+                String taskId = (String) owner;
+                if (!states.containsKey(taskId)) states.put(taskId, tasks.state(sessionId, taskId));
+                String state = states.get(taskId);
+                if (!lifecycle.shouldArchive(taskId, active, state, tool.getContent().length())) continue;
+                Map<String, String> metadata = new HashMap<>();
+                metadata.put("taskId", taskId);
+                for (String key : new String[]{"sourcePath", "sourceHash", "sourceRange"}) {
+                    Object value = tool.getMetadata().get("context_" + key);
+                    if (value instanceof String) metadata.put(key, (String) value);
+                }
+                ContextArtifactStore.Artifact artifact = store.save(sessionId, invocation.toString(), tool.getName(),
+                        tool.getContent(), "task_" + state, Math.min(options.previewChars, 400), metadata);
+                if (artifact.projection.length() >= tool.getContent().length()) continue;
+                ToolMessage replacement = ChatMessage.ofTool(ToolResult.success(artifact.projection),
+                        tool.getName(), tool.getToolCallId(), false);
+                tool.getMetadata().forEach((key, value) -> {
+                    if (!"token_size".equals(key)) replacement.addMetadata(key, value);
+                });
+                view.set(i, replacement);
+                changed = true;
+            }
+            if (changed) trace.getWorkingMemory().replaceMessages(view);
+        } catch (IOException e) {
+            LOG.warn("Task context convergence failed; retaining original history ({})", e.getClass().getSimpleName());
+        }
     }
 
     private String project(ReActTrace trace, String invocationId, String tool, String content,
-                           String reason, int previewChars) {
+                           String reason, int previewChars, Map<String, Object> args) {
         try {
             // Some compatible providers reuse wire call IDs across turns. Scope by run and Reason.
             String scopedInvocation = trace.getRunId() + ":" + trace.getCurrentTurnId() + ":" + invocationId;
-            ContextArtifactStore.Artifact artifact = store.save(trace.getSession().getSessionId(),
-                    scopedInvocation, tool, content, reason, previewChars);
+            String sessionId = trace.getSession().getSessionId();
+            Map<String, String> metadata = new HashMap<>();
+            if (tasks != null) {
+                try { metadata.put("taskId", tasks.currentTaskId(sessionId)); }
+                catch (IOException ignored) { /* Task bookkeeping must not disable result governance. */ }
+            }
+            if ("read".equals(tool)) ContextSourceVersion.capture(workspace, args, metadata);
+            ContextArtifactStore.Artifact artifact = tasks == null && workspace == null
+                    ? store.save(sessionId, scopedInvocation, tool, content, reason, previewChars)
+                    : store.save(sessionId, scopedInvocation, tool, content, reason, previewChars, metadata);
             return artifact.projection.length() < content.length() ? artifact.projection : null;
         } catch (IOException e) {
             // Do not log payloads, arguments, or filesystem error messages containing user data.

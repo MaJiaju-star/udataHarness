@@ -9,6 +9,7 @@ import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class UsageAuditRepositoryTest {
     @TempDir
@@ -47,5 +48,18 @@ class UsageAuditRepositoryTest {
         assertEquals("model-a", reopened.list("alice", null).get(0).get("selectedModel"));
         assertEquals(0, reopened.list("bob", null).size());
         assertThrows(IllegalArgumentException.class, () -> reopened.list("../alice", null));
+    }
+
+    @Test
+    void recordsCompactionSeparatelyFromOrdinaryModelCalls() {
+        UsageAuditRepository audit = new UsageAuditRepository(tempDir);
+        audit.recordCompaction("alice", "ws", "web-session", "model-a", 600, 180, true, null);
+        Map<String, Object> record = audit.list("alice", "web-session").get(0);
+        assertEquals("compaction", record.get("scope"));
+        assertEquals(true, record.get("cacheAligned"));
+        assertTrue(((Number) record.get("beforeTokens")).longValue()
+                > ((Number) record.get("afterTokens")).longValue());
+        audit.recordCompactionFailure("alice", "ws", "web-session", "model-a", "empty_summary");
+        assertEquals("empty_summary", audit.list("alice", "web-session").get(1).get("reason"));
     }
 }

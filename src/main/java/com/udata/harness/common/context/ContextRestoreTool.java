@@ -5,15 +5,22 @@ import org.noear.solon.ai.chat.tool.AbsToolProvider;
 import org.noear.solon.annotation.Param;
 
 import java.io.IOException;
+import java.nio.file.Path;
 
 /** The session argument is injected by Harness, never selected by the model. */
 public class ContextRestoreTool extends AbsToolProvider {
     private final ContextArtifactStore store;
     private final int maxChars;
+    private final Path workspace;
 
     public ContextRestoreTool(ContextArtifactStore store, int maxChars) {
+        this(store, maxChars, null);
+    }
+
+    public ContextRestoreTool(ContextArtifactStore store, int maxChars, Path workspace) {
         this.store = store;
         this.maxChars = maxChars;
+        this.workspace = workspace;
     }
 
     @ToolMapping(name = "context_restore", description = "Restore a bounded character range from an archived tool-result snapshot in this session. Historical snapshots are not current workspace files. Use next_offset to page through the result.")
@@ -24,7 +31,12 @@ public class ContextRestoreTool extends AbsToolProvider {
         try {
             int requested = limit == null ? Math.min(4000, maxChars) : limit;
             if (requested <= 0) return "Invalid restore limit: must be positive.";
-            return store.restore(__sessionId, artifactId, offset == null ? 0 : offset, Math.min(requested, maxChars));
+            String restored = store.restore(__sessionId, artifactId, offset == null ? 0 : offset, Math.min(requested, maxChars));
+            if (workspace == null) return restored;
+            int newline = restored.indexOf('\n');
+            return restored.substring(0, newline) + "; "
+                    + ContextSourceVersion.status(workspace, store.metadata(__sessionId, artifactId))
+                    + restored.substring(newline);
         } catch (IOException e) {
             return "Context snapshot unavailable in this session, or invalid range. Re-read current workspace files when current content is needed.";
         }

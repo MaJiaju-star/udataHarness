@@ -44,6 +44,9 @@ class UserHarnessEngineServiceImplTest {
 
         assertNotNull(service.get("alice"));
         assertNotNull(service.get("alice").getMainAgent().getConfig().getDefaultOptions().getTool("context_restore"));
+        assertNotNull(service.get("alice").getMainAgent().getConfig().getDefaultOptions().getTool("context_search"));
+        assertNotNull(service.get("alice").getMainAgent().getConfig().getDefaultOptions().getTool("context_task_update"));
+        assertNotNull(service.get("alice").getMainAgent().getConfig().getDefaultOptions().getTool("context_task_snapshot"));
         org.junit.jupiter.api.Assertions.assertTrue(service.get("alice").getMainAgent().getConfig()
                 .getDefaultOptions().getInterceptors().stream()
                 .anyMatch(item -> item.target instanceof ToolResultContextInterceptor));
@@ -87,6 +90,8 @@ class UserHarnessEngineServiceImplTest {
         org.noear.solon.ai.agent.react.ReActOptions options = service.get("alice")
                 .getMainAgent().getConfig().getDefaultOptions();
         org.junit.jupiter.api.Assertions.assertNull(options.getTool("context_restore"));
+        org.junit.jupiter.api.Assertions.assertNull(options.getTool("context_search"));
+        org.junit.jupiter.api.Assertions.assertNull(options.getTool("context_task_update"));
         assertFalse(options.getInterceptors().stream()
                 .anyMatch(item -> item.target instanceof ToolResultContextInterceptor));
     }

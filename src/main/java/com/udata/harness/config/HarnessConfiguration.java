@@ -30,6 +30,9 @@ public class HarnessConfiguration {
     @Inject("${agent.data-dir:./data}")
     private String dataDir;
 
+    @Inject("${agent.context.compaction.mode:cache-aligned}")
+    private String compactionMode;
+
     /**
      * 创建会话仓储，数据文件位于 {@code <data-dir>/users}。
      *
@@ -37,7 +40,10 @@ public class HarnessConfiguration {
      */
     @Bean
     public SessionRepository sessionRepository() {
-        return new SessionRepository(resolve(dataDir));
+        if (!("cache-aligned".equals(compactionMode) || "legacy".equals(compactionMode))) {
+            throw new IllegalArgumentException("agent.context.compaction.mode must be cache-aligned or legacy");
+        }
+        return new SessionRepository(resolve(dataDir), "cache-aligned".equals(compactionMode));
     }
 
     @Bean

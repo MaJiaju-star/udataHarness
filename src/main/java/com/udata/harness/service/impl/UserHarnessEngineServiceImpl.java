@@ -3,10 +3,15 @@ package com.udata.harness.service.impl;
 import com.udata.harness.common.support.AntVChartTool;
 import com.udata.harness.common.support.ChartTool;
 import com.udata.harness.common.context.ContextArtifactStore;
+import com.udata.harness.common.context.CacheAlignedCompressionInterceptor;
 import com.udata.harness.common.context.ContextManagementOptions;
 import com.udata.harness.common.context.ContextRestoreTool;
+import com.udata.harness.common.context.ContextTaskStore;
+import com.udata.harness.common.context.ContextMemoryTool;
 import com.udata.harness.common.context.ToolResultContextInterceptor;
 import com.udata.harness.repository.SessionRepository;
+import com.udata.harness.repository.UsageAuditRepository;
+import org.noear.solon.ai.AiUsage;
 import com.udata.harness.service.UserHarnessEngineService;
 import com.udata.harness.service.UserWorkspaceService;
 import org.noear.solon.Solon;
@@ -66,6 +71,9 @@ public class UserHarnessEngineServiceImpl implements UserHarnessEngineService {
      */
     @Inject
     private SessionRepository sessionRepository;
+
+    @Inject
+    private UsageAuditRepository usageAuditRepository;
 
     /**
      * 用户工作区服务，用于解析用户当前激活的工作目录作为引擎工作区。
@@ -148,6 +156,18 @@ public class UserHarnessEngineServiceImpl implements UserHarnessEngineService {
      */
     @Inject("${agent.context.compression-max-context-ratio:0.75}")
     private double compressionMaxContextRatio;
+
+    @Inject("${agent.context.compaction.mode:cache-aligned}")
+    private String compactionMode = "cache-aligned";
+
+    @Inject("${agent.context.compaction.retain-ratio:0.16}")
+    private double compactionRetainRatio = 0.16D;
+
+    @Inject("${agent.context.compaction.threshold-ratio:0.8}")
+    private double compactionThresholdRatio = 0.8D;
+
+    @Inject("${agent.context.compaction.output-reserve:65536}")
+    private int compactionOutputReserve = 65536;
 
     @Inject("${agent.context.tool-results.enabled:true}")
     private boolean contextToolResultsEnabled = true;
@@ -431,11 +451,18 @@ public class UserHarnessEngineServiceImpl implements UserHarnessEngineService {
         ContextArtifactStore contextStore = contextToolResultsEnabled
                 ? new ContextArtifactStore(Paths.get(dataDir).resolve("users").resolve(userId)
                     .resolve("context-artifacts").resolve(workspaceId)) : null;
+        ContextTaskStore contextTasks = contextStore == null ? null : new ContextTaskStore(contextStore);
 
         //1. 工具、沙箱、HITL 和 Subagent 在引擎创建时一次性启用；会话级 cwd
         // 仍由 ChatService 每次运行时写入 toolContext。
         HarnessEngine.Builder builder = HarnessEngine.of(workspace.toString(), harnessHome)
-                .systemPrompt(systemPrompt)
+                .systemPrompt(systemPrompt + (contextToolResultsEnabled
+                        ? "\nContext management: record task focus and user constraints with context_task_update before substantial work. "
+                        + "Before switching modules, save conclusions, unresolved dependencies and verification evidence. "
+                        + "Old inactive-task tool results may be archived. After a context reset or revisiting a task, "
+                        + "use context_task_snapshot and context_search to recover facts, then context_restore for evidence. "
+                        + "Historical snapshots are not current files; revalidate changed sources. Never close a task without actual verification."
+                        : ""))
                 .maxTurns(maxTurns)
                 .sessionWindowSize(sessionWindowSize)
                 .modelRetries(modelMaxAttempts)
@@ -448,8 +475,9 @@ public class UserHarnessEngineServiceImpl implements UserHarnessEngineService {
                     agentBuilder.defaultToolAdd(ANTV_CHART_TOOL);
                     if (contextOptions != null) {
                         agentBuilder.defaultInterceptorAdd(1000,
-                                new ToolResultContextInterceptor(contextStore, contextOptions));
-                        agentBuilder.defaultToolAdd(new ContextRestoreTool(contextStore, contextOptions.restoreMaxChars));
+                                new ToolResultContextInterceptor(contextStore, contextOptions, contextTasks, workspace));
+                        agentBuilder.defaultToolAdd(new ContextRestoreTool(contextStore, contextOptions.restoreMaxChars, workspace));
+                        agentBuilder.defaultToolAdd(new ContextMemoryTool(contextStore, contextTasks));
                     }
                 })
                 .sandboxEnabled(isSandboxEnabled(userId))
@@ -461,6 +489,30 @@ public class UserHarnessEngineServiceImpl implements UserHarnessEngineService {
                 .hitlEnabled(true)
                 .subagentEnabled(true)
                 .bashAsyncEnabled(true);
+
+        if ("cache-aligned".equals(compactionMode)) {
+            builder.compressionInterceptor(new CacheAlignedCompressionInterceptor(
+                    compressionMaxMessages, compactionThresholdRatio,
+                    compactionRetainRatio, compactionOutputReserve,
+                    new CacheAlignedCompressionInterceptor.CompactionObserver() {
+                        @Override
+                        public void record(String sessionId, String model, long beforeTokens,
+                                           long afterTokens, boolean cacheAligned, AiUsage usage) {
+                            if (usageAuditRepository != null) {
+                                usageAuditRepository.recordCompaction(userId, workspaceId, sessionId,
+                                        model, beforeTokens, afterTokens, cacheAligned, usage);
+                            }
+                        }
+
+                        @Override
+                        public void failed(String sessionId, String model, String code) {
+                            if (usageAuditRepository != null) {
+                                usageAuditRepository.recordCompactionFailure(userId, workspaceId,
+                                        sessionId, model, code);
+                            }
+                        }
+                    }));
+        }
 
         //2. 从 app.yml 注册模型列表；未配置列表时保留旧单模型配置兼容性。
         List<ChatConfig> modelConfigs = loadModelConfigs();

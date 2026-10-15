@@ -12,6 +12,7 @@ import java.nio.file.Path;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class SessionRepositoryTest {
     @TempDir
@@ -33,6 +34,27 @@ class SessionRepositoryTest {
         assertFalse(reopened.list("alice").isEmpty());
         assertThrows(IllegalArgumentException.class,
                 () -> reopened.getSession("bob", created.getSessionId()));
+    }
+
+    @Test
+    void checkpointProjectsModelHistoryWithoutDeletingRawTranscript() throws IOException {
+        SessionRepository first = new SessionRepository(tempDir, true);
+        SessionMetadata created = first.create("alice", "Long task", "test-model");
+        CompactingFileAgentSession session = (CompactingFileAgentSession) first.getSession(created.getSessionId());
+        session.addMessage(ChatMessage.ofUser("first"));
+        session.addMessage(ChatMessage.ofAssistant("answer"));
+        session.checkpoints().save(session.getMessages(), 2, "<compacted-summary>facts</compacted-summary>", "test-model");
+        session.addMessage(ChatMessage.ofUser("latest"));
+
+        SessionRepository reopened = new SessionRepository(tempDir, true);
+        CompactingFileAgentSession loaded = (CompactingFileAgentSession) reopened.getSession(created.getSessionId());
+        assertEquals(3, loaded.getMessages().size());
+        assertEquals(2, loaded.getLatestMessages(200).size());
+        assertTrue(loaded.getLatestMessages(200).get(0).getContent().contains("facts"));
+        assertEquals("latest", loaded.getLatestMessages(200).get(1).getContent());
+        loaded.removeLatestMessage(2);
+        assertEquals(1, loaded.getLatestMessages(200).size());
+        assertEquals("first", loaded.getLatestMessages(200).get(0).getContent());
     }
 
     @Test

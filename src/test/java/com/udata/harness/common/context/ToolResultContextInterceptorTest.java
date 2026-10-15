@@ -154,6 +154,63 @@ class ToolResultContextInterceptorTest {
         assertEquals("ok", small.getResult());
     }
 
+    @Test
+    void taskSwitchArchivesOldBodiesWhilePreservingProtocolConstraintsAndRecovery() throws Exception {
+        ContextArtifactStore store = new ContextArtifactStore(directory);
+        ContextTaskStore tasks = new ContextTaskStore(store);
+        tasks.update("session-test", "A", "auth", "active", "Keep API", null, null, null);
+        ToolResultContextInterceptor interceptor = new ToolResultContextInterceptor(store,
+                new ContextManagementOptions(20000, 40000, 20, 4000), tasks, directory);
+        Trace trace = new Trace();
+        trace.reason = assistant(call("old", "read", Collections.emptyMap()));
+        ToolMessage body = ChatMessage.ofTool(ToolResult.success(repeat("code", 2000) + "EVIDENCE"), "read", "old", false);
+        body.addMetadata("token_size", 12345);
+        org.noear.solon.ai.chat.message.UserMessage constraint = ChatMessage.ofUser("Keep API");
+        trace.memory.addMessage(constraint, trace.reason, body);
+        interceptor.onActionEnd(trace, Collections.emptyList());
+        assertSame(body, trace.memory.getMessages().get(2)); // Same-task rounds keep original history.
+        tasks.update("session-test", "B", "orders", "active", null, null, null, null);
+        trace.reason = assistant(call("new", "grep", Collections.emptyMap()));
+        ToolMessage current = ChatMessage.ofTool(ToolResult.success("new body"), "grep", "new", false);
+        trace.memory.addMessage(trace.reason, current);
+        interceptor.onActionEnd(trace, Collections.emptyList());
+        assertSame(constraint, trace.memory.getMessages().get(0));
+        ToolMessage archived = (ToolMessage) trace.memory.getMessages().get(2);
+        assertEquals("old", archived.getToolCallId());
+        assertTrue(archived.getContent().contains("task_paused"));
+        assertFalse(archived.hasMetadata("token_size"));
+        assertSame(current, trace.memory.getMessages().get(4));
+        String search = store.search("session-test", "EVIDENCE", "A", null, 0, 5);
+        assertTrue(search.contains("matches=1"));
+        String id = search.substring(search.indexOf("artifact_id=") + 12, search.indexOf("artifact_id=") + 76);
+        assertTrue(store.restore("session-test", id, 8000, 8).endsWith("\nEVIDENCE"));
+    }
+
+    @Test
+    void closedTaskConvergenceRetainsErrorsProtectedResultsAndUnknownOwnership() throws Exception {
+        ContextArtifactStore store = new ContextArtifactStore(directory);
+        ContextTaskStore tasks = new ContextTaskStore(store);
+        tasks.update("session-test", "A", "auth", "active", null, null, null, null);
+        ToolResultContextInterceptor interceptor = new ToolResultContextInterceptor(store,
+                new ContextManagementOptions(20000, 40000, 20, 4000), tasks, directory);
+        Trace trace = new Trace();
+        trace.reason = assistant(call("safe", "bash", Collections.emptyMap()));
+        String text = repeat("log", 600);
+        ToolMessage safe = ChatMessage.ofTool(ToolResult.success(text), "bash", "safe", false);
+        ToolMessage error = ChatMessage.ofTool(ToolResult.error(text), "bash", "error", false);
+        ToolMessage protectedResult = ChatMessage.ofTool(ToolResult.success(text), "read", "protected", false);
+        protectedResult.addMetadata(AgentTrace.META_FIRST, true);
+        trace.memory.addMessage(trace.reason, safe, error, protectedResult);
+        interceptor.onActionEnd(trace, Collections.emptyList());
+        tasks.update("session-test", "A", null, "closed", null, "Fixed", "Tests passed", null);
+        trace.reason = assistant(call("new", "grep", Collections.emptyMap()));
+        trace.memory.addMessage(trace.reason, ChatMessage.ofTool(ToolResult.success("ok"), "grep", "new", false));
+        interceptor.onActionEnd(trace, Collections.emptyList());
+        assertTrue(trace.memory.getMessages().get(1).getContent().contains("task_closed"));
+        assertSame(error, trace.memory.getMessages().get(2));
+        assertSame(protectedResult, trace.memory.getMessages().get(3));
+    }
+
     static ToolExchanger exchange(String id, String tool, String text) {
         ToolExchanger value = new ToolExchanger(id, tool, Collections.<String, Object>singletonMap("file_path", "a.java"));
         value.setResult(text);

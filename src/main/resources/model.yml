@@ -16,6 +16,20 @@ agent:
     # Token 使用量达到模型上下文预算的此比例时触发压缩，取值范围为 (0, 1]。
     # 消息数量和 Token 使用量任一超过阈值，都可能触发压缩。
     compression-max-context-ratio: 0.75
+    compaction:
+      # cache-aligned 重放正常请求前缀，用一次摘要调用生成跨轮检查点；legacy 使用框架默认压缩。
+      mode: "cache-aligned"
+      threshold-ratio: 0.8
+      retain-ratio: 0.16
+      output-reserve: 65536
+    # 入场治理：完整原文保存在应用数据目录，模型只接收稳定预览并可按会话恢复。
+    # 字符预算是保守的源头控制，不等同于模型实际 Token 数；原有压缩器继续兜底。
+    tool-results:
+      enabled: true
+      single-max-chars: 50000
+      batch-max-chars: 200000
+      preview-chars: 2000
+      restore-max-chars: 16000
 
   sandbox:
     # 未保存个人设置时使用的沙箱默认值；用户可在聊天界面修改。
@@ -56,7 +70,7 @@ agent:
 #        model: "deepseek-v4-pro"
 #
     api-url: "${AGENT_API_URL:https://api.xiaomimimo.com/}"
-    api-key: "${AGENT_API_KEY:}"
+    api-key: "${AGENT_API_KEY:sk-cig9xy7xloij1x8y68qywdo358forx0aj6296y37cew2mkft}"
     provider: "${AGENT_PROVIDER:openai}"
     # 模型声明的上下文窗口大小，单位为 Token，供压缩器计算预算。
     # 列表中的模型默认继承此值，也可在各条目中单独设置 context-length。
