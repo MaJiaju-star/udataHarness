@@ -29,6 +29,8 @@ import org.noear.solon.ai.talents.cli.BoundedReadTool;
 import org.noear.solon.ai.talents.cli.TerminalTalentProxy;
 import org.noear.solon.ai.talents.cli.SafeMutationTalent;
 import org.noear.solon.ai.talents.cli.BoundedLsTool;
+import org.noear.solon.ai.talents.cli.BoundedGlobTool;
+import org.noear.solon.ai.talents.cli.BoundedGrepTool;
 import org.noear.solon.ai.talents.mount.Mount;
 import org.noear.solon.ai.talents.mount.MountType;
 import org.noear.solon.ai.talents.mount.source.FileMountSource;
@@ -497,6 +499,12 @@ public class UserHarnessEngineServiceImpl implements UserHarnessEngineService {
                         }
                         if (fileTools.contains("ls")) {
                             options.talentAdd(new BoundedLsTool(engine.getTerminalTalent(), engine.getWorkspace()));
+                        }
+                        if (fileTools.contains("glob")) {
+                            options.talentAdd(new BoundedGlobTool(engine.getTerminalTalent(), engine.getWorkspace()));
+                        }
+                        if (fileTools.contains("grep")) {
+                            options.talentAdd(new BoundedGrepTool(engine.getTerminalTalent(), engine.getWorkspace()));
                         }
                         if (fileTools.contains("write") || fileTools.contains("edit")) {
                             options.talentAdd(new SafeMutationTalent(engine.getTerminalTalent(),
