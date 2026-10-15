@@ -1,20 +1,26 @@
 agent:
-  # Root directory; each user works under <workspace>/<userId>.
+  # 默认工作区根目录；每个用户的默认工作区位于 <workspace>/<userId>。
   workspace: "${AGENT_WORKSPACE:./workspace}"
-  # Sessions and automations are stored under <data-dir>/users/<userId>.
+  # 应用数据根目录；用户会话和设置保存在 <data-dir>/users/<userId> 下。
   data-dir: "${AGENT_DATA_DIR:./data}"
+  # Harness 在工作区内使用的配置目录名称。
   harness-home: ".soloncode"
+  # 单次任务最多执行的 ReAct 轮数。
   max-turns: 100
   context:
-    # Restore at most this many recent persisted messages for each new request.
+    # 每次请求最多恢复最近 200 条历史消息；设为 0 时不自动加载历史消息。
+    # 这里统计消息条数，不是对话轮数；工具调用和工具结果也占消息条数。
     session-window-size: 200
-    # Compress a long-running ReAct trace when either limit is reached.
-    compression-max-messages: 160
+    # 消息数量压缩阈值，同时用于压缩后的保留窗口；避免大量短消息持续累积。
+    compression-max-messages: 1000
+    # Token 使用量达到模型上下文预算的此比例时触发压缩，取值范围为 (0, 1]。
+    # 消息数量和 Token 使用量任一超过阈值，都可能触发压缩。
     compression-max-context-ratio: 0.75
 
   sandbox:
-    # 新用户的默认值；用户可在聊天界面修改，选择会保存到 data-dir/users/<userId>。
-    enabled: "${AGENT_SANDBOX_ENABLED:true}"
+    # 未保存个人设置时使用的沙箱默认值；用户可在聊天界面修改。
+    # 个人设置保存在 <data-dir>/users/<userId>/settings.properties，并覆盖此默认值。
+    enabled: "${AGENT_SANDBOX_ENABLED:false}"
   tools:
     web:
       # 内网部署可设为 false，一次禁用 websearch、codesearch 和 webfetch。
@@ -24,39 +30,41 @@ agent:
       codesearch-enabled: "${AGENT_CODESEARCH_ENABLED:true}"
       webfetch-enabled: "${AGENT_WEBFETCH_ENABLED:true}"
 
+  # 主 Agent 的系统提示词。
   system-prompt: |
     You are UData Harness, a careful coding agent.
     Work only inside the configured workspace. Inspect before editing, preserve user changes,
     explain material decisions, and verify changes with relevant builds or tests.
   model:
+    # 默认模型名称，对应下方 models 中的 name；找不到时使用列表第一项。
     default: "deepseek-flash"
     retry:
-      # Total attempts, including the first request.
+      # 模型请求的总尝试次数，包含第一次请求。
       max-attempts: 3
-      # Base delay for exponential backoff with full jitter.
+      # 重试的基础等待时间，单位为毫秒；实际等待按指数退避并加入随机抖动。
       initial-delay-ms: 1000
-    api-url: "${AGENT_API_URL:https://api.deepseek.com}"
-    api-key: "${AGENT_API_KEY:sk-216497bffef942c09b250555bb4ac5ac}"
-    provider: "${AGENT_PROVIDER:openai}"
-    # Declared model context window. The framework reserves 20K tokens for the
-    # system prompt, then starts compression at 75% of the effective budget.
-    context-length: 1000000
-    # Add or remove list items to control the models exposed by the composer.
-    models:
-      - name: "deepseek-flash"
-        model: "deepseek-v4-flash"
-      - name: "deepseek-pro"
-        model: "deepseek-v4-pro"
-#
-#    api-url: "${AGENT_API_URL:https://api.xiaomimimo.com/}"
-#    api-key: "${AGENT_API_KEY:sk-cig9xy7xloij1x8y68qywdo358forx0aj6296y37cew2mkft}"
+#    api-url: "${AGENT_API_URL:https://api.deepseek.com}"
+#    api-key: "${AGENT_API_KEY:sk-216497bffef942c09b250555bb4ac5ac}"
 #    provider: "${AGENT_PROVIDER:openai}"
-#    # Declared model context window. The framework reserves 20K tokens for the
-#    # system prompt, then starts compression at 75% of the effective budget.
+#    # 模型声明的上下文窗口大小，单位为 Token，供压缩器计算预算。
 #    context-length: 1000000
-#    # Add or remove list items to control the models exposed by the composer.
+#    # 可选模型列表；增删条目即可调整聊天界面中可选择的模型。
 #    models:
-#      - name: "mimo-v2.6-flash"
-#        model: "mimo-v2.6-flash"
+#      - name: "deepseek-flash"
+#        model: "deepseek-v4-flash"
 #      - name: "deepseek-pro"
 #        model: "deepseek-v4-pro"
+#
+    api-url: "${AGENT_API_URL:https://api.xiaomimimo.com/}"
+    api-key: "${AGENT_API_KEY:}"
+    provider: "${AGENT_PROVIDER:openai}"
+    # 模型声明的上下文窗口大小，单位为 Token，供压缩器计算预算。
+    # 列表中的模型默认继承此值，也可在各条目中单独设置 context-length。
+    context-length: 1000000
+    # 可选模型列表；增删条目即可调整聊天界面中可选择的模型。
+    # name 是显示和选择用的名称，model 是发送给模型服务的实际标识。
+    models:
+      - name: "mimo-v2.6-flash"
+        model: "mimo-v2.6-flash"
+      - name: "mimo-v2.6-pro"
+        model: "mimo-v2.6-pro"
