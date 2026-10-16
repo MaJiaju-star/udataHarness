@@ -94,7 +94,7 @@ public final class BoundedLsTool extends AbsTalent {
      */
     @Override
     public String getInstruction(Prompt prompt) {
-        return "ls 默认先覆盖同级目录，并自动展开最多 12 项的小子树至第三级；大目录只给概览。recursive=true 详细列举三层；mode=flat 仅列当前层。已知文件名模式时直接用 glob。";
+        return "ls 默认以 ├──/└── 树形展示当前层，并自动展开最多 12 项的小子树至第三级；大目录只给概览。recursive=true 详细列举三层；mode=flat 仅列当前层。已知文件名模式时直接用 glob。";
     }
 
     /**
@@ -125,13 +125,13 @@ public final class BoundedLsTool extends AbsTalent {
      * @return 格式化列表（{@code [DIR]}/{@code [FILE]} 前缀）+ 页尾状态与续页游标；或错误字符串
      * @throws IOException 遍历文件树时发生 I/O 错误（调用方捕获转为会话错误）
      */
-    @ToolMapping(name = "ls", description = "列出目录。默认自适应浅层概览：优先展示同级目录，小子树展开到第三级，大目录收起。recursive=true 详细列举；mode=flat 保留单层列举。支持 after 续页。")
+    @ToolMapping(name = "ls", description = "列出目录。默认用 ├──/└── 树形概览：优先展示同级目录，小子树展开到第三级，大目录收起。recursive=true 详细列举；mode=flat 保留单层列举。支持 after 续页。")
     public String ls(
             @Param(value = "path", required = false, description = "目录相对路径或逻辑路径，默认当前工作区") String path,
             @Param(value = "recursive", required = false, description = "是否递归列出，最多三层") Boolean recursive,
             @Param(value = "show_hidden", required = false, description = "是否显示隐藏文件") Boolean showHidden,
             @Param(value = "after", required = false, description = "上一页返回的 after 游标") String after,
-            @Param(value = "limit", required = false, description = "最多返回条数，默认 200，最大 500") Integer limit,
+            @Param(value = "limit", required = false, description = "当前层最多返回条数，默认 200，最大 500；小子树展开另受有界限制") Integer limit,
             @Param(value = "mode", required = false, description = "auto（默认，自适应浅层概览）或 flat（只列当前层）；recursive=true 时使用详细递归列举") String mode,
             String __cwd) throws IOException {
         String selectedMode = mode == null || mode.isEmpty() ? "auto" : mode;
@@ -282,71 +282,115 @@ public final class BoundedLsTool extends AbsTalent {
         ordered.sort(Comparator.comparing(BoundedLsTool::autoKey));
         boolean hasMore = ordered.size() > pageSize;
         if (hasMore) ordered.remove(ordered.size() - 1);
-        String root = ".".equals(selectedPath) ? "" : selectedPath.replace('\\', '/').replaceAll("/+$", "") + "/";
-        StringBuilder output = new StringBuilder("当前层（目录优先；小目录自动展开）：\n");
-        List<Entry> rendered = new ArrayList<>();
-        String lastKey = null;
+        String root = ".".equals(selectedPath) ? "." : selectedPath.replace('\\', '/').replaceAll("/+$", "");
+        String heading = root + "/ （目录优先；小目录自动展开）\n";
+        List<RootView> views = new ArrayList<>();
+        int baseline = heading.length();
         for (Entry entry : ordered) {
-            String line = (entry.directory ? "[DIR] " : "[FILE] ") + root + entry.key
-                    + (entry.directory ? "/" : "") + "\n";
-            if (output.length() + line.length() > MAX_OUTPUT_CHARS - 512) {
+            DirectoryOverview overview = null;
+            if (entry.directory) {
+                try {
+                    overview = inspectSubtree(target.resolve(entry.key), workPath, policyRoot, showHidden);
+                } catch (IOException error) {
+                    overview = new DirectoryOverview();
+                    overview.failed = true;
+                }
+            }
+            RootView view = new RootView(entry, overview);
+            int length = rootLine(view, false, false).length();
+            if (baseline + length > MAX_OUTPUT_CHARS - 512) {
                 hasMore = true;
                 break;
             }
-            output.append(line);
-            rendered.add(entry);
-            lastKey = autoKey(entry);
+            baseline += length;
+            views.add(view);
         }
-        if (lastKey == null) return "错误：目录项路径过长，无法在输出上限内显示。";
-        int omittedOverview = 0;
-        boolean overviewBudgetExhausted = false;
-        for (Entry entry : rendered) {
-            if (!entry.directory) continue;
-            if (overviewBudgetExhausted) { omittedOverview++; continue; }
-            DirectoryOverview overview;
-            try {
-                overview = inspectSubtree(target.resolve(entry.key), workPath, policyRoot, showHidden);
-            } catch (IOException error) {
-                overview = new DirectoryOverview();
-                overview.failed = true;
+        if (views.isEmpty()) return "错误：目录项路径过长，无法在输出上限内显示。";
+        int remaining = MAX_OUTPUT_CHARS - 512 - baseline;
+        for (RootView view : views) {
+            if (view.overview == null || view.overview.large || view.overview.entries.isEmpty()) continue;
+            int extra = rootLine(view, false, true).length()
+                    + childTree(view.overview, false).length()
+                    - rootLine(view, false, false).length();
+            if (extra <= remaining) {
+                view.expanded = true;
+                remaining -= extra;
             }
-            String name = root + entry.key + "/";
-            StringBuilder block = new StringBuilder(name).append(": ");
-            if (overview.large) {
-                block.append("至少 ").append(SMALL_SUBTREE_ENTRIES + 1)
-                        .append(" 项（仅探查前 ").append(SMALL_SUBTREE_ENTRIES + 1)
-                        .append(" 项，未完整展开；样例：");
-                for (int i = 0; i < Math.min(3, overview.entries.size()); i++) {
-                    if (i > 0) block.append("、");
-                    Entry sample = overview.entries.get(i);
-                    block.append(sample.key).append(sample.directory ? "/" : "");
-                }
-                block.append("）；需要详情时对该路径使用 ls 或 glob。\n");
-            } else if (overview.entries.isEmpty()) {
-                block.append(overview.failed ? "读取不完整。\n" : "空目录。\n");
-            } else {
-                block.append("浅层 ").append(overview.entries.size()).append(" 项")
-                        .append(overview.failed ? "（读取不完整）" : "")
-                        .append(overview.hasDeeper ? "（更深层未扫描）" : "").append("：\n");
-                for (Entry child : overview.entries) {
-                    block.append("  ").append(child.directory ? "[DIR] " : "[FILE] ")
-                            .append(name).append(child.key)
-                            .append(child.directory ? "/" : "").append('\n');
-                }
-            }
-            if (output.length() + block.length() > MAX_OUTPUT_CHARS - 512) {
-                overviewBudgetExhausted = true;
-                omittedOverview++;
-            } else output.append(block);
         }
-        if (omittedOverview > 0) output.append("子目录展开因输出预算省略 ").append(omittedOverview)
-                .append(" 个；当前层目录名仍已列出，可针对路径继续 ls。\n");
+        StringBuilder output = new StringBuilder(heading);
+        for (int i = 0; i < views.size(); i++) {
+            RootView view = views.get(i);
+            boolean last = i == views.size() - 1 && !hasMore;
+            output.append(rootLine(view, last, view.expanded));
+            if (view.expanded) output.append(childTree(view.overview, last));
+        }
+        String lastKey = autoKey(views.get(views.size() - 1).entry);
         if (hasMore) output.append("--- [内容未完] ---\n继续列出请使用 after=")
                 .append(lastKey).append(", limit=").append(pageSize);
         else output.append("--- [目录列举完毕] ---");
         if (failures[0] > 0) output.append("\n警告：有 ").append(failures[0])
                 .append(" 个当前层路径读取失败，结果可能不完整。");
         return output.toString();
+    }
+
+    private static String rootLine(RootView view, boolean last, boolean expanded) {
+        StringBuilder line = new StringBuilder(last ? "└── " : "├── ")
+                .append(view.entry.key).append(view.entry.directory ? "/" : "");
+        DirectoryOverview overview = view.overview;
+        if (overview != null) {
+            if (overview.large) {
+                line.append(" [已收起：浅层至少 ").append(SMALL_SUBTREE_ENTRIES + 1).append(" 项；样例：");
+                for (int i = 0; i < Math.min(3, overview.entries.size()); i++) {
+                    if (i > 0) line.append("、");
+                    Entry sample = overview.entries.get(i);
+                    line.append(sample.key).append(sample.directory ? "/" : "");
+                }
+                line.append("]");
+            } else if (overview.entries.isEmpty()) {
+                line.append(overview.failed ? " [读取不完整]" : " [空目录]");
+            } else {
+                line.append(" [浅层 ").append(overview.entries.size()).append(" 项");
+                if (overview.hasDeeper) line.append("；更深层未扫描");
+                if (overview.failed) line.append("；读取不完整");
+                if (!expanded) line.append("；展开因输出预算省略");
+                line.append("]");
+            }
+        }
+        return line.append('\n').toString();
+    }
+
+    private static String childTree(DirectoryOverview overview, boolean parentLast) {
+        List<TreeNode> roots = new ArrayList<>();
+        for (Entry entry : overview.entries) {
+            String[] components = entry.key.split("/");
+            List<TreeNode> level = roots;
+            for (int index = 0; index < components.length; index++) {
+                String name = components[index];
+                TreeNode node = null;
+                for (TreeNode candidate : level) {
+                    if (candidate.name.equals(name)) { node = candidate; break; }
+                }
+                if (node == null) {
+                    node = new TreeNode(name, index < components.length - 1 || entry.directory);
+                    level.add(node);
+                }
+                level = node.children;
+            }
+        }
+        StringBuilder output = new StringBuilder();
+        appendTree(output, roots, parentLast ? "    " : "│   ");
+        return output.toString();
+    }
+
+    private static void appendTree(StringBuilder output, List<TreeNode> nodes, String prefix) {
+        nodes.sort(Comparator.comparing((TreeNode node) -> !node.directory).thenComparing(node -> node.name));
+        for (int i = 0; i < nodes.size(); i++) {
+            TreeNode node = nodes.get(i);
+            boolean last = i == nodes.size() - 1;
+            output.append(prefix).append(last ? "└── " : "├── ")
+                    .append(node.name).append(node.directory ? "/" : "").append('\n');
+            appendTree(output, node.children, prefix + (last ? "    " : "│   "));
+        }
     }
 
     private DirectoryOverview inspectSubtree(Path directory, Path workPath, Path policyRoot,
@@ -408,6 +452,28 @@ public final class BoundedLsTool extends AbsTalent {
         boolean large;
         boolean failed;
         boolean hasDeeper;
+    }
+
+    private static final class RootView {
+        final Entry entry;
+        final DirectoryOverview overview;
+        boolean expanded;
+
+        RootView(Entry entry, DirectoryOverview overview) {
+            this.entry = entry;
+            this.overview = overview;
+        }
+    }
+
+    private static final class TreeNode {
+        final String name;
+        final boolean directory;
+        final List<TreeNode> children = new ArrayList<>();
+
+        TreeNode(String name, boolean directory) {
+            this.name = name;
+            this.directory = directory;
+        }
     }
 
     /**
