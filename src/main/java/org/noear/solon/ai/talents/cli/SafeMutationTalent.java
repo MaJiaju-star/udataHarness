@@ -44,12 +44,28 @@ public final class SafeMutationTalent extends AbsTalent {
     private final Field diagnosticsHook;
     private final boolean canWrite;
     private final boolean canEdit;
+    private final SessionFileVersions fileVersions;
 
     public SafeMutationTalent(TerminalTalent terminal, String workspace, boolean canWrite, boolean canEdit) {
+        this(terminal, workspace, canWrite, canEdit, new SessionFileVersions());
+    }
+
+    /**
+     * 创建自动核对当前会话已读版本的修改工具。
+     *
+     * @param terminal 宿主终端工具
+     * @param workspace 默认工作目录
+     * @param canWrite 是否已授予 write 权限
+     * @param canEdit 是否已授予 edit 权限
+     * @param fileVersions 与 read 共享的会话版本记录
+     */
+    public SafeMutationTalent(TerminalTalent terminal, String workspace, boolean canWrite, boolean canEdit,
+                              SessionFileVersions fileVersions) {
         this.terminal = terminal;
         this.workspace = Paths.get(workspace).toAbsolutePath().normalize();
         this.canWrite = canWrite;
         this.canEdit = canEdit;
+        this.fileVersions = fileVersions;
         try {
             this.support = (TerminalSupport) field("support").get(terminal);
             this.mounts = (MountManager) field("mountManager").get(terminal);
@@ -67,7 +83,7 @@ public final class SafeMutationTalent extends AbsTalent {
 
     @Override
     public String getInstruction(Prompt prompt) {
-        return "本地 write 覆盖已有文件、edit 修改已有文件时，必须先 read 并传入输出中的 expected_sha256。版本冲突时重新 read，不要盲目重试。";
+        return "本地 write 覆盖已有文件、edit 修改已有文件时，必须先在本会话 read，后端自动维护和校验版本。读取结果返回后再发起修改；版本冲突时重新 read 并重新决定修改，不要盲目重试。";
     }
 
     @Override
@@ -78,12 +94,22 @@ public final class SafeMutationTalent extends AbsTalent {
         return getToolAry();
     }
 
-    @ToolMapping(name = "write", description = "创建文件或覆盖已有文件。本地已有文件必须提供最近 read 返回的 expected_sha256；使用同目录临时文件原子替换。")
+    /**
+     * 创建或覆盖文件，后端自动使用当前会话已读版本校验覆盖前提。
+     *
+     * @param filePath 目标路径
+     * @param content 完整文件内容
+     * @param __cwd 框架注入的工作目录
+     * @param __sessionId 框架注入的会话标识
+     * @param __fileVersionBatch 框架注入的工具批次标识
+     * @return 写入结果或版本冲突说明
+     * @throws IOException 文件操作失败
+     */
+    @ToolMapping(name = "write", description = "创建文件或覆盖已有文件。覆盖前须在本会话 read；后端自动核对已读版本，冲突时拒绝覆盖。使用同目录临时文件原子替换。")
     public String write(
             @Param(value = "file_path", description = "工作区相对路径或逻辑路径") String filePath,
             @Param(value = "content", description = "完整文件内容") String content,
-            @Param(value = "expected_sha256", required = false, description = "覆盖已有本地文件时必填：read 返回的文件版本 SHA-256") String expectedSha256,
-            String __cwd) throws IOException {
+            String __cwd, String __sessionId, String __fileVersionBatch) throws IOException {
         if (filePath == null || content == null) return "错误：file_path 和 content 均不能为空。";
         if (ToolResultPaths.isVirtual(filePath)) return "错误：@tool-results 是只读历史快照，不能写入。";
         if (isNonLocalVirtual(filePath)) return terminal.write(filePath, content, __cwd);
@@ -94,23 +120,36 @@ public final class SafeMutationTalent extends AbsTalent {
             boolean exists = Files.exists(target);
             if (exists && !Files.isRegularFile(target)) return "错误：目标不是普通文件。";
             if (Files.isSymbolicLink(target)) return "错误：不直接覆盖符号链接，请使用其真实路径。";
+            String expectedSha256 = fileVersions.expected(__sessionId, target, __fileVersionBatch);
             String conflict = checkVersion(target, expectedSha256, exists);
             if (conflict != null) return conflict;
             byte[] bytes = content.getBytes(StandardCharsets.UTF_8);
             atomicReplace(target, bytes, expectedSha256, exists, filePath, __cwd);
+            String writtenVersion = FileVersion.sha256(bytes);
+            fileVersions.remember(__sessionId, target, writtenVersion);
             return withDiagnostics("文件成功写入: " + filePath + "\n新文件版本 SHA-256: "
-                    + FileVersion.sha256(target), target);
+                    + writtenVersion, target);
         } finally {
             lock.unlock();
         }
     }
 
-    @ToolMapping(name = "edit", description = "按文本块编辑文件，自动保留原有 BOM 与换行风格。本地文件必须提供最近 read 返回的 expected_sha256；全部替换成功后才原子写入。")
+    /**
+     * 按文本块编辑文件，全部替换成功且会话已读版本仍匹配才落盘。
+     *
+     * @param filePath 目标路径
+     * @param edits 编辑操作
+     * @param __cwd 框架注入的工作目录
+     * @param __sessionId 框架注入的会话标识
+     * @param __fileVersionBatch 框架注入的工具批次标识
+     * @return 编辑结果或版本冲突说明
+     * @throws IOException 文件操作失败
+     */
+    @ToolMapping(name = "edit", description = "按文本块编辑文件，保留 BOM 与换行风格。须先在本会话 read；后端自动校验已读版本，全部替换成功后才原子写入。")
     public String edit(
             @Param(value = "file_path", description = "工作区相对路径或逻辑路径") String filePath,
             @Param(value = "edits", description = "编辑操作列表") List<TerminalTalent.EditOp> edits,
-            @Param(value = "expected_sha256", required = false, description = "必填：read 返回的文件版本 SHA-256") String expectedSha256,
-            String __cwd) throws IOException {
+            String __cwd, String __sessionId, String __fileVersionBatch) throws IOException {
         if (filePath == null || edits == null || edits.isEmpty()) return "错误：file_path 和 edits 均不能为空。";
         if (ToolResultPaths.isVirtual(filePath)) return "错误：@tool-results 是只读历史快照，不能编辑。";
         if (isNonLocalVirtual(filePath)) return terminal.edit(filePath, edits, __cwd);
@@ -120,6 +159,7 @@ public final class SafeMutationTalent extends AbsTalent {
         try {
             if (!Files.isRegularFile(target)) return "错误：文件不存在或不是普通文件。";
             if (Files.isSymbolicLink(target)) return "错误：不直接编辑符号链接，请使用其真实路径。";
+            String expectedSha256 = fileVersions.expected(__sessionId, target, __fileVersionBatch);
             String conflict = checkVersion(target, expectedSha256, true);
             if (conflict != null) return conflict;
             if (Files.size(target) > MAX_EDIT_BYTES) {
@@ -143,13 +183,45 @@ public final class SafeMutationTalent extends AbsTalent {
             }
             String result = hadBom ? TerminalSupport.UTF8_BOM + working : working;
             if (raw.equals(result)) return "文件未变化: " + filePath;
-            atomicReplace(target, result.getBytes(StandardCharsets.UTF_8), expectedSha256,
+            byte[] bytes = result.getBytes(StandardCharsets.UTF_8);
+            atomicReplace(target, bytes, expectedSha256,
                     true, filePath, __cwd);
+            String writtenVersion = FileVersion.sha256(bytes);
+            fileVersions.remember(__sessionId, target, writtenVersion);
             return withDiagnostics("文件 " + filePath + " 成功完成 " + edits.size()
-                    + " 处修改。\n新文件版本 SHA-256: " + FileVersion.sha256(target), target);
+                    + " 处修改。\n新文件版本 SHA-256: " + writtenVersion, target);
         } finally {
             lock.unlock();
         }
+    }
+
+    /**
+     * 供不经过 Agent 批次的直接调用方创建或覆盖文件。
+     *
+     * @param filePath 目标路径
+     * @param content 完整内容
+     * @param cwd 工作目录
+     * @param sessionId 会话标识
+     * @return 写入结果
+     * @throws IOException 文件操作失败
+     */
+    public String write(String filePath, String content, String cwd, String sessionId) throws IOException {
+        return write(filePath, content, cwd, sessionId, null);
+    }
+
+    /**
+     * 供不经过 Agent 批次的直接调用方编辑文件。
+     *
+     * @param filePath 目标路径
+     * @param edits 编辑操作
+     * @param cwd 工作目录
+     * @param sessionId 会话标识
+     * @return 编辑结果
+     * @throws IOException 文件操作失败
+     */
+    public String edit(String filePath, List<TerminalTalent.EditOp> edits, String cwd, String sessionId)
+            throws IOException {
+        return edit(filePath, edits, cwd, sessionId, null);
     }
 
     private Path resolve(String filePath, String cwd, boolean write) throws IOException {
@@ -170,8 +242,8 @@ public final class SafeMutationTalent extends AbsTalent {
     }
 
     private static String checkVersion(Path target, String expected, boolean exists) throws IOException {
-        if (exists && (expected == null || !expected.matches("(?i)[0-9a-f]{64}"))) {
-            return "版本冲突：已有文件必须提供 read 返回的 expected_sha256。";
+        if (exists && expected == null) {
+            return "版本冲突：本会话尚未读取该文件，请先 read，收到结果后再修改。";
         }
         if (!exists && expected != null) return "版本冲突：目标文件不存在，请重新确认路径。";
         if (exists && !FileVersion.sha256(target).equalsIgnoreCase(expected)) {

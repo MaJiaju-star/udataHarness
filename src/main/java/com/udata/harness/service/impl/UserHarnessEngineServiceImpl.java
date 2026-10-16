@@ -25,6 +25,7 @@ import org.noear.solon.ai.talents.lsp.LspServerParameters;
 import org.noear.solon.ai.talents.cli.BoundedReadTool;
 import org.noear.solon.ai.talents.cli.TerminalTalentProxy;
 import org.noear.solon.ai.talents.cli.SafeMutationTalent;
+import org.noear.solon.ai.talents.cli.SessionFileVersions;
 import org.noear.solon.ai.talents.cli.BoundedLsTool;
 import org.noear.solon.ai.talents.cli.BoundedGlobTool;
 import org.noear.solon.ai.talents.cli.BoundedGrepTool;
@@ -506,6 +507,7 @@ public class UserHarnessEngineServiceImpl implements UserHarnessEngineService {
         ContextArtifactStore contextStore = contextToolResultsEnabled
                 ? new ContextArtifactStore(Paths.get(dataDir).resolve("users").resolve(userId)
                     .resolve("context-artifacts").resolve(workspaceId)) : null;
+        SessionFileVersions fileVersions = new SessionFileVersions();
 
         //1. 工具、沙箱、HITL 和 Subagent 在引擎创建时一次性启用；会话级 cwd
         // 仍由 ChatService 每次运行时写入 toolContext。
@@ -553,7 +555,8 @@ public class UserHarnessEngineServiceImpl implements UserHarnessEngineService {
                         }
                         if (terminalTools.contains("read")) {
                             // Talents activate in insertion order; the later read replaces Solon's built-in one.
-                            options.talentAdd(new BoundedReadTool(engine.getTerminalTalent(), engine.getWorkspace(), contextStore));
+                            options.talentAdd(new BoundedReadTool(engine.getTerminalTalent(),
+                                    engine.getWorkspace(), contextStore, fileVersions));
                         }
                         if (terminalTools.contains("ls")) {
                             options.talentAdd(new BoundedLsTool(engine.getTerminalTalent(), engine.getWorkspace()));
@@ -569,9 +572,11 @@ public class UserHarnessEngineServiceImpl implements UserHarnessEngineService {
                         }
                         if (terminalTools.contains("write") || terminalTools.contains("edit")) {
                             options.talentAdd(new SafeMutationTalent(engine.getTerminalTalent(),
-                                    engine.getWorkspace(), terminalTools.contains("write"), terminalTools.contains("edit")));
+                                    engine.getWorkspace(), terminalTools.contains("write"),
+                                    terminalTools.contains("edit"), fileVersions));
                         }
                     });
+                    agentBuilder.defaultInterceptorAdd(-1000, fileVersions);
                     if (renderEchartEnabled) agentBuilder.defaultToolAdd(CHART_TOOL);
                     if (renderAntvChartEnabled) agentBuilder.defaultToolAdd(ANTV_CHART_TOOL);
                     if (contextOptions != null) {

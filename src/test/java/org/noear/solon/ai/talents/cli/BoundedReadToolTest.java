@@ -14,7 +14,9 @@ import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.attribute.FileTime;
 
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -110,6 +112,108 @@ class BoundedReadToolTest {
         assertTrue(reader.read("partial.java", null, null, null, "session-a").contains("offset=4001"));
         assertTrue(reader.read("partial.java", null, null, null, "session-a")
                 .contains("继续当前文件请用 offset=4001"));
+    }
+
+    @Test
+    void equivalentPathsAndDefaultRangesReuseTheSameFile() throws IOException {
+        ContextArtifactStore store = new ContextArtifactStore(workspace.resolve("artifacts"));
+        BoundedReadTool reader = cachedTool(store);
+        Files.write(workspace.resolve("alias.txt"), "original body\n".getBytes(StandardCharsets.UTF_8));
+
+        assertTrue(reader.read("alias.txt", null, null, null, "session-a").contains("original body"));
+        String reference = reader.read("./alias.txt", 1, BoundedReadTool.DEFAULT_LINES, null, "session-a");
+        assertTrue(reference.startsWith("<read-unchanged>"));
+        assertTrue(reference.contains("未发生变更，请参考本会话上次 read"));
+        assertFalse(reference.contains("original body"));
+        assertEquals(referenceId(reference), referenceId(
+                reader.read("@workspace/alias.txt", 1, BoundedReadTool.DEFAULT_LINES, null, "session-a")));
+        assertFalse(reader.read("alias.txt", 1, 1, null, "session-a").startsWith("<read-unchanged>"));
+    }
+
+    @Test
+    void contentChangeOutsideRequestedRangeInvalidatesReferenceEvenWithSameSizeAndTime() throws IOException {
+        BoundedReadTool reader = cachedTool(new ContextArtifactStore(workspace.resolve("artifacts")));
+        Path source = workspace.resolve("version.txt");
+        Files.write(source, "first\nold\n".getBytes(StandardCharsets.UTF_8));
+        FileTime modified = Files.getLastModifiedTime(source);
+        reader.read("version.txt", 1, 1, null, "session-a");
+        assertTrue(reader.read("version.txt", 1, 1, null, "session-a").startsWith("<read-unchanged>"));
+
+        Files.write(source, "first\nnew\n".getBytes(StandardCharsets.UTF_8));
+        Files.setLastModifiedTime(source, modified);
+        String fresh = reader.read("version.txt", 1, 1, null, "session-a");
+        assertFalse(fresh.startsWith("<read-unchanged>"));
+        assertTrue(fresh.contains("1 | first"));
+        assertTrue(fresh.contains(FileVersion.sha256(source)));
+        assertTrue(reader.read("version.txt", 1, 1, null, "session-a").startsWith("<read-unchanged>"));
+        assertTrue(reader.read("version.txt", 2, 1, null, "session-a").contains("2 | new"));
+    }
+
+    @Test
+    void missingSnapshotIsRebuiltBeforeReferencesResume() throws IOException {
+        ContextArtifactStore store = new ContextArtifactStore(workspace.resolve("artifacts"));
+        BoundedReadTool reader = cachedTool(store);
+        Files.write(workspace.resolve("repair.txt"), "recoverable\n".getBytes(StandardCharsets.UTF_8));
+        String first = reader.read("repair.txt", 1, 1, null, "session-a");
+        String oldId = referenceId(reader.read("repair.txt", 1, 1, null, "session-a"));
+        Files.delete(store.bodyPath("session-a", oldId));
+
+        assertEquals(first, reader.read("repair.txt", 1, 1, null, "session-a"));
+        String reference = reader.read("repair.txt", 1, 1, null, "session-a");
+        assertTrue(reference.startsWith("<read-unchanged>"));
+        assertFalse(oldId.equals(referenceId(reference)));
+        assertTrue(store.restore("session-a", referenceId(reference), 0, first.length()).endsWith(first));
+    }
+
+    @Test
+    void emptyFilesAreReferencedAndTheirLaterContentIsRead() throws IOException {
+        BoundedReadTool reader = cachedTool(new ContextArtifactStore(workspace.resolve("artifacts")));
+        Path source = Files.createFile(workspace.resolve("empty.txt"));
+        assertTrue(reader.read("empty.txt", null, null, null, "session-a").contains("文件内容为空"));
+        assertTrue(reader.read("empty.txt", null, null, null, "session-a").startsWith("<read-unchanged>"));
+        Files.write(source, "now populated\n".getBytes(StandardCharsets.UTF_8));
+        assertTrue(reader.read("empty.txt", null, null, null, "session-a").contains("1 | now populated"));
+    }
+
+    @Test
+    void failedArchivingAndInvalidRangesNeverBecomeReferences() throws IOException {
+        ContextArtifactStore failingStore = new ContextArtifactStore(workspace.resolve("artifacts")) {
+            @Override
+            public Artifact save(String sessionId, String invocationId, String toolName,
+                                 String content, String reason, int previewChars) throws IOException {
+                throw new IOException("Snapshot unavailable");
+            }
+        };
+        Files.write(workspace.resolve("failure.txt"), "keep body\n".getBytes(StandardCharsets.UTF_8));
+        BoundedReadTool reader = cachedTool(failingStore);
+        assertTrue(reader.read("failure.txt", 1, 1, null, "session-a").contains("1 | keep body"));
+        assertTrue(reader.read("failure.txt", 1, 1, null, "session-a").contains("1 | keep body"));
+
+        BoundedReadTool healthy = cachedTool(new ContextArtifactStore(workspace.resolve("healthy")));
+        assertTrue(healthy.read("failure.txt", 10, 1, null, "session-a").startsWith("错误："));
+        assertTrue(healthy.read("failure.txt", 10, 1, null, "session-a").startsWith("错误："));
+    }
+
+    /**
+     * 创建带会话快照仓储的读取工具。
+     *
+     * @param store 快照仓储
+     * @return 读取工具
+     */
+    private BoundedReadTool cachedTool(ContextArtifactStore store) {
+        return new BoundedReadTool(new TerminalTalent(new MountManager(workspace.toString())),
+                workspace.toString(), store);
+    }
+
+    /**
+     * 从工具引用中取出可恢复的快照 ID。
+     *
+     * @param reference 未变化读取的工具结果
+     * @return 快照 ID
+     */
+    private static String referenceId(String reference) {
+        int start = reference.indexOf("@tool-results/") + "@tool-results/".length();
+        return reference.substring(start, reference.indexOf(".txt", start));
     }
 
     @Test

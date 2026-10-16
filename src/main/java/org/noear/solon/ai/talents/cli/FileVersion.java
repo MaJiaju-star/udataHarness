@@ -11,7 +11,7 @@ import java.security.NoSuchAlgorithmException;
  * Streaming content fingerprint used as an optimistic write precondition.
  *
  * <p>辅助 {@link SafeMutationTalent} 实现“先比对、后写入”的乐观并发控制：编辑方把写入前读到的
- * 内容摘要（{@link #sha256(Path)}）作为 preImageVersion 与请求一并提交，保存时重新计算磁盘上的
+ * 内容摘要（{@link #sha256(Path)}）由后端按会话保存，修改工具取出该摘要并重新计算磁盘上的
  * 当前摘要，两者不一致即说明文件在此期间被他人改动，可据此拒绝盲写、要求模型先重新读取。</p>
  *
  * <p>设计要点：</p>
@@ -61,8 +61,32 @@ final class FileVersion {
             int count;
             while ((count = stream.read(buffer)) != -1) digest.update(buffer, 0, count);
         }
+        return hex(digest.digest());
+    }
+
+    /**
+     * 计算本工具准备写入的确定字节版本，避免写后重读误记录外部修改。
+     *
+     * @param content 实际写入的字节
+     * @return SHA-256 摘要
+     */
+    static String sha256(byte[] content) {
+        try {
+            return hex(MessageDigest.getInstance("SHA-256").digest(content));
+        } catch (NoSuchAlgorithmException e) {
+            throw new IllegalStateException("SHA-256 unavailable", e);
+        }
+    }
+
+    /**
+     * 将摘要编码为小写十六进制。
+     *
+     * @param digest 摘要字节
+     * @return 十六进制字符串
+     */
+    private static String hex(byte[] digest) {
         StringBuilder hex = new StringBuilder(64);
-        for (byte b : digest.digest()) hex.append(String.format("%02x", b & 0xff));
+        for (byte b : digest) hex.append(String.format("%02x", b & 0xff));
         return hex.toString();
     }
 }

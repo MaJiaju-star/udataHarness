@@ -19,6 +19,7 @@ import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.LinkedHashMap;
 import java.util.Map;
+import java.util.UUID;
 import java.util.function.Consumer;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -65,6 +66,7 @@ public final class BoundedReadTool extends AbsTalent {
     private final Path workspace;
     private final ToolResultPaths toolResults;
     private final ContextArtifactStore artifactStore;
+    private final SessionFileVersions fileVersions;
     private final Map<String, CachedRead> snapshots = new LinkedHashMap<>(64, .75f, true);
 
     /**
@@ -84,10 +86,24 @@ public final class BoundedReadTool extends AbsTalent {
     }
 
     public BoundedReadTool(TerminalTalent terminal, String workspace, ContextArtifactStore store) {
+        this(terminal, workspace, store, new SessionFileVersions());
+    }
+
+    /**
+     * 创建与修改工具共享会话版本记录的读取工具。
+     *
+     * @param terminal 宿主终端工具
+     * @param workspace 默认工作目录
+     * @param store 历史快照仓储，可为 null
+     * @param fileVersions 当前工作区的会话版本记录
+     */
+    public BoundedReadTool(TerminalTalent terminal, String workspace, ContextArtifactStore store,
+                           SessionFileVersions fileVersions) {
         this.terminal = terminal;
         this.workspace = Paths.get(workspace).toAbsolutePath().normalize();
         this.toolResults = new ToolResultPaths(store);
         this.artifactStore = store;
+        this.fileVersions = fileVersions;
         try {
             Field field = TerminalTalent.class.getDeclaredField("support");
             field.setAccessible(true);
@@ -186,6 +202,7 @@ public final class BoundedReadTool extends AbsTalent {
         Path target = support.resolveSafePath(workPath, filePath, false,
                 terminal.isSandboxEnabled(), false, null);
         if (!Files.exists(target)) {
+            fileVersions.remember(__sessionId, target, null);
             return "错误：文件不存在";
         }
         if (!Files.isRegularFile(target)) {
@@ -195,38 +212,40 @@ public final class BoundedReadTool extends AbsTalent {
             return "错误：该文件是二进制格式，无法作为文本读取。";
         }
         long fileSize = Files.size(target);
-        if (fileSize == 0) {
-            return "(文件内容为空)\n文件版本 SHA-256: " + FileVersion.sha256(target);
-        }
+        //1. 按会话、文件真实路径和归一化后的读取范围查找上次结果。
         String beforeVersion = fileSize <= MAX_VERSIONED_BYTES ? FileVersion.sha256(target) : null;
         String cacheKey = beforeVersion == null || artifactStore == null || __sessionId == null
                 || __sessionId.isEmpty() ? null
-                : __sessionId + '\0' + target.toAbsolutePath().normalize() + '\0'
-                + filePath + '\0' + start + '\0' + count;
+                : __sessionId + '\0' + target.toRealPath() + '\0' + start + '\0' + count;
         if (cacheKey != null) {
             CachedRead cached;
             synchronized (snapshots) { cached = snapshots.get(cacheKey); }
             if (cached != null && beforeVersion.equals(cached.version)) {
                 try {
                     artifactStore.load(__sessionId, cached.artifactId);
+                    fileVersions.remember(__sessionId, target, beforeVersion);
                     return unchanged(filePath, start, count, cached);
                 } catch (IOException ignored) {
                     synchronized (snapshots) { snapshots.remove(cacheKey); }
                 }
             }
         }
-        String output = readWindow(target, filePath, start, count, fileSize);
+        //2. 文件变化或快照不可恢复时读取最新正文，并检查读取期间的变化。
+        String output = fileSize == 0 ? "(文件内容为空)"
+                : readWindow(target, filePath, start, count, fileSize);
         if (beforeVersion != null) {
             if (!beforeVersion.equals(FileVersion.sha256(target))) {
                 return "错误：文件在读取期间发生变化，请重新读取。";
             }
-            output += "\n文件版本 SHA-256: " + beforeVersion
-                    + "（覆盖或编辑时传 expected_sha256）";
+            output += "\n文件版本 SHA-256: " + beforeVersion + "（后端自动校验修改前提）";
         }
+        if (output.startsWith("错误：")) return output;
+        fileVersions.remember(__sessionId, target, beforeVersion);
         warmup(target);
+        //3. 只有成功落盘的正文才能成为后续引用；新快照允许修复丢失的旧快照。
         if (cacheKey != null) {
             try {
-                String invocation = "read-cache:v1:" + cacheKey + ':' + beforeVersion;
+                String invocation = "read-cache:v2:" + UUID.randomUUID();
                 ContextArtifactStore.Artifact artifact = artifactStore.save(
                         __sessionId, invocation, "read", output, "unchanged_read_reference", 0);
                 Matcher next = NEXT_OFFSET.matcher(output);
@@ -244,10 +263,19 @@ public final class BoundedReadTool extends AbsTalent {
         return output;
     }
 
+    /**
+     * 返回上次成功读取的引用，不重发文件正文。
+     *
+     * @param path 当前请求中的文件路径
+     * @param offset 归一化后的起始行
+     * @param limit 归一化后的行数上限
+     * @param cached 已确认可恢复的读取快照
+     * @return 简短引用、文件版本与原续页提示
+     */
     private static String unchanged(String path, int offset, int limit, CachedRead cached) {
         return "<read-unchanged>\n文件 " + path + " 的 offset=" + offset + ", limit=" + limit
-                + " 与本会话先前读取的内容相同；文件版本 SHA-256: " + cached.version + "。\n"
-                + "复用已有正文；若它已不在上下文中，可用 read(file_path=\"@tool-results/"
+                + " 未发生变更，请参考本会话上次 read 的结果；文件版本 SHA-256: " + cached.version + "。\n"
+                + "若上次正文已不在上下文中，可用 read(file_path=\"@tool-results/"
                 + cached.artifactId + ".txt\") 读取完整历史快照。"
                 + (cached.nextOffset > 0 ? "\n原读取未完；继续当前文件请用 offset=" + cached.nextOffset + "。" : "")
                 + "\n</read-unchanged>";

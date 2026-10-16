@@ -21,10 +21,11 @@ import static org.junit.jupiter.api.Assertions.assertSame;
 
 class SafeMutationTalentTest {
     @TempDir Path workspace;
+    private final SessionFileVersions versions = new SessionFileVersions();
 
     private SafeMutationTalent tool() {
         return new SafeMutationTalent(new TerminalTalent(new MountManager(workspace.toString())),
-                workspace.toString(), true, true);
+                workspace.toString(), true, true, versions);
     }
 
     @Test
@@ -42,18 +43,21 @@ class SafeMutationTalentTest {
     }
 
     @Test
-    void createsFilesButRequiresVersionToOverwrite() throws IOException {
+    void automaticallyTracksOwnWritesAndRejectsOtherSessionsAndExternalChanges() throws IOException {
         SafeMutationTalent tool = tool();
         Path target = workspace.resolve("example.txt");
-        assertTrue(tool.write("example.txt", "one", null, null).contains("成功"));
-        assertTrue(tool.write("example.txt", "two", null, null).contains("版本冲突"));
-        assertEquals("one", read(target));
-
-        String version = FileVersion.sha256(target);
-        assertTrue(tool.write("example.txt", "two", version, null).contains("成功"));
+        assertTrue(tool.write("example.txt", "one", null, "session-a").contains("成功"));
+        assertTrue(tool.write("example.txt", "two", null, "session-b").contains("版本冲突"));
+        assertTrue(tool.write("example.txt", "two", null, "session-a").contains("成功"));
         assertEquals("two", read(target));
-        assertTrue(tool.write("example.txt", "three", version, null).contains("版本冲突"));
-        assertEquals("two", read(target));
+        Files.write(target, "external".getBytes(StandardCharsets.UTF_8));
+        assertTrue(tool.write("example.txt", "three", null, "session-a").contains("版本冲突"));
+        reader().read("example.txt", null, null, null, "session-b");
+        assertTrue(tool.write("example.txt", "three", null, "session-a").contains("版本冲突"));
+        assertEquals("external", read(target));
+        reader().read("./example.txt", null, null, null, "session-a");
+        assertTrue(tool.write("example.txt", "three", null, "session-a").contains("成功"));
+        assertEquals("three", read(target));
     }
 
     @Test
@@ -63,13 +67,65 @@ class SafeMutationTalentTest {
         SafeMutationTalent tool = tool();
         TerminalTalent.EditOp first = edit("first", "updated", 1);
         TerminalTalent.EditOp bad = edit("missing", "nope", 2);
-        String version = FileVersion.sha256(target);
+        reader().read("edit.txt", null, null, null, "session-a");
 
-        assertTrue(tool.edit("edit.txt", Arrays.asList(first, bad), version, null).contains("编辑失败"));
+        assertTrue(tool.edit("edit.txt", Arrays.asList(first, bad), null, "session-a").contains("编辑失败"));
         assertEquals("\uFEFFfirst\r\nsecond\r\n", read(target));
-        assertTrue(tool.edit("edit.txt", Arrays.asList(first), version, null).contains("成功"));
+        assertTrue(tool.edit("edit.txt", Arrays.asList(first), null, "session-a").contains("成功"));
         assertEquals("\uFEFFupdated\r\nsecond\r\n", read(target));
-        assertTrue(tool.edit("edit.txt", Arrays.asList(first), version, null).contains("版本冲突"));
+        assertTrue(tool.edit("edit.txt", Arrays.asList(edit("second", "next", 2)), null,
+                "session-a").contains("成功"));
+        Files.write(target, "external\r\nnext\r\n".getBytes(StandardCharsets.UTF_8));
+        assertTrue(tool.edit("edit.txt", Arrays.asList(edit("next", "last", 2)), null,
+                "session-a").contains("版本冲突"));
+    }
+
+    @Test
+    void rereadingInSameBatchCannotAuthorizeAnAlreadyGeneratedEdit() throws IOException {
+        Path target = workspace.resolve("batch.txt");
+        Files.write(target, "old".getBytes(StandardCharsets.UTF_8));
+        reader().read("batch.txt", 1, 1, null, "session-a");
+        versions.beginBatch("session-a", "turn-1");
+        Files.write(target, "external".getBytes(StandardCharsets.UTF_8));
+        reader().read("batch.txt", 1, 1, null, "session-a");
+        versions.beginBatch("session-a", "turn-1"); // 同批审批恢复不得重新冻结新版本。
+
+        assertTrue(tool().write("batch.txt", "overwrite", null, "session-a", "turn-1")
+                .contains("版本冲突"));
+        assertEquals("external", read(target));
+
+        versions.beginBatch("session-a", "turn-2");
+        assertTrue(tool().write("batch.txt", "accepted", null, "session-a", "turn-2")
+                .contains("成功"));
+        assertTrue(tool().write("batch.txt", "second same batch", null, "session-a", "turn-2")
+                .contains("版本冲突"));
+        versions.beginBatch("session-a", "turn-3");
+        assertTrue(tool().write("batch.txt", "next turn", null, "session-a", "turn-3")
+                .contains("成功"));
+    }
+
+    @Test
+    void existingFilesRequireAReadAndDeletedFilesCannotBeSilentlyRecreated() throws IOException {
+        Path target = workspace.resolve("existing.txt");
+        Files.write(target, "existing".getBytes(StandardCharsets.UTF_8));
+        assertTrue(tool().edit("existing.txt", Arrays.asList(edit("existing", "new", 1)),
+                null, "session-a").contains("尚未读取"));
+        reader().read("existing.txt", 1, 1, null, "session-a");
+        Files.delete(target);
+        assertTrue(tool().write("existing.txt", "stale write", null, "session-a").contains("版本冲突"));
+        assertFalse(Files.exists(target));
+        assertTrue(reader().read("existing.txt", 1, 1, null, "session-a").contains("不存在"));
+        assertTrue(tool().write("existing.txt", "create again", null, "session-a").contains("成功"));
+    }
+
+    /**
+     * 构造与修改工具共享版本记录的读取工具。
+     *
+     * @return 当前工作区读取工具
+     */
+    private BoundedReadTool reader() {
+        return new BoundedReadTool(new TerminalTalent(new MountManager(workspace.toString())),
+                workspace.toString(), null, versions);
     }
 
     @Test
