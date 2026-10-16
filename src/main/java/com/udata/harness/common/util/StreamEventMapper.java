@@ -201,6 +201,13 @@ public final class StreamEventMapper {
             event.put("toolName", observation.getToolName());
             event.put("args", observation.getArgs());
             event.put("durationMs", observation.getDurationMs());
+            if (observation.getResult() != null) {
+                // 只传 UI 所需字段，文件版本等其他内部元数据保持不可见。
+                for (String key : new String[]{"editDiff", "bashOutput"}) {
+                    Object value = observation.getResult().getMetadata().get(key);
+                    if (value instanceof Map) event.put(key, value);
+                }
+            }
             if (observation.getError() != null) {
                 event.put("error", observation.getError().getMessage());
             }

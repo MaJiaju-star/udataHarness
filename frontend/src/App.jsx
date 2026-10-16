@@ -327,6 +327,8 @@ function mergeSubagentTool(tools, activities, event) {
             generating: false,
             durationMs: event.durationMs,
             output: event.error || event.content,
+            editDiff: event.editDiff,
+            bashOutput: event.bashOutput,
             error: Boolean(event.error)
         };
         ensureActivity(nextTools[index].callId);
@@ -1126,7 +1128,8 @@ function App() {
                 const index = next.tools.findIndex(tool => event.callId ? tool.callId === event.callId : tool.running);
                 if (index >= 0) next.tools[index] = {
                     ...next.tools[index], running: false, durationMs: event.durationMs,
-                    output: event.error || event.content, error: Boolean(event.error)
+                    output: event.error || event.content, error: Boolean(event.error),
+                    editDiff: event.editDiff, bashOutput: event.bashOutput
                 };
                 if (index >= 0 && isTodoTool(next.tools[index].name)) {
                     ensureTodoActivity(next.tools[index].callId);
@@ -2502,7 +2505,7 @@ function ToolCall({tool}) {
     const details = tool.executionStarted
         ? JSON.stringify(tool.args || {}, null, 2)
         : tool.argsText || "";
-    const showDetails = Boolean(details || tool.output);
+    const showDetails = Boolean(details || tool.output || tool.editDiff);
     return <>
         <div className={`tool-call ${tool.generating ? "generating" : ""} ${tool.error ? "error" : ""}`}>
             <button onClick={() => setOpen(value => !value)}>
@@ -2515,6 +2518,7 @@ function ToolCall({tool}) {
             {open && showDetails && <pre className={tool.generating ? "streaming-args" : ""}>
                 {details}{tool.output ? `\n\n${tool.output}` : ""}
             </pre>}
+            {open && tool.editDiff && <EditDiffView diff={tool.editDiff}/>}
         </div>
         {tool.name === "render_chart" && !tool.running && <ChartCard spec={chartSpec}/>}
         {tool.name === "render_echart" && !tool.running &&
@@ -2526,6 +2530,23 @@ function ToolCall({tool}) {
                 <AntVChartCard tool={tool}/>
             </Suspense>}
     </>;
+}
+
+function EditDiffView({diff}) {
+    const patch = typeof diff.patch === "string" ? diff.patch : "";
+    return <section className="edit-diff" aria-label="本次编辑差异">
+        <div className="edit-diff-summary">
+            <span>{diff.filePath} · 首个修改行 {diff.firstChangedLine}</span>
+            <span><b className="diff-add">+{diff.addedLines}</b> / <b className="diff-remove">-{diff.deletedLines}</b></span>
+        </div>
+        {diff.coarse && <p>大文件使用合并差异块，统计包含块内未变行。</p>}
+        <pre>{patch.split("\n").map((line, index) => <span key={index}
+            className={line.startsWith("@@") ? "diff-hunk" : line.startsWith("+") ? "diff-add"
+                : line.startsWith("-") ? "diff-remove" : ""}>{line || " "}</span>)}</pre>
+        {diff.truncated && <p>补丁预览已截断。{diff.patchPath
+            ? <>完整补丁：<code>{diff.patchPath}</code>（可使用 read 分页查看）</>
+            : diff.archiveError || "完整补丁未归档。"}</p>}
+    </section>;
 }
 
 function HitlCard({event, onDecide}) {

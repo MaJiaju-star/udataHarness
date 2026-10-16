@@ -32,6 +32,93 @@ public class ContextArtifactStore {
         this.root = root.toAbsolutePath().normalize();
     }
 
+    /**
+     * 创建会话隔离的流式文本归档，提交前不会被 read/grep 当作完整快照。
+     *
+     * @param sessionId 所属会话
+     * @param invocationId 唯一调用标识
+     * @param toolName 工具名称
+     * @return 调用方须关闭的流式归档
+     * @throws IOException 无法创建归档
+     */
+    public StreamingArtifact beginStream(String sessionId, String invocationId, String toolName) throws IOException {
+        requireSession(sessionId);
+        return new StreamingArtifact(sessionId, invocationId, toolName);
+    }
+
+    /** 增量写入 UTF-8 文本与摘要，内存不随完整日志大小增长。 */
+    public final class StreamingArtifact implements java.io.Closeable {
+        private final String sessionId, id, invocationId, toolName;
+        private final Path temporary, directory;
+        private final MessageDigest hash;
+        private final java.io.Writer writer;
+        private int chars;
+        private boolean closed;
+
+        private StreamingArtifact(String sessionId, String invocationId, String toolName) throws IOException {
+            this.sessionId = sessionId;
+            this.invocationId = invocationId;
+            this.toolName = toolName;
+            this.id = digest(invocationId);
+            this.directory = sessionDirectory(sessionId);
+            Files.createDirectories(directory);
+            if (Files.exists(directory.resolve(id + ".properties"))) {
+                throw new IOException("Stream invocation already committed");
+            }
+            this.temporary = Files.createTempFile(directory, "stream-", ".tmp");
+            try { this.hash = MessageDigest.getInstance("SHA-256"); }
+            catch (NoSuchAlgorithmException e) { throw new IllegalStateException(e); }
+            this.writer = new java.io.BufferedWriter(new java.io.OutputStreamWriter(
+                    new java.security.DigestOutputStream(Files.newOutputStream(temporary), hash), StandardCharsets.UTF_8));
+        }
+
+        /**
+         * 追加解码后的文本，调用方负责存储配额和执行超时。
+         *
+         * @param text 本次增量文本
+         * @throws IOException 归档已关闭或写入失败
+         */
+        public void append(String text) throws IOException {
+            if (closed) throw new IOException("Stream artifact is closed");
+            writer.write(text);
+            chars += text.length();
+        }
+
+        /**
+         * 关闭正文后提交元数据，使完整或显式不完整的日志都可分页恢复。
+         *
+         * @param complete 是否读到命令正常结束的 EOF
+         * @return 已提交归档
+         * @throws IOException 提交失败
+         */
+        public Artifact finish(boolean complete) throws IOException {
+            writer.close();
+            closed = true;
+            commit(temporary, directory.resolve(id + ".txt"));
+            StringBuilder hex = new StringBuilder();
+            for (byte value : hash.digest()) hex.append(String.format("%02x", value & 0xff));
+            Properties values = new Properties();
+            values.setProperty("tool", toolName);
+            values.setProperty("invocationId", invocationId);
+            values.setProperty("sha256", hex.toString());
+            values.setProperty("chars", Integer.toString(chars));
+            values.setProperty("reason", complete ? "stream_output" : "stream_output_incomplete");
+            values.setProperty("captureComplete", Boolean.toString(complete));
+            values.setProperty("createdAt", Long.toString(System.currentTimeMillis()));
+            values.setProperty("projection", "流式命令日志：read(file_path=\"@tool-results/" + id + ".txt\")");
+            writeProperties(directory.resolve(id + ".properties"), values);
+            recordAction(sessionId, "archive", id, values.getProperty("reason"), chars);
+            return load(sessionId, id);
+        }
+
+        /** 关闭未提交的流并清理临时文件；已提交正文保持不变。 */
+        @Override
+        public void close() throws IOException {
+            try { if (!closed) writer.close(); }
+            finally { closed = true; Files.deleteIfExists(temporary); }
+        }
+    }
+
     /** Commit content before metadata. An incomplete write never authorizes removal. */
     public synchronized Artifact save(String sessionId, String invocationId, String toolName,
                                       String content, String reason, int previewChars) throws IOException {
@@ -87,7 +174,7 @@ public class ContextArtifactStore {
         String id = digest(invocationId);
         return "<context-artifact id=\"" + id + "\">\n"
                 + "Tool result archived (" + reason + "). chars=" + content.length()
-                + "; sha256=" + digest(content) + "\n"
+                + "\n"
                 + "This is an immutable historical tool-result snapshot, not the current workspace file.\n"
                 + "Use read(file_path=\"@tool-results/" + id
                 + ".txt\") to retrieve a bounded range.\n"
@@ -164,9 +251,13 @@ public class ContextArtifactStore {
         }
         recordAction(sessionId, "restore", artifactId, "range:" + start, text.length());
         return "Historical tool-result snapshot; tool=" + artifact.toolName
-                + "; sha256=" + artifact.sha256 + "; total_chars=" + artifact.chars
+                + "; position_unit=snapshot_utf16_chars"
+                + "; capture_complete=" + artifact.captureComplete
+                + "; total_chars=" + artifact.chars
                 + "; offset=" + start + "; next_offset=" + next
-                + "; has_more=" + (next < artifact.chars) + "\n" + text;
+                + "; has_more=" + (next < artifact.chars)
+                + (next < artifact.chars ? "; snapshot_continue=read(file_path=\"@tool-results/" + artifactId
+                    + ".txt\", char_offset=" + next + ", char_limit=" + limit + ")" : "") + "\n" + text;
     }
 
     Path sessionDirectory(String sessionId) throws IOException {
@@ -387,6 +478,7 @@ public class ContextArtifactStore {
         public final String toolName;
         public final String sha256;
         public final int chars;
+        public final boolean captureComplete;
         public final String projection;
         private final Path body;
         private final Properties metadata;
@@ -396,6 +488,7 @@ public class ContextArtifactStore {
             this.toolName = toolName;
             this.sha256 = sha256;
             this.chars = chars;
+            this.captureComplete = Boolean.parseBoolean(metadata.getProperty("captureComplete", "true"));
             this.projection = projection;
             this.body = body;
             this.metadata = metadata;

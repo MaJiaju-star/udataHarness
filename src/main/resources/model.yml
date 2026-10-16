@@ -45,7 +45,8 @@ agent:
       batch-max-chars: 256000
       preview-chars: 4000
       read-visible-chars: 160000
-      bash-visible-chars: 20000
+      # shell-search 试验中 Bash 承担搜索，放宽其可见结果以减少恢复调用。
+      bash-visible-chars: 64000
       error-visible-chars: 16000
       restore-max-chars: 16000
 
@@ -54,13 +55,28 @@ agent:
     # 个人设置保存在 <data-dir>/users/<userId>/settings.properties，并覆盖此默认值。
     enabled: "${AGENT_SANDBOX_ENABLED:false}"
   tools:
+    # A/B 实验：当前试用 shell-search，让 bash 负责目录与代码搜索。
+    # 改为 standard 可恢复 ls/glob/grep；两种模式都保留 read/edit/write。切换后需重启后端。
+    file-profile: "${AGENT_FILE_TOOL_PROFILE:shell-search}"
     web:
       # 内网部署可设为 false，一次禁用 websearch、codesearch 和 webfetch。
-      enabled: "${AGENT_WEB_TOOLS_ENABLED:true}"
+      enabled: "${AGENT_WEB_TOOLS_ENABLED:false}"
       # 总开关开启时，仍可分别控制每个网络工具。
       websearch-enabled: "${AGENT_WEBSEARCH_ENABLED:true}"
       codesearch-enabled: "${AGENT_CODESEARCH_ENABLED:true}"
       webfetch-enabled: "${AGENT_WEBFETCH_ENABLED:true}"
+    optional:
+      # 先缩小默认工具面；需要时可单独开启。bash 三项通常应一起开启。
+      render-echart-enabled: "${AGENT_RENDER_ECHART_ENABLED:false}"
+      render-antv-chart-enabled: "${AGENT_RENDER_ANTV_CHART_ENABLED:false}"
+      bash-start-enabled: "${AGENT_BASH_START_ENABLED:false}"
+      bash-wait-enabled: "${AGENT_BASH_WAIT_ENABLED:false}"
+      bash-stop-enabled: "${AGENT_BASH_STOP_ENABLED:false}"
+      lsp-enabled: "${AGENT_LSP_TOOL_ENABLED:false}"
+      todowrite-enabled: "${AGENT_TODOWRITE_ENABLED:false}"
+      todoread-enabled: "${AGENT_TODOREAD_ENABLED:false}"
+      task-enabled: "${AGENT_TASK_TOOL_ENABLED:false}"
+      now-enabled: "${AGENT_NOW_TOOL_ENABLED:false}"
 
   # 主 Agent 的系统提示词。
   system-prompt: |

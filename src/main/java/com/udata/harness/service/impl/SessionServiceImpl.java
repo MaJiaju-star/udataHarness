@@ -257,6 +257,10 @@ public class SessionServiceImpl implements SessionService {
                 Map<String, Object> tool = pendingTools.get(toolMessage.getToolCallId());
                 if (tool != null) {
                     tool.put("output", toolMessage.getContent());
+                    for (String key : new String[]{"editDiff", "bashOutput"}) {
+                        Object value = toolMessage.getMetadata().get(key);
+                        if (value instanceof Map) tool.put(key, value);
+                    }
                     tool.put("running", false);
                 }
                 // Tool output is represented inside its assistant message instead

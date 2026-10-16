@@ -41,6 +41,12 @@ class SessionFileVersionsIntegrationTest {
                 assertFalse(body.contains("expected_sha256"));
                 assertFalse(body.contains("__sessionId"));
                 assertFalse(body.contains("__fileVersionBatch"));
+                assertFalse(body.contains("SHA-256"));
+                assertFalse(body.contains("sourceHash"));
+                assertFalse(body.contains("editDiff"));
+                assertFalse(body.contains("--- a/source.txt"));
+                assertFalse(body.contains(FileVersion.sha256("original".getBytes(StandardCharsets.UTF_8))));
+                assertFalse(body.contains(FileVersion.sha256("external".getBytes(StandardCharsets.UTF_8))));
                 int step = requests.getAndIncrement();
                 String calls;
                 if (step == 0) {

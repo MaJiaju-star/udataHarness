@@ -14,6 +14,7 @@ import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -38,7 +39,7 @@ final class ReadToolProjection {
     private static final String ID = "0000000000000000000000000000000000000000000000000000000000000000";
     /** 行号前缀行：{@code  123 | 正文}。 */
     private static final Pattern NUMBERED_LINE = Pattern.compile("^\\s*(\\d+) \\| (.*)$");
-    /** 头部版本行：{@code 文件版本 SHA-256: <64位十六进制>}。 */
+    /** 兼容旧会话中的版本行；新结果仅从内部元数据读取版本。 */
     private static final Pattern VERSION = Pattern.compile("文件版本 SHA-256: ([0-9a-f]{64})");
     /** 续读提示中的 {@code offset=N}。 */
     private static final Pattern NEXT_OFFSET = Pattern.compile("offset=(\\d+)");
@@ -81,10 +82,12 @@ final class ReadToolProjection {
         List<VisibleRead> visible = visibleReads(trace);
         String path = path(current.getArgs());
         String args = canonical(current.getArgs());
+        String version = version(content, current.getToolResult().metas());
         for (VisibleRead previous : visible) {
             if (path.equals(previous.path) && args.equals(previous.args)
+                    && Objects.equals(version, previous.version)
                     && content.equals(previous.content) && content.length() > 300) {
-                ReadWindow rangeWindow = ReadWindow.parse(content);
+                ReadWindow rangeWindow = ReadWindow.parse(content, version);
                 String range = rangeWindow == null || rangeWindow.lines.isEmpty() ? ""
                         : "，行 " + rangeWindow.lines.keySet().iterator().next()
                         + "-" + last(rangeWindow.lines);
@@ -100,14 +103,14 @@ final class ReadToolProjection {
             }
         }
 
-        ReadWindow now = ReadWindow.parse(content);
+        ReadWindow now = ReadWindow.parse(content, version);
         if (now != null && now.version != null && !now.lines.isEmpty()) {
             Map<Integer, String> covered = new HashMap<>();
             List<String> sourceIds = new ArrayList<>();
             boolean overlap = false;
             for (VisibleRead previous : visible) {
                 if (!path.equals(previous.path)) continue;
-                ReadWindow old = ReadWindow.parse(previous.content);
+                ReadWindow old = ReadWindow.parse(previous.content, previous.version);
                 if (old == null || !now.version.equals(old.version)) continue;
                 if (sourceIds.size() < 3) sourceIds.add(display(previous.callId));
                 for (Map.Entry<Integer, String> line : old.lines.entrySet()) {
@@ -133,7 +136,7 @@ final class ReadToolProjection {
                 String range = now.lines.keySet().iterator().next() + "-" + last(now.lines);
                 StringBuilder body = new StringBuilder("<read-projection type=\"range_delta\">\n")
                         .append("文件 ").append(display(path)).append("，行 ").append(range)
-                        .append("，SHA-256=").append(now.version).append("。\n")
+                        .append("（同一文件版本）。\n")
                         .append("复用来源 tool_call_id=").append(String.join(",", sourceIds)).append("。\n")
                         .append("当前上下文中可复用的完整行：").append(ranges(reused)).append("。\n")
                         .append("本次未复用的行（单行截断标记仍表示该行不完整）：\n")
@@ -258,7 +261,8 @@ final class ReadToolProjection {
                         || tool.getContent().startsWith("<context-artifact")
                         || tool.getContent().startsWith("<read-projection")) continue;
                 found.add(new VisibleRead(tool.getToolCallId(), path(call.getArguments()),
-                        canonical(call.getArguments()), tool.getContent()));
+                        canonical(call.getArguments()), tool.getContent(),
+                        version(tool.getContent(), tool.getMetadata())));
             }
         }
         return found;
@@ -266,10 +270,19 @@ final class ReadToolProjection {
 
     /** 一条可复用的历史读取：调用 id、文件路径、规范参数与结果原文。 */
     private static final class VisibleRead {
-        final String callId, path, args, content;
-        VisibleRead(String callId, String path, String args, String content) {
+        final String callId, path, args, content, version;
+        VisibleRead(String callId, String path, String args, String content, String version) {
             this.callId = callId; this.path = path; this.args = args; this.content = content;
+            this.version = version;
         }
+    }
+
+    /** 优先使用读取时的内部版本，缺失时兼容旧会话正文中的版本行。 */
+    private static String version(String content, Map<String, ?> metadata) {
+        Object value = metadata.get("sourceHash");
+        if (value instanceof String) return (String) value;
+        Matcher match = VERSION.matcher(content);
+        return match.find() ? match.group(1) : null;
     }
 
     /** 从 read 结果中解析出的行窗口：文件版本（可缺失）与「行号 → 正文」映射。 */
@@ -283,12 +296,11 @@ final class ReadToolProjection {
          * 解析带行号前缀的 read 结果（以 {@code --- File: ...} 头与分隔线开头）。
          *
          * @param content 工具结果原文
+         * @param version 读取时的文件版本，仅在后端使用
          * @return 行窗口；非标准文件头或行号无法解析时为 {@code null}
          */
-        static ReadWindow parse(String content) {
+        static ReadWindow parse(String content, String version) {
             if (!content.startsWith("--- File: ") || !content.contains("--------------------------------------------------\n")) return null;
-            Matcher versionMatch = VERSION.matcher(content);
-            String version = versionMatch.find() ? versionMatch.group(1) : null;
             String separator = "--------------------------------------------------\n";
             String afterHeader = content.substring(content.indexOf(separator) + separator.length());
             Map<Integer, String> lines = new LinkedHashMap<>();

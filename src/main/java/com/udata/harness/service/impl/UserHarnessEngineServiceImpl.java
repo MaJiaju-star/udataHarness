@@ -227,6 +227,9 @@ public class UserHarnessEngineServiceImpl implements UserHarnessEngineService {
     @Inject("${agent.context.tool-results.bash-visible-chars:20000}")
     private int contextBashVisibleChars = 20000;
 
+    @Inject("${agent.tools.bash.max-log-bytes:268435456}")
+    private long bashMaxLogBytes = 268435456L;
+
     @Inject("${agent.context.tool-results.error-visible-chars:16000}")
     private int contextErrorVisibleChars = 16000;
 
@@ -504,9 +507,8 @@ public class UserHarnessEngineServiceImpl implements UserHarnessEngineService {
                 ? new ContextManagementOptions(contextSingleMaxChars, contextBatchMaxChars,
                     contextPreviewChars, contextRestoreMaxChars, contextReadVisibleChars,
                     contextBashVisibleChars, contextErrorVisibleChars) : null;
-        ContextArtifactStore contextStore = contextToolResultsEnabled
-                ? new ContextArtifactStore(Paths.get(dataDir).resolve("users").resolve(userId)
-                    .resolve("context-artifacts").resolve(workspaceId)) : null;
+        ContextArtifactStore contextStore = new ContextArtifactStore(Paths.get(dataDir).resolve("users").resolve(userId)
+                    .resolve("context-artifacts").resolve(workspaceId));
         SessionFileVersions fileVersions = new SessionFileVersions();
 
         //1. 工具、沙箱、HITL 和 Subagent 在引擎创建时一次性启用；会话级 cwd
@@ -567,13 +569,14 @@ public class UserHarnessEngineServiceImpl implements UserHarnessEngineService {
                         if (terminalTools.contains("grep")) {
                             options.talentAdd(new BoundedGrepTool(engine.getTerminalTalent(), engine.getWorkspace(), contextStore));
                         }
-                        if (contextOptions != null && terminalTools.contains("bash")) {
-                            options.talentAdd(new BashCaptureTalent(engine.getTerminalTalent()));
+                        if (terminalTools.contains("bash")) {
+                            options.talentAdd(new BashCaptureTalent(engine.getTerminalTalent(), contextStore,
+                                    contextBashVisibleChars, bashMaxLogBytes));
                         }
                         if (terminalTools.contains("write") || terminalTools.contains("edit")) {
                             options.talentAdd(new SafeMutationTalent(engine.getTerminalTalent(),
                                     engine.getWorkspace(), terminalTools.contains("write"),
-                                    terminalTools.contains("edit"), fileVersions));
+                                    terminalTools.contains("edit"), fileVersions, contextStore));
                         }
                     });
                     agentBuilder.defaultInterceptorAdd(-1000, fileVersions);

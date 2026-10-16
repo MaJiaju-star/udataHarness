@@ -64,7 +64,7 @@ class BoundedReadToolTest {
         BoundedReadTool reader = new BoundedReadTool(
                 new TerminalTalent(new MountManager(workspace.toString())), workspace.toString(), store);
         String name = "@tool-results/" + id + ".txt";
-        assertTrue(reader.read(name, 2, 1, null, "session-a").contains("2 | second"));
+        assertEquals("second\n", snapshotBody(reader.read(name, 2, 1, null, "session-a")));
         assertTrue(reader.read(name, 1, 1, null, "session-a").contains("历史工具结果快照"));
         assertTrue(reader.read(name, 1, 1, null, "session-b").contains("找不到"));
         assertTrue(reader.read("@tool-results/../" + id + ".txt", 1, 1, null, "session-a")
@@ -81,8 +81,113 @@ class BoundedReadToolTest {
         assertTrue(largerPage.contains("next_offset=12000"));
         assertTrue(largerPage.length() > 12000);
         String linePage = reader.read("@tool-results/" + giantId + ".txt", 1, 1, null, "session-a");
-        assertTrue(linePage.contains("单行已截断"));
-        assertTrue(linePage.contains("offset=2"));
+        assertEquals(repeat('x', BoundedReadTool.SNAPSHOT_OUTPUT_BYTES), snapshotBody(linePage));
+        assertTrue(linePage.contains("char_offset=16384"));
+        assertFalse(linePage.contains("单行已截断"));
+        assertFalse(linePage.contains("offset=2"));
+    }
+
+    @Test
+    void cachedReadSnapshotPreservesSourceNumbersAndOriginalContinuationWithoutOuterNumbers() throws IOException {
+        ContextArtifactStore store = new ContextArtifactStore(workspace.resolve("artifacts"));
+        BoundedReadTool reader = cachedTool(store);
+        StringBuilder source = new StringBuilder();
+        for (int line = 1; line <= 102; line++) source.append("source-").append(line).append('\n');
+        Files.write(workspace.resolve("source.java"), source.toString().getBytes(StandardCharsets.UTF_8));
+        String original = reader.read("source.java", 100, 1, null, "s");
+        String reference = reader.read("source.java", 100, 1, null, "s");
+        String path = "@tool-results/" + referenceId(reference) + ".txt";
+        String restored = reader.read(path, 1, 4000, null, "s");
+
+        assertEquals(original, snapshotBody(restored));
+        assertTrue(restored.contains("   100 | source-100"));
+        assertFalse(restored.contains("     3 |    100 |"));
+        assertTrue(snapshotBody(restored).contains("offset=101, limit=1"));
+        assertTrue(restored.contains("正文中的原文件行号和原工具续读提示保持原样"));
+        assertTrue(restored.contains("不表示原文件已读取完毕"));
+        assertFalse(reader.readResult(path, 1, 4000, null, null, null, "s").metas().containsKey("sourceHash"));
+        String charPage = reader.read(path, null, null, 0, 16000, null, "s");
+        assertTrue(charPage.endsWith(original));
+        assertTrue(charPage.contains("当前为快照字符分页"));
+        assertFalse(charPage.contains("     3 |    100 |"));
+    }
+
+    @Test
+    void snapshotLinePagingUsesPhysicalSnapshotLinesAndPreservesCrLfBomAndExistingNumbers() throws IOException {
+        ContextArtifactStore store = new ContextArtifactStore(workspace.resolve("artifacts"));
+        String content = "\uFEFF   100 | first\r\n   101 | second\rthird\n";
+        String id = store.save("s", "numbered", "read", content, "read_projection", 0).id;
+        String path = "@tool-results/" + id + ".txt";
+        BoundedReadTool reader = cachedTool(store);
+        String first = reader.read(path, 1, 1, null, "s");
+        assertEquals("\uFEFF   100 | first\r\n", snapshotBody(first));
+        assertTrue(first.contains("快照范围：物理行 1-1"));
+        assertTrue(first.contains("快照行续读（不是原文件续读）：read(file_path=\"" + path + "\", offset=2, limit=1)"));
+        assertEquals("   101 | second\r", snapshotBody(reader.read(path, 2, 1, null, "s")));
+        assertEquals("third\n", snapshotBody(reader.read(path, 3, 1, null, "s")));
+        assertTrue(reader.read(path, 4, 1, null, "s").contains("快照起始物理行"));
+    }
+
+    @Test
+    void snapshotByteLimitContinuesInsideLongLineWithoutLosingCharactersOrSplittingCrLf() throws IOException {
+        ContextArtifactStore store = new ContextArtifactStore(workspace.resolve("artifacts"));
+        String content = repeat('x', BoundedReadTool.SNAPSHOT_OUTPUT_BYTES - 1) + "\r\nTAIL";
+        String id = store.save("s", "long-line", "bash", content, "stream_output", 0).id;
+        String path = "@tool-results/" + id + ".txt";
+        BoundedReadTool reader = cachedTool(store);
+        String page = reader.read(path, 1, 4000, null, "s");
+        String body = snapshotBody(page);
+        assertEquals(repeat('x', 16383), body);
+        assertTrue(page.contains("快照字符续读（不是原文件续读）"));
+        assertTrue(page.contains("char_offset=16383"));
+        String rest = reader.read(path, null, null, 16383, 12000, null, "s");
+        assertTrue(rest.contains("快照 UTF-16 字符，不是行号"));
+        assertTrue(rest.contains("position_unit=snapshot_utf16_chars"));
+        assertTrue(rest.endsWith("\r\nTAIL"));
+        assertEquals(content, body + rest.substring(rest.indexOf("has_more=false") + "has_more=false".length() + 1));
+    }
+
+    @Test
+    void snapshotUtf8BudgetUsesUtf16ContinuationAndPreservesSurrogatePairs() throws IOException {
+        ContextArtifactStore store = new ContextArtifactStore(workspace.resolve("artifacts"));
+        StringBuilder prefix = new StringBuilder();
+        for (int i = 0; i < 4095; i++) prefix.append("😀");
+        prefix.append("\r\n");
+        String content = prefix + "😀tail";
+        String id = store.save("s", "unicode", "bash", content, "stream_output", 0).id;
+        String path = "@tool-results/" + id + ".txt";
+        BoundedReadTool reader = cachedTool(store);
+        String page = reader.read(path, 1, 4000, null, "s");
+        assertEquals(prefix.toString(), snapshotBody(page));
+        assertTrue(snapshotBody(page).getBytes(StandardCharsets.UTF_8).length <= BoundedReadTool.SNAPSHOT_OUTPUT_BYTES);
+        assertTrue(page.contains("char_offset=8192"));
+        String rest = reader.read(path, null, null, 8192, 2, null, "s");
+        assertTrue(rest.endsWith("😀"));
+        assertTrue(rest.contains("snapshot_continue=read(file_path=\"" + path + "\", char_offset=8194, char_limit=2)"));
+    }
+
+    @Test
+    void emptyAndIncompleteSnapshotsStayClearlyHistorical() throws IOException {
+        ContextArtifactStore store = new ContextArtifactStore(workspace.resolve("artifacts"));
+        String empty = store.save("s", "empty", "bash", "", "stream_output", 0).id;
+        BoundedReadTool reader = cachedTool(store);
+        assertEquals("", snapshotBody(reader.read("@tool-results/" + empty + ".txt", 1, 1, null, "s")));
+        String id;
+        try (ContextArtifactStore.StreamingArtifact stream = store.beginStream("s", "partial", "bash")) {
+            stream.append("   100 | partial\n");
+            id = stream.finish(false).id;
+        }
+        String restored = reader.read("@tool-results/" + id + ".txt", 1, 1, null, "s");
+        assertEquals("   100 | partial\n", snapshotBody(restored));
+        assertTrue(restored.contains("原命令捕获不完整"));
+    }
+
+    /** 提取快照回读的原样正文，分页元信息与正文分开断言。 */
+    private static String snapshotBody(String output) {
+        String start = "<snapshot-content>\n";
+        int begin = output.indexOf(start);
+        assertTrue(begin >= 0, output);
+        return output.substring(begin + start.length(), output.lastIndexOf("\n</snapshot-content>"));
     }
 
     @Test
@@ -95,7 +200,7 @@ class BoundedReadToolTest {
         assertTrue(first.contains("  4000 | line-4000"));
         assertFalse(first.contains("line-4001"));
         assertTrue(first.contains("offset=4001, limit=4000"));
-        assertTrue(first.contains("文件版本 SHA-256: " + FileVersion.sha256(workspace.resolve("lines.txt"))));
+        assertFalse(first.contains("SHA-256"));
         String second = tool().read("lines.txt", 4001, null, null);
         assertTrue(second.contains("line-4002"));
         assertTrue(second.contains("[文件读取完毕]"));
@@ -144,7 +249,11 @@ class BoundedReadToolTest {
         String fresh = reader.read("version.txt", 1, 1, null, "session-a");
         assertFalse(fresh.startsWith("<read-unchanged>"));
         assertTrue(fresh.contains("1 | first"));
-        assertTrue(fresh.contains(FileVersion.sha256(source)));
+        assertFalse(fresh.contains(FileVersion.sha256(source)));
+        org.noear.solon.ai.chat.tool.ToolResult reference = reader.readResult(
+                "version.txt", 1, 1, null, null, null, "session-a");
+        assertEquals(FileVersion.sha256(source), reference.metas().get("sourceHash"));
+        assertFalse(reference.getContent().contains("SHA-256"));
         assertTrue(reader.read("version.txt", 1, 1, null, "session-a").startsWith("<read-unchanged>"));
         assertTrue(reader.read("version.txt", 2, 1, null, "session-a").contains("2 | new"));
     }

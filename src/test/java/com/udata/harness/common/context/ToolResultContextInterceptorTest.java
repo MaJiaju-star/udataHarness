@@ -329,6 +329,36 @@ class ToolResultContextInterceptorTest {
         assertEquals(numberedRead(80, 150, repeat("c", 64), 32), changed.getResult());
     }
 
+    /** 隐藏版本元数据仍可支持增量复用，且不会在投影中暴露摘要。 */
+    @Test
+    void internalVersionsAuthorizeRangeReuseWithoutVisibleHashes() throws IOException {
+        String version = repeat("b", 64);
+        String previous = numberedRead(1, 100, version, 32).replace("文件版本 SHA-256: " + version, "");
+        String current = numberedRead(80, 150, version, 32).replace("文件版本 SHA-256: " + version, "");
+        ToolResult prior = ToolResult.success(previous);
+        prior.metas().put("sourceHash", version);
+        Trace trace = new Trace();
+        trace.memory.addMessage(assistant(call("old", "read", readArgs(1, 100))),
+                ChatMessage.ofTool(prior, "read", "old", false));
+        ToolExchanger read = new ToolExchanger("new", "read", readArgs(80, 71));
+        ToolResult result = ToolResult.success(current);
+        result.metas().put("sourceHash", version);
+        read.setToolResult(result);
+        interceptor(50000, 200000).onToolCallEnd(trace, read, observation(read), null, 1);
+        assertTrue(read.getResult().contains("type=\"range_delta\""));
+        assertFalse(read.getResult().contains(version));
+        assertFalse(read.getResult().contains("SHA-256"));
+        assertEquals(version, read.getToolResult().metas().get("sourceHash"));
+
+        //1. 即使可见正文相同，文件其他范围发生变化也不能只引用旧正文。
+        ToolExchanger changed = new ToolExchanger("changed", "read", readArgs(1, 100));
+        ToolResult changedResult = ToolResult.success(previous);
+        changedResult.metas().put("sourceHash", repeat("c", 64));
+        changed.setToolResult(changedResult);
+        interceptor(50000, 200000).onToolCallEnd(trace, changed, observation(changed), null, 1);
+        assertEquals(previous, changed.getResult());
+    }
+
     /** 已投影或不完整的历史 read 不是完整可见正文，不能授权区间复用。 */
     @Test
     void projectedOrIncompleteOldReadCannotAuthorizeRangeReuse() {

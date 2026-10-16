@@ -23,6 +23,25 @@ class SafeMutationTalentTest {
     @TempDir Path workspace;
     private final SessionFileVersions versions = new SessionFileVersions();
 
+    @Test
+    void successfulEditsExposeReviewMetadataWithoutSendingPatchInModelText() throws IOException {
+        SafeMutationTalent mutation = tool();
+        mutation.write("diff.txt", "one\nold\nlast\n", null, "s");
+        org.noear.solon.ai.chat.tool.ToolResult result = mutation.editResult("diff.txt",
+                Arrays.asList(edit("old", "new", 2)), null, "s", null);
+        java.util.Map<?, ?> diff = (java.util.Map<?, ?>) result.metas().get("editDiff");
+        assertEquals(1, diff.get("addedLines"));
+        assertEquals(1, diff.get("deletedLines"));
+        assertEquals(2, diff.get("firstChangedLine"));
+        assertTrue(((String) diff.get("patch")).contains("-old\n+new\n"));
+        assertFalse(result.getContent().contains("--- a/"));
+        Files.write(workspace.resolve("diff.txt"), "external".getBytes(StandardCharsets.UTF_8));
+        org.noear.solon.ai.chat.tool.ToolResult conflict = mutation.editResult("diff.txt",
+                Arrays.asList(edit("new", "next", 2)), null, "s", null);
+        assertTrue(conflict.getContent().contains("版本冲突"));
+        assertFalse(conflict.metas().containsKey("editDiff"));
+    }
+
     private SafeMutationTalent tool() {
         return new SafeMutationTalent(new TerminalTalent(new MountManager(workspace.toString())),
                 workspace.toString(), true, true, versions);

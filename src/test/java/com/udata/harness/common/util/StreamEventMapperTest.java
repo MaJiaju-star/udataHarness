@@ -23,10 +23,13 @@ import org.noear.solon.ai.chat.event.ChatEventType;
 import org.noear.solon.ai.chat.message.AssistantMessage;
 import org.noear.solon.ai.chat.message.ChatMessage;
 import org.noear.solon.ai.chat.tool.ToolCall;
+import org.noear.solon.ai.chat.tool.ToolResult;
+import org.noear.solon.ai.agent.react.task.ToolCallEndEvent;
 
 import java.lang.reflect.Proxy;
 import java.util.List;
 import java.util.Map;
+import java.util.Collections;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -37,6 +40,23 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * 验证后端与 React 前端之间的 HITL SSE 事件契约。
  */
 class StreamEventMapperTest {
+    @Test
+    void exposesReviewDiffButNotInternalFileVersionMetadata() {
+        ToolResult result = ToolResult.success("edited");
+        result.metas().put("editDiff", Collections.singletonMap("patch", "-old\n+new\n"));
+        result.metas().put("sourceHash", "internal-version");
+        ChatMessage observation = ChatMessage.ofTool(result, "edit", "call-edit", false);
+        ToolCallEndEvent finished = new ToolCallEndEvent(new ReActTrace(), "call-edit", "edit",
+                Collections.emptyMap(), observation, false, null, 10);
+        String json = StreamEventMapper.map(finished);
+        ONode event = ONode.ofJson(json);
+        assertEquals("-old\n+new\n", event.get("editDiff").get("patch").getString());
+        assertFalse(json.contains("sourceHash"));
+        assertFalse(json.contains("internal-version"));
+        ChatMessage restored = ChatMessage.fromJson(ChatMessage.toJson(observation));
+        assertTrue(restored.getMetadata().containsKey("editDiff"));
+    }
+
     @Test
     void identifiesOnlyTheSuspendedReasonAsReplay() {
         ReActTrace trace = new ReActTrace();

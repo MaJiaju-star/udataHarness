@@ -1077,6 +1077,16 @@ button, input, textarea, select { outline: none; }
     border-radius: 11px;
     background: #fbfcfc;
 }
+.edit-diff { border-top: 1px solid var(--line); }
+.edit-diff-summary { display: flex; justify-content: space-between; gap: 12px; padding: 10px 12px; font-size: 11px; overflow-wrap: anywhere; }
+.tool-call .edit-diff-summary b { display: inline; }
+.edit-diff p { margin: 0; padding: 8px 12px; font-size: 11px; overflow-wrap: anywhere; }
+.tool-call .edit-diff pre { max-height: 420px; }
+.edit-diff pre > span { display: block; white-space: pre; }
+.edit-diff .diff-add { color: #56b88b; }
+.edit-diff .diff-remove { color: #ef9090; }
+.edit-diff .diff-hunk { color: #8dbbdf; }
+
 .tool-call.generating {
     border-color: #b9d9ce;
     box-shadow: 0 0 0 2px rgba(63, 133, 111, 0.06);

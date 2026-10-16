@@ -146,6 +146,8 @@ public class ToolResultContextInterceptor implements ReActInterceptor {
         }
         if (error != null || !TOOLS.contains(exchanger.getToolName())) return;
         if ("bash".equals(exchanger.getToolName())) {
+            // 流式执行器已提交完整日志；不要把展示片段误存为另一份完整命令输出。
+            if (result.metas().containsKey("bashOutput")) return;
             int visible = options.bashVisibleChars;
             Object requested = exchanger.getArgs() == null ? null : exchanger.getArgs().get("max_output_chars");
             if (requested instanceof Number && ((Number) requested).intValue() > 0) {
@@ -163,7 +165,8 @@ public class ToolResultContextInterceptor implements ReActInterceptor {
             if (content.startsWith("<read-unchanged>")) return;
             ReadToolProjection plan = ReadToolProjection.choose(trace, exchanger, content, options.readVisibleChars);
             if (plan != null) {
-                String projection = projectRead(trace, wireId, content, plan, exchanger.getArgs());
+                String projection = projectRead(trace, wireId, content, plan, exchanger.getArgs(),
+                        exchanger.getToolResult().metas());
                 if (projection != null) exchanger.setResult(projection);
             } else if (content.length() > options.readVisibleChars) {
                 String projection = project(trace, wireId, "read", content, "read_visible_limit",
@@ -493,11 +496,12 @@ public class ToolResultContextInterceptor implements ReActInterceptor {
  * @param content      read 产出的完整文本
  * @param plan         已选定的投影计划，决定保留哪些可见内容
  * @param args         工具参数，用于源码版本捕获
+ * @param resultMetadata 读取时的内部版本元数据
  * @return 当占位文本符合 {@link ContextManagementOptions#readVisibleChars}
  *         且确实短于原文时返回渲染结果；否则返回 {@code null}
  */
     private String projectRead(ReActTrace trace, String invocationId, String content,
-                               ReadToolProjection plan, Map<String, Object> args) {
+                               ReadToolProjection plan, Map<String, Object> args, Map<String, Object> resultMetadata) {
         try {
             String scopedInvocation = trace.getRunId() + ":" + trace.getCurrentTurnId() + ":" + invocationId + ":read_projection";
             String sessionId = trace.getSession().getSessionId();
@@ -507,6 +511,8 @@ public class ToolResultContextInterceptor implements ReActInterceptor {
                 catch (IOException ignored) { /* Projection must not depend on task bookkeeping. */ }
             }
             ContextSourceVersion.capture(workspace, args, metadata);
+            Object sourceHash = resultMetadata.get("sourceHash");
+            if (sourceHash instanceof String) metadata.put("sourceHash", (String) sourceHash);
             ContextArtifactStore.Artifact artifact = store.save(sessionId, scopedInvocation,
                     "read", content, "read_" + plan.type, 0, metadata);
             String projected = plan.render(artifact.id);

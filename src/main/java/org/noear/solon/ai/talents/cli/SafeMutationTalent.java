@@ -1,9 +1,11 @@
 package org.noear.solon.ai.talents.cli;
 
+import com.udata.harness.common.context.ContextArtifactStore;
 import org.noear.solon.ai.annotation.ToolMapping;
 import org.noear.solon.ai.chat.prompt.Prompt;
 import org.noear.solon.ai.chat.talent.AbsTalent;
 import org.noear.solon.ai.chat.tool.FunctionTool;
+import org.noear.solon.ai.chat.tool.ToolResult;
 import org.noear.solon.ai.talents.mount.MountManager;
 import org.noear.solon.ai.talents.mount.ResolvedResource;
 import org.noear.solon.annotation.Param;
@@ -24,6 +26,8 @@ import java.nio.file.attribute.AclFileAttributeView;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.List;
+import java.util.Map;
+import java.util.LinkedHashMap;
 import java.util.Set;
 import java.util.concurrent.locks.ReentrantLock;
 import java.util.function.Function;
@@ -45,6 +49,7 @@ public final class SafeMutationTalent extends AbsTalent {
     private final boolean canWrite;
     private final boolean canEdit;
     private final SessionFileVersions fileVersions;
+    private final ContextArtifactStore artifactStore;
 
     public SafeMutationTalent(TerminalTalent terminal, String workspace, boolean canWrite, boolean canEdit) {
         this(terminal, workspace, canWrite, canEdit, new SessionFileVersions());
@@ -61,11 +66,18 @@ public final class SafeMutationTalent extends AbsTalent {
      */
     public SafeMutationTalent(TerminalTalent terminal, String workspace, boolean canWrite, boolean canEdit,
                               SessionFileVersions fileVersions) {
+        this(terminal, workspace, canWrite, canEdit, fileVersions, null);
+    }
+
+    /** 创建共享版本台账与大补丁归档仓储的修改工具。 */
+    public SafeMutationTalent(TerminalTalent terminal, String workspace, boolean canWrite, boolean canEdit,
+                              SessionFileVersions fileVersions, ContextArtifactStore artifactStore) {
         this.terminal = terminal;
         this.workspace = Paths.get(workspace).toAbsolutePath().normalize();
         this.canWrite = canWrite;
         this.canEdit = canEdit;
         this.fileVersions = fileVersions;
+        this.artifactStore = artifactStore;
         try {
             this.support = (TerminalSupport) field("support").get(terminal);
             this.mounts = (MountManager) field("mountManager").get(terminal);
@@ -127,8 +139,7 @@ public final class SafeMutationTalent extends AbsTalent {
             atomicReplace(target, bytes, expectedSha256, exists, filePath, __cwd);
             String writtenVersion = FileVersion.sha256(bytes);
             fileVersions.remember(__sessionId, target, writtenVersion);
-            return withDiagnostics("文件成功写入: " + filePath + "\n新文件版本 SHA-256: "
-                    + writtenVersion, target);
+            return withDiagnostics("文件成功写入: " + filePath, target);
         } finally {
             lock.unlock();
         }
@@ -146,10 +157,26 @@ public final class SafeMutationTalent extends AbsTalent {
      * @throws IOException 文件操作失败
      */
     @ToolMapping(name = "edit", description = "按文本块编辑文件，保留 BOM 与换行风格。须先在本会话 read；后端自动校验已读版本，全部替换成功后才原子写入。")
-    public String edit(
+    public ToolResult editResult(
             @Param(value = "file_path", description = "工作区相对路径或逻辑路径") String filePath,
             @Param(value = "edits", description = "编辑操作列表") List<TerminalTalent.EditOp> edits,
             String __cwd, String __sessionId, String __fileVersionBatch) throws IOException {
+        Map<String, Object> metadata = new LinkedHashMap<>();
+        String content = editBody(filePath, edits, __cwd, __sessionId, __fileVersionBatch, metadata);
+        ToolResult result = ToolResult.success(content);
+        result.metas().putAll(metadata);
+        return result;
+    }
+
+    /** 保留直接调用入口，结构化 diff 由工具结果元数据传给 UI。 */
+    public String edit(String filePath, List<TerminalTalent.EditOp> edits, String cwd,
+                       String sessionId, String batchId) throws IOException {
+        return editResult(filePath, edits, cwd, sessionId, batchId).getContent();
+    }
+
+    /** 在原有版本守卫内执行全部替换，仅为成功提交的内容生成 diff。 */
+    private String editBody(String filePath, List<TerminalTalent.EditOp> edits, String __cwd,
+                            String __sessionId, String __fileVersionBatch, Map<String, Object> metadata) throws IOException {
         if (filePath == null || edits == null || edits.isEmpty()) return "错误：file_path 和 edits 均不能为空。";
         if (ToolResultPaths.isVirtual(filePath)) return "错误：@tool-results 是只读历史快照，不能编辑。";
         if (isNonLocalVirtual(filePath)) return terminal.edit(filePath, edits, __cwd);
@@ -184,12 +211,19 @@ public final class SafeMutationTalent extends AbsTalent {
             String result = hadBom ? TerminalSupport.UTF8_BOM + working : working;
             if (raw.equals(result)) return "文件未变化: " + filePath;
             byte[] bytes = result.getBytes(StandardCharsets.UTF_8);
+            EditDiff preparedDiff = EditDiff.create(filePath, raw, result);
             atomicReplace(target, bytes, expectedSha256,
                     true, filePath, __cwd);
             String writtenVersion = FileVersion.sha256(bytes);
             fileVersions.remember(__sessionId, target, writtenVersion);
+            preparedDiff.archive(artifactStore, __sessionId);
+            Map<String, Object> diff = preparedDiff.details;
+            metadata.put("editDiff", diff);
             return withDiagnostics("文件 " + filePath + " 成功完成 " + edits.size()
-                    + " 处修改。\n新文件版本 SHA-256: " + writtenVersion, target);
+                    + " 处修改。（+" + diff.get("addedLines") + " / -" + diff.get("deletedLines")
+                    + " 行，首个修改行 " + diff.get("firstChangedLine") + "）"
+                    + (Boolean.TRUE.equals(diff.get("coarse")) ? "（合并差异块统计，可能包含未变行）" : "")
+                    + (diff.containsKey("patchPath") ? "\n完整补丁：read(file_path=\"" + diff.get("patchPath") + "\")" : ""), target);
         } finally {
             lock.unlock();
         }

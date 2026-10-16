@@ -13,6 +13,23 @@ class ContextArtifactStoreTest {
     @TempDir Path directory;
 
     @Test
+    void streamingArchiveIsCommittedOnlyAfterFinishAndKeepsUnicodeDigest() throws Exception {
+        ContextArtifactStore store = new ContextArtifactStore(directory);
+        String id = ContextArtifactStore.digest("stream-call");
+        String text = "日志😀\nsecond\n";
+        try (ContextArtifactStore.StreamingArtifact stream = store.beginStream("s", "stream-call", "bash")) {
+            stream.append(text.substring(0, 3));
+            stream.append(text.substring(3));
+            assertThrows(IOException.class, () -> store.load("s", id));
+            ContextArtifactStore.Artifact artifact = stream.finish(false);
+            assertEquals(ContextArtifactStore.digest(text), artifact.sha256);
+            assertEquals(text.length(), artifact.chars);
+            assertFalse(artifact.captureComplete);
+            assertTrue(store.restore("s", id, 0, text.length()).endsWith(text));
+        }
+    }
+
+    @Test
     void keepsFullContentAndFrozenPreviewAcrossRestart() throws Exception {
         ContextArtifactStore store = new ContextArtifactStore(directory);
         String text = "first\n" + repeat("日志😀\n", 200) + "MIDDLE_EVIDENCE\ntail";
