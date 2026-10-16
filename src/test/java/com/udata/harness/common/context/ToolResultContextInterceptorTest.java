@@ -28,6 +28,19 @@ import java.util.regex.Pattern;
 import static com.udata.harness.common.context.ContextArtifactStoreTest.repeat;
 import static org.junit.jupiter.api.Assertions.*;
 
+/**
+ * 验证 {@link ToolResultContextInterceptor} 的工具结果上下文治理能力：
+ *
+ * <ul>
+ * <li>单结果投影 —— bash、read 与通用白名单工具按各自预算裁剪，
+ * 全文持久化为 artifact，历史中只保留可恢复的占位文本；</li>
+ * <li>批级投影 —— 批次超出软预算时从大到小裁剪，优先保护源码 read；</li>
+ * <li>错误投影 —— 超长错误与 bash 诊断保留失败证据与 error 标志；</li>
+ * <li>read 复用 —— 重复引用、同版本区间增量，且投影/不完整的历史不授权复用；</li>
+ * <li>任务收敛 —— 任务切换/关闭时归档旧正文，普通轮次历史保持冻结；</li>
+ * <li>兜底不变量 —— 持久化失败、受保护消息、非文本块与白名单外工具一律原样放行。</li>
+ * </ul>
+ */
 class ToolResultContextInterceptorTest {
     @TempDir Path directory;
 
@@ -36,6 +49,40 @@ class ToolResultContextInterceptorTest {
                 new ContextManagementOptions(single, batch, 20, 4000));
     }
 
+    /** 默认 read 预算取可见字符上限的 80%：中等结果原样保留，超限结果投影为可恢复摘录。 */
+    @Test
+    void defaultReadBudgetKeepsMediumResultsAndProjectsLargerOnes() {
+        ContextManagementOptions options = new ContextManagementOptions(200000, 256000, 4000, 16000);
+        assertEquals(160000, options.readVisibleChars);
+        ToolResultContextInterceptor interceptor = new ToolResultContextInterceptor(
+                new ContextArtifactStore(directory), options);
+        Trace trace = new Trace();
+        String medium = repeat("x", 120000);
+        ToolExchanger visible = exchange("medium", "read", medium);
+        interceptor.onToolCallEnd(trace, visible, observation(visible), null, 1);
+        assertEquals(medium, visible.getResult());
+
+        ToolExchanger large = exchange("large", "read", repeat("x", 180000));
+        interceptor.onToolCallEnd(trace, large, observation(large), null, 1);
+        assertTrue(large.getResult().startsWith("<read-projection type=\"excerpt\">"));
+        assertTrue(large.getResult().length() <= 160000);
+        assertTrue(large.getResult().contains("@tool-results/"));
+    }
+
+    /** 较大的 bash 预算在归档前保留有用的头部与尾部输出，而非仅留开头片段。 */
+    @Test
+    void largerBashBudgetRetainsUsefulHeadAndTailBeforeArchiving() {
+        String output = repeat("H", 10000) + repeat("M", 25000) + repeat("T", 10000);
+        ToolOutcomeProjection projection = ToolOutcomeProjection.plan("bash", output, false, 20000);
+        assertNotNull(projection);
+        String visible = projection.render(repeat("a", 64));
+        assertTrue(visible.length() > 12000);
+        assertTrue(visible.length() <= 20000);
+        assertTrue(visible.contains(repeat("H", 5000)));
+        assertTrue(visible.contains(repeat("T", 5000)));
+    }
+
+    /** 超过单结果限额的结果在进入工作记忆前即被归档为 artifact 占位。 */
     @Test
     void archivesOversizedResultBeforeItEntersMemory() {
         String original = repeat("log line\n", 600);
@@ -47,6 +94,7 @@ class ToolResultContextInterceptorTest {
         assertEquals(0, trace.memory.size());
     }
 
+    /** 仅当可见历史中存在同文件、同区间且内容一致的 read 结果时才去重为引用；历史不可见或内容变化则原样返回。 */
     @Test
     void onlyDeduplicatesAVisibleMatchingReadRangeAndContent() throws IOException {
         Trace trace = new Trace();
@@ -78,6 +126,7 @@ class ToolResultContextInterceptorTest {
         assertEquals(text, differentRange.getResult());
     }
 
+    /** 超出 read 预算的结果被投影为带恢复说明的显式摘录，全文可从 artifact 还原。 */
     @Test
     void oversizedReadIsAnExplicitRecoverableExcerpt() throws Exception {
         String version = repeat("a", 64);
@@ -95,6 +144,7 @@ class ToolResultContextInterceptorTest {
         assertTrue(store.restore("session-test", id, 0, original.length()).endsWith(original));
     }
 
+    /** 摘录快照落盘失败时保留原始 read 结果，绝不以半成品投影替换。 */
     @Test
     void readProjectionKeepsOriginalIfSnapshotCannotBeSaved() {
         ContextArtifactStore failed = new ContextArtifactStore(directory) {
@@ -112,6 +162,111 @@ class ToolResultContextInterceptorTest {
         assertEquals(original, read.getResult());
     }
 
+    /** 超长 bash 失败输出的投影保留失败证据（状态与错误行），且全文可从 artifact 还原。 */
+    @Test
+    void longBashResultShowsFailureEvidenceAndRestoresCapturedText() throws IOException {
+        String raw = repeat("build step ok\n", 650) + "[ERROR] Cannot compile App.java:42\n"
+                + repeat("build tail\n", 400) + "[exit_code=1]";
+        ToolExchanger exchange = exchange("bash-1", "bash", raw);
+        ContextArtifactStore store = new ContextArtifactStore(directory);
+        ToolResultContextInterceptor interceptor = new ToolResultContextInterceptor(store,
+                new ContextManagementOptions(50000, 200000, 2000, 16000, 6000, 6000, 4000));
+        interceptor.onToolCallEnd(new Trace(), exchange, observation(exchange), null, 1);
+        String projected = exchange.getResult();
+        assertTrue(projected.contains("tool=\"bash\" status=\"failed\""));
+        assertTrue(projected.contains("Cannot compile App.java:42"));
+        assertTrue(projected.length() <= 6000);
+        assertTrue(store.restore("session-test", artifactId(projected), 0, raw.length()).endsWith(raw));
+    }
+
+    /** 用户显式请求较小的 {@code max_output_chars} 时，输出按请求预算（而非配置预算）投影，且仍可恢复。 */
+    @Test
+    void requestedSmallBashOutputStillGetsRecoverableProjection() {
+        String raw = repeat("[ERROR] compiler diagnostic\n", 400);
+        Map<String, Object> args = new java.util.HashMap<>();
+        args.put("command", "compile");
+        args.put("max_output_chars", 1000);
+        ToolExchanger exchange = new ToolExchanger("small-preview", "bash", args);
+        exchange.setResult(raw);
+        ToolResultContextInterceptor interceptor = new ToolResultContextInterceptor(
+                new ContextArtifactStore(directory),
+                new ContextManagementOptions(50000, 200000, 2000, 16000, 6000, 6000, 4000));
+        interceptor.onToolCallEnd(new Trace(), exchange, observation(exchange), null, 1);
+        assertTrue(exchange.getResult().contains("<tool-result-projection"));
+        assertTrue(exchange.getResult().length() <= 1000);
+    }
+
+    /** 超长工具错误按错误预算裁剪，保留 error 标志与原始快照。 */
+    @Test
+    void longToolErrorKeepsErrorFlagAndOriginalSnapshot() throws IOException {
+        String raw = repeat("stack frame\n", 750) + "Caused by: permission denied";
+        ToolExchanger exchange = exchange("edit-error", "edit", raw);
+        exchange.setToolResult(ToolResult.error(raw));
+        ContextArtifactStore store = new ContextArtifactStore(directory);
+        ToolResultContextInterceptor interceptor = new ToolResultContextInterceptor(store,
+                new ContextManagementOptions(50000, 200000, 2000, 16000, 6000, 6000, 4000));
+        interceptor.onToolCallEnd(new Trace(), exchange, observation(exchange), null, 1);
+        assertTrue(exchange.getToolResult().isError());
+        assertTrue(exchange.getResult().contains("status=\"error\""));
+        assertTrue(exchange.getResult().contains("permission denied"));
+        assertTrue(exchange.getResult().length() <= 4000);
+        assertTrue(store.restore("session-test", artifactId(exchange.getResult()), 0, raw.length()).endsWith(raw));
+    }
+
+    /** 被物理上限截断的 bash 输出标记为不完整捕获，提示模型只能取得已捕获部分。 */
+    @Test
+    void physicallyCappedBashOutputIsMarkedAsIncomplete() {
+        String raw = repeat("log line\n", 950)
+                + "... [输出超过 1048576 字节的物理上限，命令已被终止。请缩小输出范围]";
+        ToolExchanger exchange = exchange("capped", "bash", raw);
+        ToolResultContextInterceptor interceptor = new ToolResultContextInterceptor(
+                new ContextArtifactStore(directory),
+                new ContextManagementOptions(50000, 200000, 2000, 16000, 6000, 6000, 4000));
+        interceptor.onToolCallEnd(new Trace(), exchange, observation(exchange), null, 1);
+        assertTrue(exchange.getResult().contains("capture_complete=\"false\""));
+        assertTrue(exchange.getResult().contains("只能取得已捕获部分"));
+    }
+
+    /** 关键异常的错误结果物化晚于单结果钩子，在批末（onActionEnd）补投影且保留 error 标志与快照。 */
+    @Test
+    void criticalExceptionMessageIsProjectedAfterItEntersWorkingMemory() throws IOException {
+        String raw = repeat("stack frame\n", 750) + "Caused by: disk unavailable";
+        Trace trace = new Trace();
+        trace.reason = assistant(call("critical", "edit", Collections.emptyMap()));
+        trace.memory.addMessage(trace.reason,
+                ChatMessage.ofTool(ToolResult.error(raw), "edit", "critical", false));
+        ContextArtifactStore store = new ContextArtifactStore(directory);
+        ToolResultContextInterceptor interceptor = new ToolResultContextInterceptor(store,
+                new ContextManagementOptions(50000, 200000, 2000, 16000, 6000, 6000, 4000));
+        interceptor.onActionEnd(trace, Collections.emptyList());
+        ToolMessage result = (ToolMessage) trace.memory.getMessages().get(1);
+        assertTrue(result.isError());
+        assertTrue(result.getContent().contains("status=\"error\""));
+        assertTrue(result.getContent().contains("disk unavailable"));
+        assertTrue(store.restore("session-test", artifactId(result.getContent()), 0, raw.length()).endsWith(raw));
+    }
+
+    /** 诊断持久化失败时保留原文与错误标志，投影绝不导致结果丢失。 */
+    @Test
+    void failedDiagnosticPersistenceRetainsOriginalAndErrorFlag() {
+        ContextArtifactStore failed = new ContextArtifactStore(directory) {
+            @Override public synchronized Artifact save(String sessionId, String invocationId, String tool,
+                                                         String content, String reason, int preview,
+                                                         Map<String, String> metadata) throws IOException {
+                throw new IOException("simulated disk failure");
+            }
+        };
+        String raw = repeat("failure\n", 800);
+        ToolExchanger exchange = exchange("error-persist", "edit", raw);
+        exchange.setToolResult(ToolResult.error(raw));
+        new ToolResultContextInterceptor(failed,
+                new ContextManagementOptions(50000, 200000, 2000, 16000, 6000, 6000, 4000))
+                .onToolCallEnd(new Trace(), exchange, observation(exchange), null, 1);
+        assertTrue(exchange.getToolResult().isError());
+        assertEquals(raw, exchange.getResult());
+    }
+
+    /** 批级归档可对已投影的 read 结果再次归档，invocation 作用域限定避免快照键冲突。 */
     @Test
     void batchArchivingCanRearchiveProjectedReadWithoutSnapshotCollision() {
         Trace trace = new Trace();
@@ -130,6 +285,25 @@ class ToolResultContextInterceptorTest {
                 .contains("batch_result_limit"));
     }
 
+    /** 批预算超限时优先裁剪其他工具结果，完整源码 read 保留至最后。 */
+    @Test
+    void batchBudgetKeepsSourceReadBeforeShrinkingOtherResults() {
+        Trace trace = new Trace();
+        ToolExchanger read = exchange("source-read", "read", repeat("R", 15000));
+        ToolExchanger grep = exchange("search", "grep", repeat("G", 15000));
+        trace.reason = assistant(call("source-read", "read", Collections.emptyMap()),
+                call("search", "grep", Collections.emptyMap()));
+        trace.memory.addMessage(trace.reason,
+                ChatMessage.ofTool(ToolResult.success(read.getResult()), "read", "source-read", false),
+                ChatMessage.ofTool(ToolResult.success(grep.getResult()), "grep", "search", false));
+        new ToolResultContextInterceptor(new ContextArtifactStore(directory),
+                new ContextManagementOptions(100000, 25000, 20, 4000, 50000))
+                .onActionEnd(trace, Arrays.asList(read, grep));
+        assertEquals(repeat("R", 15000), ((ToolMessage) trace.memory.getMessages().get(1)).getContent());
+        assertTrue(((ToolMessage) trace.memory.getMessages().get(2)).getContent().contains("batch_result_limit"));
+    }
+
+    /** 仅当版本一致时，与可见历史重叠的行才压缩为区间增量；版本变化则原样返回。 */
     @Test
     void overlappingVisibleLinesBecomeRangeDeltaOnlyForSameVersion() throws IOException {
         String version = repeat("b", 64);
@@ -155,6 +329,7 @@ class ToolResultContextInterceptorTest {
         assertEquals(numberedRead(80, 150, repeat("c", 64), 32), changed.getResult());
     }
 
+    /** 已投影或不完整的历史 read 不是完整可见正文，不能授权区间复用。 */
     @Test
     void projectedOrIncompleteOldReadCannotAuthorizeRangeReuse() {
         String version = repeat("d", 64);
@@ -169,6 +344,7 @@ class ToolResultContextInterceptorTest {
         assertEquals(current, read.getResult());
     }
 
+    /** 错误结果、带 META_FIRST 的受保护消息与含非文本块的结果一律保持原样。 */
     @Test
     void preservesErrorsProtectedMessagesAndNonTextBlocks() {
         Trace trace = new Trace();
@@ -194,6 +370,7 @@ class ToolResultContextInterceptorTest {
         assertEquals(text, rich.getResult());
     }
 
+    /** artifact 持久化失败时保留原始结果，治理失败不影响可用性。 */
     @Test
     void keepsOriginalWhenPersistenceFails() {
         ContextArtifactStore failed = new ContextArtifactStore(directory) {
@@ -210,6 +387,7 @@ class ToolResultContextInterceptorTest {
         assertEquals(original, exchange.getResult());
     }
 
+    /** 批预算仅替换本批次新结果：既有历史冻结、工具调用配对保持，且替换时丢弃过期的 token_size 元数据。 */
     @Test
     void batchBudgetOnlyReplacesNewResultsAndPreservesToolPairs() {
         Trace trace = new Trace();
@@ -237,6 +415,7 @@ class ToolResultContextInterceptorTest {
         assertTrue(chars <= 4500);
     }
 
+    /** 小结果、上下文恢复工具与白名单外工具原样放行，不做任何投影。 */
     @Test
     void leavesSmallAndRestoreAndUnknownToolResultsAlone() {
         ToolResultContextInterceptor interceptor = interceptor(1000, 2000);
@@ -251,6 +430,7 @@ class ToolResultContextInterceptorTest {
         assertEquals("ok", small.getResult());
     }
 
+    /** 任务切换时归档旧任务正文为可检索的 artifact，协议约束消息保留，全文可按任务检索恢复。 */
     @Test
     void taskSwitchArchivesOldBodiesWhilePreservingProtocolConstraintsAndRecovery() throws Exception {
         ContextArtifactStore store = new ContextArtifactStore(directory);
@@ -283,6 +463,7 @@ class ToolResultContextInterceptorTest {
         assertTrue(store.restore("session-test", id, 8000, 8).endsWith("\nEVIDENCE"));
     }
 
+    /** 任务关闭收敛归档安全结果，错误结果、受保护消息与无归属消息保持原样。 */
     @Test
     void closedTaskConvergenceRetainsErrorsProtectedResultsAndUnknownOwnership() throws Exception {
         ContextArtifactStore store = new ContextArtifactStore(directory);
@@ -308,20 +489,24 @@ class ToolResultContextInterceptorTest {
         assertSame(protectedResult, trace.memory.getMessages().get(3));
     }
 
+    /** 构造指定 id、工具名并预置纯文本结果的已完成交换。 */
     static ToolExchanger exchange(String id, String tool, String text) {
         ToolExchanger value = new ToolExchanger(id, tool, Collections.<String, Object>singletonMap("file_path", "a.java"));
         value.setResult(text);
         return value;
     }
 
+    /** 生成交换当前结果对应的观测消息（即回传给模型的 ToolMessage）。 */
     static ToolMessage observation(ToolExchanger value) {
         return ChatMessage.ofTool(value.getToolResult(), value.getToolName(), value.getCallId(), false);
     }
 
+    /** 构造一条 assistant 的工具调用。 */
     static ToolCall call(String id, String name, Map<String, Object> args) {
         return new ToolCall("0", id, name, null, args);
     }
 
+    /** 构造 read 工具的规范参数（file_path + offset + limit）。 */
     private static Map<String, Object> readArgs(int offset, int limit) {
         Map<String, Object> args = new LinkedHashMap<>();
         args.put("file_path", "a.java");
@@ -330,6 +515,14 @@ class ToolResultContextInterceptorTest {
         return args;
     }
 
+    /**
+     * 构造符合 read 工具输出规范的带行号文本（文件头、行号栏、版本 SHA-256 尾部）。
+     *
+     * @param start   起始行号（含）
+     * @param end     结束行号（含）
+     * @param version 文件版本 SHA-256（64 位十六进制）
+     * @param width   每行内容的填充宽度
+     */
     private static String numberedRead(int start, int end, String version, int width) {
         StringBuilder result = new StringBuilder("--- File: a.java (Lines: " + start + " - " + end
                 + ", Size: 1.00 KB) ---\n--------------------------------------------------\n");
@@ -340,16 +533,19 @@ class ToolResultContextInterceptorTest {
                 .append(version).toString();
     }
 
+    /** 从投影占位文本（{@code artifact_id="…"} 或 {@code @tool-results/…}）中提取制品 id。 */
     private static String artifactId(String output) {
-        Matcher match = Pattern.compile("artifact_id=\\\"([a-f0-9]{64})\\\"").matcher(output);
+        Matcher match = Pattern.compile("(?:artifact_id=\\\"|@tool-results/)([a-f0-9]{64})(?:\\\"|\\.txt)").matcher(output);
         assertTrue(match.find());
         return match.group(1);
     }
 
+    /** 构造携带工具调用列表的 assistant 消息（Reason）。 */
     static AssistantMessage assistant(ToolCall... calls) {
         return new AssistantMessage(null, null, Arrays.asList(calls), Collections.emptyList());
     }
 
+    /** 轻量 ReAct 轨迹测试替身：固定 session-id 并允许直接设置工作记忆与最后一条 Reason。 */
     static class Trace extends ReActTrace {
         final AgentSession session = InMemoryAgentSession.of("session-test");
         final Prompt memory = Prompt.of(Collections.<ChatMessage>emptyList());

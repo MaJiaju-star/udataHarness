@@ -1,4 +1,8 @@
-# 上下文动态管理改造方案
+# 上下文动态管理改造方案（历史记录）
+
+现行 Agent 不再默认暴露 `context_*` 工具，也不再强制模型调用任务状态工具。
+大结果仍自动归档，通过当前会话只读路径 `@tool-results/<id>.txt` 使用 `read` 分页查看，
+或通过 `grep(path="@tool-results")` 搜索。下文保留旧方案的设计和实施记录。
 
 日期：2026-10-15。目标项目：`D:\code\udataHarness`，Java 8，Solon AI 4.1.1。
 

@@ -5,9 +5,6 @@ import com.udata.harness.common.support.ChartTool;
 import com.udata.harness.common.context.ContextArtifactStore;
 import com.udata.harness.common.context.CacheAlignedCompressionInterceptor;
 import com.udata.harness.common.context.ContextManagementOptions;
-import com.udata.harness.common.context.ContextRestoreTool;
-import com.udata.harness.common.context.ContextTaskStore;
-import com.udata.harness.common.context.ContextMemoryTool;
 import com.udata.harness.common.context.ContextCacheConfiguration;
 import com.udata.harness.common.context.ContextTelemetryInterceptor;
 import com.udata.harness.common.context.ContextUsage;
@@ -31,6 +28,7 @@ import org.noear.solon.ai.talents.cli.SafeMutationTalent;
 import org.noear.solon.ai.talents.cli.BoundedLsTool;
 import org.noear.solon.ai.talents.cli.BoundedGlobTool;
 import org.noear.solon.ai.talents.cli.BoundedGrepTool;
+import org.noear.solon.ai.talents.cli.BashCaptureTalent;
 import org.noear.solon.ai.talents.mount.Mount;
 import org.noear.solon.ai.talents.mount.MountType;
 import org.noear.solon.ai.talents.mount.source.FileMountSource;
@@ -184,17 +182,23 @@ public class UserHarnessEngineServiceImpl implements UserHarnessEngineService {
     @Inject
     private ContextCacheConfiguration contextCacheConfiguration;
 
-    @Inject("${agent.context.tool-results.single-max-chars:50000}")
-    private int contextSingleMaxChars = 50000;
+    @Inject("${agent.context.tool-results.single-max-chars:64000}")
+    private int contextSingleMaxChars = 64000;
 
-    @Inject("${agent.context.tool-results.read-visible-chars:6000}")
-    private int contextReadVisibleChars = 6000;
+    @Inject("${agent.context.tool-results.read-visible-chars:160000}")
+    private int contextReadVisibleChars = 160000;
 
-    @Inject("${agent.context.tool-results.batch-max-chars:200000}")
-    private int contextBatchMaxChars = 200000;
+    @Inject("${agent.context.tool-results.bash-visible-chars:20000}")
+    private int contextBashVisibleChars = 20000;
 
-    @Inject("${agent.context.tool-results.preview-chars:2000}")
-    private int contextPreviewChars = 2000;
+    @Inject("${agent.context.tool-results.error-visible-chars:16000}")
+    private int contextErrorVisibleChars = 16000;
+
+    @Inject("${agent.context.tool-results.batch-max-chars:256000}")
+    private int contextBatchMaxChars = 256000;
+
+    @Inject("${agent.context.tool-results.preview-chars:4000}")
+    private int contextPreviewChars = 4000;
 
     @Inject("${agent.context.tool-results.restore-max-chars:16000}")
     private int contextRestoreMaxChars = 16000;
@@ -462,21 +466,19 @@ public class UserHarnessEngineServiceImpl implements UserHarnessEngineService {
 
         ContextManagementOptions contextOptions = contextToolResultsEnabled
                 ? new ContextManagementOptions(contextSingleMaxChars, contextBatchMaxChars,
-                    contextPreviewChars, contextRestoreMaxChars, contextReadVisibleChars) : null;
+                    contextPreviewChars, contextRestoreMaxChars, contextReadVisibleChars,
+                    contextBashVisibleChars, contextErrorVisibleChars) : null;
         ContextArtifactStore contextStore = contextToolResultsEnabled
                 ? new ContextArtifactStore(Paths.get(dataDir).resolve("users").resolve(userId)
                     .resolve("context-artifacts").resolve(workspaceId)) : null;
-        ContextTaskStore contextTasks = contextStore == null ? null : new ContextTaskStore(contextStore);
 
         //1. 工具、沙箱、HITL 和 Subagent 在引擎创建时一次性启用；会话级 cwd
         // 仍由 ChatService 每次运行时写入 toolContext。
         HarnessEngine.Builder builder = HarnessEngine.of(workspace.toString(), harnessHome)
                 .systemPrompt(systemPrompt + (contextToolResultsEnabled
-                        ? "\nContext management: record task focus and user constraints with context_task_update before substantial work. "
-                        + "Before switching modules, save conclusions, unresolved dependencies and verification evidence. "
-                        + "Old inactive-task tool results may be archived. After a context reset or revisiting a task, "
-                        + "use context_task_snapshot and context_search to recover facts, then context_restore for evidence. "
-                        + "Historical snapshots are not current files; revalidate changed sources. Never close a task without actual verification."
+                        ? "\nLarge tool results may be saved as read-only historical snapshots at @tool-results/<id>.txt. "
+                        + "Use grep(path=\"@tool-results\") to locate archived evidence and read(file_path=\"@tool-results/<id>.txt\") to inspect it only when needed. "
+                        + "Snapshots are not current workspace files; revalidate changed sources."
                         : ""))
                 .maxTurns(maxTurns)
                 .sessionWindowSize(sessionWindowSize)
@@ -488,40 +490,41 @@ public class UserHarnessEngineServiceImpl implements UserHarnessEngineService {
                 .extensionAdd((engine, agentName, agentBuilder) -> {
                     // Only replace read when AgentFactory granted the built-in read to this agent.
                     agentBuilder.modelOptions(options -> {
-                        java.util.Set<String> fileTools = options.talents().stream()
+                        java.util.Set<String> terminalTools = options.talents().stream()
                                 .filter(item -> item.target instanceof TerminalTalentProxy)
                                 .flatMap(item -> item.target.getTools(null).stream())
                                 .map(tool -> tool.name())
                                 .collect(java.util.stream.Collectors.toSet());
-                        if (fileTools.contains("read")) {
+                        if (terminalTools.contains("read")) {
                             // Talents activate in insertion order; the later read replaces Solon's built-in one.
-                            options.talentAdd(new BoundedReadTool(engine.getTerminalTalent(), engine.getWorkspace()));
+                            options.talentAdd(new BoundedReadTool(engine.getTerminalTalent(), engine.getWorkspace(), contextStore));
                         }
-                        if (fileTools.contains("ls")) {
+                        if (terminalTools.contains("ls")) {
                             options.talentAdd(new BoundedLsTool(engine.getTerminalTalent(), engine.getWorkspace()));
                         }
-                        if (fileTools.contains("glob")) {
+                        if (terminalTools.contains("glob")) {
                             options.talentAdd(new BoundedGlobTool(engine.getTerminalTalent(), engine.getWorkspace()));
                         }
-                        if (fileTools.contains("grep")) {
-                            options.talentAdd(new BoundedGrepTool(engine.getTerminalTalent(), engine.getWorkspace()));
+                        if (terminalTools.contains("grep")) {
+                            options.talentAdd(new BoundedGrepTool(engine.getTerminalTalent(), engine.getWorkspace(), contextStore));
                         }
-                        if (fileTools.contains("write") || fileTools.contains("edit")) {
+                        if (contextOptions != null && terminalTools.contains("bash")) {
+                            options.talentAdd(new BashCaptureTalent(engine.getTerminalTalent()));
+                        }
+                        if (terminalTools.contains("write") || terminalTools.contains("edit")) {
                             options.talentAdd(new SafeMutationTalent(engine.getTerminalTalent(),
-                                    engine.getWorkspace(), fileTools.contains("write"), fileTools.contains("edit")));
+                                    engine.getWorkspace(), terminalTools.contains("write"), terminalTools.contains("edit")));
                         }
                     });
                     agentBuilder.defaultToolAdd(CHART_TOOL);
                     agentBuilder.defaultToolAdd(ANTV_CHART_TOOL);
                     if (contextOptions != null) {
                         agentBuilder.defaultInterceptorAdd(1000,
-                                new ToolResultContextInterceptor(contextStore, contextOptions, contextTasks, workspace, contextCacheConfiguration));
+                                new ToolResultContextInterceptor(contextStore, contextOptions, null, workspace, contextCacheConfiguration));
                         if (contextCacheConfiguration != null) {
                             agentBuilder.defaultInterceptorAdd(Integer.MAX_VALUE,
                                     new ContextTelemetryInterceptor(contextStore, contextCacheConfiguration));
                         }
-                        agentBuilder.defaultToolAdd(new ContextRestoreTool(contextStore, contextOptions.restoreMaxChars, workspace));
-                        agentBuilder.defaultToolAdd(new ContextMemoryTool(contextStore, contextTasks));
                     }
                 })
                 .sandboxEnabled(isSandboxEnabled(userId))

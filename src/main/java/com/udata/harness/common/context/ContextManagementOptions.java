@@ -37,10 +37,14 @@ public final class ContextManagementOptions {
      * 在应用投影之前，{@code read} 工具结果中被视为在发送历史里直接可见的最大字符数。
      */
     public final int readVisibleChars;
+    /** Model-visible character budget for long bash results. */
+    public final int bashVisibleChars;
+    /** Model-visible character budget for long text errors. */
+    public final int errorVisibleChars;
 
     /**
      * 创建配置，并自动推导 {@link #readVisibleChars}
-     * （取 {@code min(singleResultChars, 6000)}）。
+     * （取 {@code min(singleResultChars, 160000)}）。
      *
      * @param singleResultChars 单个内联工具结果的限额，必须 &gt; 0
      * @param batchResultChars  一批工具结果的总限额，必须 &gt; 0
@@ -51,7 +55,7 @@ public final class ContextManagementOptions {
     public ContextManagementOptions(int singleResultChars, int batchResultChars,
                                     int previewChars, int restoreMaxChars) {
         this(singleResultChars, batchResultChars, previewChars, restoreMaxChars,
-                Math.min(singleResultChars, 6000));
+                Math.min(singleResultChars, 160000), Integer.MAX_VALUE, Integer.MAX_VALUE);
     }
 
     /**
@@ -66,9 +70,16 @@ public final class ContextManagementOptions {
      */
     public ContextManagementOptions(int singleResultChars, int batchResultChars,
                                     int previewChars, int restoreMaxChars, int readVisibleChars) {
+        this(singleResultChars, batchResultChars, previewChars, restoreMaxChars,
+                readVisibleChars, Integer.MAX_VALUE, Integer.MAX_VALUE);
+    }
+
+    public ContextManagementOptions(int singleResultChars, int batchResultChars,
+                                    int previewChars, int restoreMaxChars, int readVisibleChars,
+                                    int bashVisibleChars, int errorVisibleChars) {
         if (singleResultChars < 1 || batchResultChars < 1 || previewChars < 1
                 || previewChars >= singleResultChars || restoreMaxChars < 1
-                || readVisibleChars < 1) {
+                || readVisibleChars < 1 || bashVisibleChars < 1 || errorVisibleChars < 1) {
             throw new IllegalArgumentException("Invalid context management limits");
         }
         this.singleResultChars = singleResultChars;
@@ -76,5 +87,7 @@ public final class ContextManagementOptions {
         this.previewChars = previewChars;
         this.restoreMaxChars = restoreMaxChars;
         this.readVisibleChars = readVisibleChars;
+        this.bashVisibleChars = bashVisibleChars;
+        this.errorVisibleChars = errorVisibleChars;
     }
 }

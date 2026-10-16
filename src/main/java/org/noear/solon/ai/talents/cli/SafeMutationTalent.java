@@ -85,6 +85,7 @@ public final class SafeMutationTalent extends AbsTalent {
             @Param(value = "expected_sha256", required = false, description = "覆盖已有本地文件时必填：read 返回的文件版本 SHA-256") String expectedSha256,
             String __cwd) throws IOException {
         if (filePath == null || content == null) return "错误：file_path 和 content 均不能为空。";
+        if (ToolResultPaths.isVirtual(filePath)) return "错误：@tool-results 是只读历史快照，不能写入。";
         if (isNonLocalVirtual(filePath)) return terminal.write(filePath, content, __cwd);
         Path target = resolve(filePath, __cwd, true);
         ReentrantLock lock = lockFor(target);
@@ -111,6 +112,7 @@ public final class SafeMutationTalent extends AbsTalent {
             @Param(value = "expected_sha256", required = false, description = "必填：read 返回的文件版本 SHA-256") String expectedSha256,
             String __cwd) throws IOException {
         if (filePath == null || edits == null || edits.isEmpty()) return "错误：file_path 和 edits 均不能为空。";
+        if (ToolResultPaths.isVirtual(filePath)) return "错误：@tool-results 是只读历史快照，不能编辑。";
         if (isNonLocalVirtual(filePath)) return terminal.edit(filePath, edits, __cwd);
         Path target = resolve(filePath, __cwd, true);
         ReentrantLock lock = lockFor(target);

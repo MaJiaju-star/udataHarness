@@ -89,8 +89,8 @@ public class ContextArtifactStore {
                 + "Tool result archived (" + reason + "). chars=" + content.length()
                 + "; sha256=" + digest(content) + "\n"
                 + "This is an immutable historical tool-result snapshot, not the current workspace file.\n"
-                + "Use context_restore(artifact_id=\"" + id
-                + "\", offset=0, limit=4000) to retrieve a bounded range.\n"
+                + "Use read(file_path=\"@tool-results/" + id
+                + ".txt\") to retrieve a bounded range; grep(path=\"@tool-results\") searches this session.\n"
                 + "Preview:\n" + content.substring(0, end)
                 + (end < content.length() ? "\n[Preview truncated]" : "") + "\n</context-artifact>";
     }
@@ -115,6 +115,16 @@ public class ContextArtifactStore {
         } catch (RuntimeException e) {
             throw new IOException("Invalid context artifact metadata", e);
         }
+    }
+
+    /** Resolve only a committed artifact owned by this session; never accepts filesystem paths. */
+    public Path bodyPath(String sessionId, String artifactId) throws IOException {
+        return load(sessionId, artifactId).body;
+    }
+
+    /** The directory is only for internal bounded search, not a public filesystem mount. */
+    public Path sessionArtifacts(String sessionId) throws IOException {
+        return sessionDirectory(sessionId);
     }
 
     /** UTF-16 character offsets; normalize surrogate boundaries without losing characters. */

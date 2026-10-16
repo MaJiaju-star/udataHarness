@@ -38,10 +38,12 @@ import java.util.PriorityQueue;
  * @see #glob(String, String, String, Integer, String)
  */
 public final class BoundedGlobTool extends AbsTalent {
-    private static final int DEFAULT_LIMIT = 100;
+    private static final int DEFAULT_LIMIT = 200;
     private static final int MAX_LIMIT = 500;
-    private static final int MAX_BODY_CHARS = 49_500;
-    private final SearchToolAccess access;
+    private static final int MAX_BODY_CHARS = 60_000;
+    // Java 8 anonymous visitors must access this directly: a synthetic access$0
+    // method can disappear when a development JVM sees mixed hot-reloaded classes.
+    final SearchToolAccess access;
 
     /**
      * 创建 glob 工具实例。
@@ -61,7 +63,7 @@ public final class BoundedGlobTool extends AbsTalent {
      */
     @Override
     public String getInstruction(Prompt prompt) {
-        return "glob 搜索文件名，结果按路径稳定排序；默认 100 项，内容未完时使用输出中的 after 游标续页。要搜文件内容请用 grep。";
+        return "glob 搜索文件名，结果按路径稳定排序；默认 200 项，内容未完时使用输出中的 after 游标续页。要搜文件内容请用 grep。";
     }
 
     /**
@@ -79,12 +81,12 @@ public final class BoundedGlobTool extends AbsTalent {
      * @return 分页结果文本；内容未完时附带 {@code after}/{@code limit} 续页提示，参数非法时返回错误描述
      * @throws IOException 目录遍历期间发生 I/O 异常
      */
-    @ToolMapping(name = "glob", description = "按 glob 模式查找文件名。默认 100 项，最多 500 项；按路径排序，用 after 续页。支持逻辑路径。")
+    @ToolMapping(name = "glob", description = "按 glob 模式查找文件名。默认 200 项，最多 500 项；按路径排序，用 after 续页。支持逻辑路径。")
     public String glob(
             @Param(value = "pattern", description = "glob 模式，例如 **/*.java") String pattern,
             @Param(value = "path", required = false, description = "搜索根目录，默认当前工作区") String path,
             @Param(value = "after", required = false, description = "相同 path/pattern 的上一页输出的 after 游标") String after,
-            @Param(value = "limit", required = false, description = "单页最多返回项数，默认 100，最大 500") Integer limit,
+            @Param(value = "limit", required = false, description = "单页最多返回项数，默认 200，最大 500") Integer limit,
             String __cwd) throws IOException {
         if (pattern == null || pattern.isEmpty()) return "错误：pattern 不能为空。";
         String selectedPath = path == null || path.isEmpty() ? "." : path;

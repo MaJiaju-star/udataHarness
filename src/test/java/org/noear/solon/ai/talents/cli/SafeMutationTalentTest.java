@@ -28,6 +28,20 @@ class SafeMutationTalentTest {
     }
 
     @Test
+    void toolResultSnapshotsAreReadOnly() throws IOException {
+        String path = "@tool-results/" + repeat('a', 64) + ".txt";
+        assertTrue(tool().write(path, "new", null, null).contains("只读"));
+        assertTrue(tool().edit(path, Arrays.asList(new TerminalTalent.EditOp()), null, null)
+                .contains("只读"));
+    }
+
+    private static String repeat(char value, int count) {
+        char[] chars = new char[count];
+        Arrays.fill(chars, value);
+        return new String(chars);
+    }
+
+    @Test
     void createsFilesButRequiresVersionToOverwrite() throws IOException {
         SafeMutationTalent tool = tool();
         Path target = workspace.resolve("example.txt");

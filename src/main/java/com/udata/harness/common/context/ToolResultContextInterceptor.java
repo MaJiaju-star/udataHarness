@@ -26,9 +26,26 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 
-/** No execution caching; sent history changes only at explicit inactive-task boundaries. */
+/**
+ * 管控工具结果如何投影（裁剪/摘要）后再进入已发送历史的 ReAct 拦截器。
+ *
+ * <p>它在两个时点进行拦截：</p>
+ * <ul>
+ * <li>{@link #onToolCallEnd} —— 单结果投影：超大结果、{@code bash} 与
+ * {@code read} 的输出按各自工具预算裁剪；全文持久化为 artifact，
+ * 历史中只接收引用它的简短占位（stub）。</li>
+ * <li>{@link #onActionEnd} —— 批级投影：当已提交批次超过软预算时，
+ * 优先裁剪最大的可投影纯文本结果；随后在显式任务边界处归档并改写较早的工具结果正文（见
+ * {@code convergeTasks}）。</li>
+ * </ul>
+ *
+ * <p>不变量：不做执行缓存——结果绝不会从缓存重复供给；普通轮次内已发送历史保持冻结，
+ * 仅在显式的非活跃任务边界处变更。持久化失败只记录日志（不含负载内容），
+ * 且绝不替换原始工具结果。</p>
+ */
 public class ToolResultContextInterceptor implements ReActInterceptor {
     private static final Logger LOG = LoggerFactory.getLogger(ToolResultContextInterceptor.class);
+    /** 其纯文本结果可参与投影的工具；其余工具原样放行。 */
     private static final Set<String> TOOLS = Collections.unmodifiableSet(new HashSet<>(Arrays.asList(
             "read", "bash", "grep", "glob", "ls", "webfetch", "websearch", "codesearch", "lsp")));
     private final ContextArtifactStore store;
@@ -40,15 +57,43 @@ public class ToolResultContextInterceptor implements ReActInterceptor {
     private static final String TASK_META = "context_task_id";
     private static final String INVOCATION_META = "context_invocation_id";
 
+    /**
+ * 创建不带任务跟踪、源码版本捕获与缓存成本门控的拦截器。
+ *
+ * @param store   制品库：持久化完整工具输出与决策记录
+ * @param options 投影预算（可见字符数、预览大小、批次上限）
+ */
     public ToolResultContextInterceptor(ContextArtifactStore store, ContextManagementOptions options) {
         this(store, options, null, null);
     }
 
+    /**
+ * 创建启用任务边界归档的拦截器。
+ *
+ * @param store     制品库：持久化完整工具输出与决策记录
+ * @param options   投影预算（可见字符数、预览大小、批次上限）
+ * @param tasks     任务库：将结果归属到任务，并按生命周期状态驱动归档；
+ *                  传 {@code null} 则禁用任务收敛
+ * @param workspace 工作区根目录，用于捕获 {@code read} 的源码版本；
+ *                  传 {@code null} 则禁用源码版本捕获
+ */
     public ToolResultContextInterceptor(ContextArtifactStore store, ContextManagementOptions options,
                                         ContextTaskStore tasks, Path workspace) {
         this(store, options, tasks, workspace, null);
     }
 
+    /**
+ * 全参构造；额外通过所配置的成本策略对任务边界改写进行门控。
+ *
+ * @param store       制品库：持久化完整工具输出与决策记录
+ * @param options     投影预算（可见字符数、预览大小、批次上限）
+ * @param tasks       任务库：将结果归属到任务，并按生命周期状态驱动归档；
+ *                    传 {@code null} 则禁用任务收敛
+ * @param workspace   工作区根目录，用于捕获 {@code read} 的源码版本；
+ *                    传 {@code null} 则禁用源码版本捕获
+ * @param cacheConfig 缓存配置：提供按模型区分的成本策略；
+ *                    传 {@code null} 则无条件批准改写
+ */
     public ToolResultContextInterceptor(ContextArtifactStore store, ContextManagementOptions options,
                                         ContextTaskStore tasks, Path workspace, ContextCacheConfiguration cacheConfig) {
         this.store = store;
@@ -58,6 +103,25 @@ public class ToolResultContextInterceptor implements ReActInterceptor {
         this.cacheConfig = cacheConfig;
     }
 
+    /**
+ * 在单个工具结果提交到工作记忆之前，就地对其投影。
+ *
+ * <p>以下情况保持原样、直接返回：执行抛出异常、observation 或 session 缺失、
+ * session 处于 pending、结果为直接返回（return-direct）、携带首次观测标记
+ * （{@code META_FIRST}），或不是纯文本。错误结果按
+ * {@link ContextManagementOptions#errorVisibleChars} 预算裁剪；{@code bash} 还遵循
+ * 正值的 {@code max_output_chars} 参数（下限 600 字符，并受配置预算封顶），对照
+ * {@link ContextManagementOptions#bashVisibleChars} 裁剪；
+ * {@code read} 由 {@link ReadToolProjection} 处理（重复引用、同版本增量
+ * 或受限摘录），并有通用截断兜底；其余白名单工具仅在超过
+ * {@link ContextManagementOptions#singleResultChars} 时才被裁剪。</p>
+ *
+ * @param trace       当前 ReAct 轨迹（其 session 必须存在）
+ * @param exchanger   已完成的交换；其结果可被就地替换
+ * @param observation 将回传给模型的观测消息
+ * @param error       执行错误（如有）—— 只要非空即提前返回
+ * @param durationMs  执行耗时（毫秒，此处未使用）
+ */
     @Override
     public void onToolCallEnd(ReActTrace trace, ToolExchanger exchanger,
                               ChatMessage observation, Throwable error, long durationMs) {
@@ -65,12 +129,38 @@ public class ToolResultContextInterceptor implements ReActInterceptor {
         if (error != null || observation == null || trace.getSession() == null
                 || trace.getSession().isPending() || exchanger.isReturnDirect()
                 || observation.hasMetadata(AgentTrace.META_FIRST)
-                || !eligible(exchanger.getToolName(), result)) return;
+                || !textOnly(result)) return;
         String content = result.getContent();
         String wireId = observation instanceof ToolMessage
                 ? ((ToolMessage) observation).getToolCallId()
                 : exchanger.getCallId();
+        if (result.isError()) {
+            ToolOutcomeProjection plan = ToolOutcomeProjection.plan(
+                    exchanger.getToolName(), content, true, options.errorVisibleChars);
+            if (plan != null) {
+                String projection = projectOutcome(trace, wireId, exchanger.getToolName(), content, plan,
+                        options.errorVisibleChars, exchanger.getArgs());
+                if (projection != null) exchanger.setResult(projection);
+            }
+            return;
+        }
+        if (error != null || !TOOLS.contains(exchanger.getToolName())) return;
+        if ("bash".equals(exchanger.getToolName())) {
+            int visible = options.bashVisibleChars;
+            Object requested = exchanger.getArgs() == null ? null : exchanger.getArgs().get("max_output_chars");
+            if (requested instanceof Number && ((Number) requested).intValue() > 0) {
+                visible = Math.min(visible, Math.max(600, ((Number) requested).intValue()));
+            }
+            ToolOutcomeProjection plan = ToolOutcomeProjection.plan("bash", content, false, visible);
+            if (plan != null) {
+                String projection = projectOutcome(trace, wireId, "bash", content, plan, visible,
+                        exchanger.getArgs());
+                if (projection != null) exchanger.setResult(projection);
+                return;
+            }
+        }
         if ("read".equals(exchanger.getToolName())) {
+            if (content.startsWith("<read-unchanged>")) return;
             ReadToolProjection plan = ReadToolProjection.choose(trace, exchanger, content, options.readVisibleChars);
             if (plan != null) {
                 String projection = projectRead(trace, wireId, content, plan, exchanger.getArgs());
@@ -92,7 +182,17 @@ public class ToolResultContextInterceptor implements ReActInterceptor {
         if (projection != null) exchanger.setResult(projection);
     }
 
-    /** ActionTask has committed this batch to WorkingMemory, but Reason has not sent it yet. */
+    /**
+ * 在 ActionTask 将批次提交到工作记忆之后、Reason 发送之前，对观测批次进行投影。
+ *
+ * <p>先重新投影已提交的错误结果（见 {@code projectCommittedErrors}）；随后——当批次总量超过
+ * {@link ContextManagementOptions#batchResultChars} 时——按从大到小的顺序裁剪可投影的纯文本结果，
+ * 直到满足软预算。最后 {@code convergeTasks} 把新结果归属到活跃任务，
+ * 并归档已结束任务持有的正文。</p>
+ *
+ * @param trace     当前 ReAct 轨迹
+ * @param toolCalls 本动作批次中执行的交换
+ */
     @Override
     public void onActionEnd(ReActTrace trace, Collection<ToolExchanger> toolCalls) {
         if (trace.getSession() == null || trace.getSession().isPending()
@@ -118,6 +218,9 @@ public class ToolResultContextInterceptor implements ReActInterceptor {
         }
         // A wire ID alone is insufficient: compatible providers may reuse it in older history.
         if (batchStart < 0) return;
+        if (projectCommittedErrors(trace, messages, batchStart, batchIds, exchangersById)) {
+            messages = trace.getWorkingMemory().getMessages();
+        }
         List<ToolMessage> candidates = new ArrayList<>();
         long totalChars = 0;
         for (ChatMessage message : messages.subList(batchStart, messages.size())) {
@@ -134,7 +237,13 @@ public class ToolResultContextInterceptor implements ReActInterceptor {
             convergeTasks(trace, batchStart, toolCalls);
             return;
         }
-        candidates.sort(Comparator.comparingInt((ToolMessage value) -> value.getContent().length()).reversed());
+        // A complete source read is costly to recover and often needed for edits.
+        // When a batch is over budget, shrink other tool results first.
+        candidates.sort((left, right) -> {
+            int readPriority = Boolean.compare("read".equals(left.getName()), "read".equals(right.getName()));
+            return readPriority != 0 ? readPriority
+                    : Integer.compare(right.getContent().length(), left.getContent().length());
+        });
         Map<String, ToolMessage> replacements = new HashMap<>();
         for (ToolMessage tool : candidates) {
             if (totalChars <= options.batchResultChars) break;
@@ -171,7 +280,18 @@ public class ToolResultContextInterceptor implements ReActInterceptor {
         convergeTasks(trace, batchStart, toolCalls);
     }
 
-    /** Explicit task boundaries may rewrite old tool bodies; ordinary rounds keep sent history frozen. */
+    /**
+ * 把新增的工具结果归属到活跃任务，并归档已到达显式生命周期边界之任务持有的正文。
+ *
+ * <p>普通轮次内已发送历史保持冻结：只有当生命周期策略判定其所属任务已关闭或暂停
+ * （绝不会是活跃任务）、该替换确实能缩短文本并节省 token、且成本策略批准此次改写时，
+ * 才会把存储的正文换成其 artifact 预览。与 {@code context_task_update} 切换并发的批次
+ * 不做归属，因为归属关系存在歧义。已应用或失败的改写都会记录为决策。</p>
+ *
+ * @param trace      当前 ReAct 轨迹
+ * @param batchStart 当前批次首条消息的下标
+ * @param calls      当前批次的交换，用于切换检测与 read 源码版本捕获
+ */
     private void convergeTasks(ReActTrace trace, int batchStart, Collection<ToolExchanger> calls) {
         if (tasks == null) return;
         try {
@@ -264,6 +384,19 @@ public class ToolResultContextInterceptor implements ReActInterceptor {
         }
     }
 
+    /**
+ * 询问成本策略这些待执行改写是否值得应用，并记录该决策。
+ *
+ * <p>先计算当前占用（含上一次遥测快照中 system 类别的份额）加上每个候选项节省的 token，
+ * 再针对路由到的模型询问 {@link ContextCacheConfiguration#policy}。
+ * 未配置缓存时无条件批准改写。</p>
+ *
+ * @param trace    当前 ReAct 轨迹
+ * @param messages 用于估算占用的工作记忆消息
+ * @param plans    候选改写
+ * @param active   记录进决策的活跃任务 id
+ * @return 策略允许改写时返回 {@code true}
+ */
     private boolean approveRewrite(ReActTrace trace, List<ChatMessage> messages, List<ArchivePlan> plans, String active) {
         if (cacheConfig == null) return true;
         String model = ContextTelemetryInterceptor.model(trace);
@@ -291,6 +424,16 @@ public class ToolResultContextInterceptor implements ReActInterceptor {
         return Boolean.TRUE.equals(decision.get("allow"));
     }
 
+    /**
+ * 一项待执行的替换：用更短的 artifact 预览替换一条已提交的工具结果正文。
+ *
+ * @param index      该工具消息在工作记忆中的位置
+ * @param tool       待替换的原始消息
+ * @param invocation 存储全文所用的制品键（已按 run/轮次限定作用域）
+ * @param reason     随制品记录的投影原因
+ * @param metadata   随制品记录携带的额外元数据
+ * @param preview    将要替换原文的更短正文
+ */
     private static final class ArchivePlan {
         final int index;
         final ToolMessage tool;
@@ -302,6 +445,22 @@ public class ToolResultContextInterceptor implements ReActInterceptor {
         }
     }
 
+    /**
+ * 把完整结果持久化为 artifact，并返回缩短后的投影占位文本。
+ *
+ * <p>invocation 键按 run、Reason 轮次、wire id 与 reason 限定作用域，
+ * 以避免复用 wire call id 的提供方产生冲突。read 结果还会捕获工作区源码版本；
+ * 任务簿记失败会被忽略，治理绝不会因此被禁用；失败时不记录任何负载内容。</p>
+ *
+ * @param trace        当前 ReAct 轨迹
+ * @param invocationId 工具调用的 wire id
+ * @param tool         工具名
+ * @param content      待归档的完整结果文本
+ * @param reason       随制品记录的投影原因
+ * @param previewChars 内联保留的预览大小
+ * @param args         工具参数，用于 read 源码版本捕获
+ * @return 投影占位文本；若没有缩短或持久化失败则返回 {@code null}
+ */
     private String project(ReActTrace trace, String invocationId, String tool, String content,
                            String reason, int previewChars, Map<String, Object> args) {
         try {
@@ -325,6 +484,18 @@ public class ToolResultContextInterceptor implements ReActInterceptor {
         }
     }
 
+    /**
+ * 持久化 {@code read} 结果，并渲染所选计划对应的投影占位文本
+ *（重复引用、同版本区间增量或受限摘录）。
+ *
+ * @param trace        当前 ReAct 轨迹
+ * @param invocationId 工具调用的 wire id
+ * @param content      read 产出的完整文本
+ * @param plan         已选定的投影计划，决定保留哪些可见内容
+ * @param args         工具参数，用于源码版本捕获
+ * @return 当占位文本符合 {@link ContextManagementOptions#readVisibleChars}
+ *         且确实短于原文时返回渲染结果；否则返回 {@code null}
+ */
     private String projectRead(ReActTrace trace, String invocationId, String content,
                                ReadToolProjection plan, Map<String, Object> args) {
         try {
@@ -347,14 +518,100 @@ public class ToolResultContextInterceptor implements ReActInterceptor {
         }
     }
 
-    private static boolean eligible(String tool, ToolResult result) {
-        return TOOLS.contains(tool) && result != null && !result.isError()
-                && result.getBlocks().stream().allMatch(block -> block instanceof TextBlock)
+    /**
+ * 持久化一条结果状态（bash 诊断信息或超长错误），并在给定预算内渲染其投影占位文本；
+ * 渲染成功会记录为一条 action。
+ *
+ * @param trace        当前 ReAct 轨迹
+ * @param invocationId 工具调用的 wire id
+ * @param tool         工具名
+ * @param content      待归档的完整结果状态文本
+ * @param plan         已选定的结果投影计划（状态码、诊断信息、头/尾）
+ * @param budget       占位文本允许的最大可见字符数
+ * @param args         工具参数，用于 read 源码版本捕获
+ * @return 当结果符合 {@code budget} 且确实短于原文时返回渲染的占位文本；否则返回 {@code null}
+ */
+    private String projectOutcome(ReActTrace trace, String invocationId, String tool, String content,
+                                  ToolOutcomeProjection plan, int budget, Map<String, Object> args) {
+        try {
+            String scopedInvocation = trace.getRunId() + ":" + trace.getCurrentTurnId() + ":"
+                    + invocationId + ":" + plan.reason;
+            String sessionId = trace.getSession().getSessionId();
+            Map<String, String> metadata = new HashMap<>();
+            if (tasks != null) {
+                try { metadata.put("taskId", tasks.currentTaskId(sessionId)); }
+                catch (IOException ignored) { /* Preserve a usable result when bookkeeping fails. */ }
+            }
+            if ("read".equals(tool)) ContextSourceVersion.capture(workspace, args, metadata);
+            ContextArtifactStore.Artifact artifact = store.save(sessionId, scopedInvocation,
+                    tool, content, plan.reason, 0, metadata);
+            String projected = plan.render(artifact.id);
+            if (projected.length() > budget || projected.length() >= content.length()) return null;
+            store.recordAction(sessionId, "tool_result_projection", artifact.id,
+                    plan.reason + "; visible_chars=" + projected.length(), content.length());
+            return projected;
+        } catch (IOException e) {
+            LOG.warn("Tool diagnostic persistence failed; retaining original ({})", e.getClass().getSimpleName());
+            return null;
+        }
+    }
+
+    /**
+ * 对在 {@code onToolCallEnd} 执行之后才进入工作记忆的错误结果重新投影——
+ * 关键执行异常物化为 ToolMessage 的时机晚于单结果钩子，只能在此补救。
+ *
+ * @param trace          当前 ReAct 轨迹
+ * @param messages       工作记忆消息
+ * @param batchStart     当前批次首条消息的下标
+ * @param batchIds       最后一条 Reason 消息声明的 wire id 集合
+ * @param exchangersById 按 wire id 索引的交换，用于读取原始参数
+ * @return 至少替换了一条消息时返回 {@code true}（工作记忆已同步更新）
+ */
+    private boolean projectCommittedErrors(ReActTrace trace, List<ChatMessage> messages, int batchStart,
+                                           Set<String> batchIds, Map<String, ToolExchanger> exchangersById) {
+        List<ChatMessage> projected = null;
+        for (int i = batchStart; i < messages.size(); i++) {
+            if (!(messages.get(i) instanceof ToolMessage)) continue;
+            ToolMessage tool = (ToolMessage) messages.get(i);
+            if (!batchIds.contains(tool.getToolCallId()) || !tool.isError() || tool.isReturnDirect()
+                    || tool.hasMetadata(AgentTrace.META_FIRST) || tool.isMultiModal()
+                    || !tool.getBlocks().stream().allMatch(block -> block instanceof TextBlock)
+                    || !isRawText(tool.getContent())) continue;
+            ToolOutcomeProjection plan = ToolOutcomeProjection.plan(tool.getName(), tool.getContent(),
+                    true, options.errorVisibleChars);
+            if (plan == null) continue;
+            ToolExchanger source = exchangersById.get(tool.getToolCallId());
+            String replacement = projectOutcome(trace, tool.getToolCallId(), tool.getName(),
+                    tool.getContent(), plan, options.errorVisibleChars,
+                    source == null ? null : source.getArgs());
+            if (replacement == null) continue;
+            if (projected == null) projected = new ArrayList<>(messages);
+            ToolMessage next = ChatMessage.ofTool(ToolResult.error(replacement),
+                    tool.getName(), tool.getToolCallId(), false);
+            if (tool.getMetadata() != null) tool.getMetadata().forEach((key, value) -> {
+                if (!"token_size".equals(key)) next.addMetadata(key, value);
+            });
+            projected.set(i, next);
+            if (source != null && source.getToolResult() != null && source.getToolResult().isError()) {
+                source.setResult(replacement);
+            }
+        }
+        if (projected == null) return false;
+        trace.getWorkingMemory().replaceMessages(projected);
+        return true;
+    }
+
+    /** 结果仅由纯文本组成、且不是已有占位文本时返回 true。 */
+    private static boolean textOnly(ToolResult result) {
+        return result != null && result.getBlocks().stream().allMatch(block -> block instanceof TextBlock)
                 && isRawText(result.getContent());
     }
 
+    /** 文本非空、且既不是上下文 artifact 也不是投影占位文本时返回 true。 */
     private static boolean isRawText(String content) {
-        return content != null && !content.isEmpty() && !content.startsWith("<context-artifact id=\"");
+        return content != null && !content.isEmpty()
+                && !content.startsWith("<context-artifact id=\"")
+                && !content.startsWith("<tool-result-projection ");
     }
 
 }

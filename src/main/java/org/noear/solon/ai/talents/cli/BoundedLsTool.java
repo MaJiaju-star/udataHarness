@@ -43,16 +43,16 @@ import java.util.PriorityQueue;
  */
 public final class BoundedLsTool extends AbsTalent {
     /** 默认单页条数（模型未传 limit 或 limit < 1 时生效）。 */
-    private static final int DEFAULT_LIMIT = 100;
+    private static final int DEFAULT_LIMIT = 200;
     /** 单页条数硬上限（即使模型传入更大 limit 也会被截断到此值）。 */
     private static final int MAX_LIMIT = 500;
     /** 单次输出的字符硬上限，含 "[DIR] "/"[FILE] " 前缀与结尾游标提示。 */
-    private static final int MAX_OUTPUT_CHARS = 50_000;
+    private static final int MAX_OUTPUT_CHARS = 60_000;
 
     /** 上游终端 Talent，用于反射取守卫对象，以及回落委托不可访问的逻辑路径列举。 */
-    private final TerminalTalent terminal;
+    final TerminalTalent terminal;
     /** Solon 路径安全守卫（resolveSafePath/isIgnored/isReadDenied）。 */
-    private final TerminalSupport support;
+    final TerminalSupport support;
     /** 逻辑路径（@xxx）挂载解析器。 */
     private final MountManager mounts;
     /** 工作区根目录（已绝对路径化并 normalize）。 */
@@ -86,14 +86,14 @@ public final class BoundedLsTool extends AbsTalent {
 
     /**
      * 提供给模型的使用提示：覆盖 Solon 默认的目录列举说明，
-     * 强调 100 项默认页与 {@code after} 游标续页机制，避免模型误以为一次可拿全量结果。
+     * 强调 200 项默认页与 {@code after} 游标续页机制，避免模型误以为一次可拿全量结果。
      *
      * @param prompt 当前提示词上下文（未使用）
      * @return 中文使用指令
      */
     @Override
     public String getInstruction(Prompt prompt) {
-        return "ls 默认只返回 100 项。若有更多结果，按输出的 after 游标继续；recursive 最多遍历三层。";
+        return "ls 默认只返回 200 项。若有更多结果，按输出的 after 游标继续；recursive 最多遍历三层。";
     }
 
     /**
@@ -123,13 +123,13 @@ public final class BoundedLsTool extends AbsTalent {
      * @return 格式化列表（{@code [DIR]}/{@code [FILE]} 前缀）+ 页尾状态与续页游标；或错误字符串
      * @throws IOException 遍历文件树时发生 I/O 错误（调用方捕获转为会话错误）
      */
-    @ToolMapping(name = "ls", description = "列出目录。默认 100 项、最多 500 项；内容未完时使用 after 游标继续。recursive 最多遍历三层；支持逻辑路径。")
+    @ToolMapping(name = "ls", description = "列出目录。默认 200 项、最多 500 项；内容未完时使用 after 游标继续。recursive 最多遍历三层；支持逻辑路径。")
     public String ls(
             @Param(value = "path", required = false, description = "目录相对路径或逻辑路径，默认当前工作区") String path,
             @Param(value = "recursive", required = false, description = "是否递归列出，最多三层") Boolean recursive,
             @Param(value = "show_hidden", required = false, description = "是否显示隐藏文件") Boolean showHidden,
             @Param(value = "after", required = false, description = "上一页返回的 after 游标") String after,
-            @Param(value = "limit", required = false, description = "最多返回条数，默认 100，最大 500") Integer limit,
+            @Param(value = "limit", required = false, description = "最多返回条数，默认 200，最大 500") Integer limit,
             String __cwd) throws IOException {
         String selectedPath = path == null || path.isEmpty() ? "." : path;
         if (selectedPath.startsWith("@")) {

@@ -41,9 +41,12 @@ agent:
     # 字符预算是保守的源头控制，不等同于模型实际 Token 数；原有压缩器继续兜底。
     tool-results:
       enabled: true
-      single-max-chars: 50000
-      batch-max-chars: 200000
-      preview-chars: 2000
+      single-max-chars: 64000
+      batch-max-chars: 256000
+      preview-chars: 4000
+      read-visible-chars: 160000
+      bash-visible-chars: 20000
+      error-visible-chars: 16000
       restore-max-chars: 16000
 
   sandbox:

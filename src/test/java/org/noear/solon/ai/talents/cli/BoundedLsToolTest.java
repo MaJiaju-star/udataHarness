@@ -22,17 +22,17 @@ class BoundedLsToolTest {
 
     @Test
     void pagesLargeDirectoryWithoutLosingEntries() throws IOException {
-        for (int i = 0; i < 120; i++) {
+        for (int i = 0; i < 220; i++) {
             Files.createFile(workspace.resolve(String.format("file-%03d.txt", i)));
         }
         String first = tool().ls(".", false, false, null, null, null);
-        assertTrue(first.contains("file-099.txt"));
-        assertFalse(first.contains("file-100.txt"));
-        assertTrue(first.contains("after=file-099.txt, limit=100"));
+        assertTrue(first.contains("file-199.txt"));
+        assertFalse(first.contains("file-200.txt"));
+        assertTrue(first.contains("after=file-199.txt, limit=200"));
 
-        String second = tool().ls(".", false, false, "file-099.txt", null, null);
-        assertTrue(second.contains("file-100.txt"));
-        assertTrue(second.contains("file-119.txt"));
+        String second = tool().ls(".", false, false, "file-199.txt", null, null);
+        assertTrue(second.contains("file-200.txt"));
+        assertTrue(second.contains("file-219.txt"));
         assertTrue(second.contains("[目录列举完毕]"));
     }
 

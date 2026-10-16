@@ -1,5 +1,7 @@
 package org.noear.solon.ai.talents.cli;
 
+import com.udata.harness.common.context.ContextArtifactStore;
+
 import org.noear.solon.ai.annotation.ToolMapping;
 import org.noear.solon.ai.chat.talent.AbsTalent;
 import org.noear.solon.ai.chat.prompt.Prompt;
@@ -15,7 +17,11 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
+import java.util.LinkedHashMap;
+import java.util.Map;
 import java.util.function.Consumer;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 /**
  * Bounded replacement for the Solon 4.1.1 read tool. It deliberately reuses the
@@ -25,33 +31,41 @@ import java.util.function.Consumer;
  * <p>读取行为受四重上限约束，避免单次工具结果撑爆上下文：</p>
  * <ul>
  *   <li>默认返回前 {@value #DEFAULT_LINES} 行，单次最多 {@value #MAX_LINES} 行；</li>
- *   <li>单次输出总量不超过 {@value #MAX_OUTPUT_BYTES} 字节（50KB）；</li>
+ *   <li>单次编号正文不超过 {@value #MAX_OUTPUT_BYTES} 字节（256 KiB）；</li>
  *   <li>超长单行只保留前 {@value #MAX_LINE_CHARS} 字符；</li>
  *   <li>到达任一上限时在结果尾部给出续读所需的 offset/limit。</li>
  * </ul>
  *
- * <p>分页由调用方通过 {@code offset} 参数驱动；工具本身不保留任何读取状态，
- * 因此多次调用之间可安全交错（不同会话/子智能体同时读同一文件互不影响）。</p>
+ * <p>分页由调用方通过 {@code offset} 参数驱动。仅为相同会话、相同范围、
+ * 内容哈希未变化的重复读取保留有界的快照索引；不同会话不可复用。</p>
  *
  * @see #read(String, Integer, Integer, String)
  * @see #readWindow(Path, String, int, int, long)
  */
 public final class BoundedReadTool extends AbsTalent {
     /** 默认返回行数（未显式传 limit 时生效）。 */
-    static final int DEFAULT_LINES = 500;
+    static final int DEFAULT_LINES = 4000;
     /** 单次读取行数硬上限（传入更大的 limit 会被截断到该值）。 */
-    static final int MAX_LINES = 2000;
+    static final int MAX_LINES = 8000;
     /** 单行显示字符数上限；超出部分截断并标记 {@code …(单行已截断)}。 */
-    static final int MAX_LINE_CHARS = 2000;
-    /** 单次工具输出的 UTF-8 字节硬上限（50KB，含行号前缀与页眉）。 */
-    static final int MAX_OUTPUT_BYTES = 50 * 1024;
+    static final int MAX_LINE_CHARS = 64 * 1024;
+    /** 单次编号正文的 UTF-8 字节上限（256 KiB，含行号，不含页眉和提示）。 */
+    static final int MAX_OUTPUT_BYTES = 256 * 1024;
+    /** Historical result pages stay small enough for targeted follow-up reads. */
+    static final int SNAPSHOT_OUTPUT_BYTES = 16 * 1024;
+    static final int SNAPSHOT_CHAR_LIMIT = 16_000;
     static final long MAX_VERSIONED_BYTES = 16L * 1024 * 1024;
+    private static final int MAX_INDEX_ENTRIES = 512;
+    private static final Pattern NEXT_OFFSET = Pattern.compile("若需继续，请使用 offset=(\\d+)");
 
     private final TerminalTalent terminal;
     private final TerminalSupport support;
     private final MountManager mountManager;
     private final Field warmupHook;
     private final Path workspace;
+    private final ToolResultPaths toolResults;
+    private final ContextArtifactStore artifactStore;
+    private final Map<String, CachedRead> snapshots = new LinkedHashMap<>(64, .75f, true);
 
     /**
      * 构造工具实例，并通过反射接入 {@code TerminalTalent} 内部的读守卫。
@@ -66,8 +80,14 @@ public final class BoundedReadTool extends AbsTalent {
      * @throws IllegalStateException 上游私有字段不可用（版本不兼容）时抛出
      */
     public BoundedReadTool(TerminalTalent terminal, String workspace) {
+        this(terminal, workspace, null);
+    }
+
+    public BoundedReadTool(TerminalTalent terminal, String workspace, ContextArtifactStore store) {
         this.terminal = terminal;
         this.workspace = Paths.get(workspace).toAbsolutePath().normalize();
+        this.toolResults = new ToolResultPaths(store);
+        this.artifactStore = store;
         try {
             Field field = TerminalTalent.class.getDeclaredField("support");
             field.setAccessible(true);
@@ -90,7 +110,7 @@ public final class BoundedReadTool extends AbsTalent {
      */
     @Override
     public String getInstruction(Prompt prompt) {
-        return "read 默认只返回前 500 行；输出提示内容未完时，按 offset 分页续读。超长单行只显示前 2000 字符。";
+        return "read 默认尝试读取前 4000 行；未变化的同范围重复读取只返回引用。输出提示内容未完时按 offset 续读。@tool-results/<id>.txt 是当前会话的只读历史结果。";
     }
 
     /**
@@ -118,17 +138,39 @@ public final class BoundedReadTool extends AbsTalent {
      * @throws IOException        读取过程中发生 I/O 错误
      * @throws IllegalArgumentException {@code filePath} 为 null
      */
-    @ToolMapping(name = "read", description = "读取文本文件。默认返回最多 500 行；单次最多 2000 行、50KB，超长单行只显示前 2000 字符。结果提供下一页 offset；支持逻辑路径。")
+    @ToolMapping(name = "read", description = "读取文本文件。默认返回最多 4000 行；单次最多 8000 行、256 KiB 编号正文。未变化的同范围重复读取只返回快照引用。")
     public String read(
             @Param(value = "file_path", description = "工作区相对路径或 @ 开头的逻辑路径") String filePath,
             @Param(value = "offset", required = false, description = "起始行号，从 1 开始") Integer offset,
-            @Param(value = "limit", required = false, description = "最多读取的行数，默认 500，最大 2000") Integer limit,
-            String __cwd) throws IOException {
+            @Param(value = "limit", required = false, description = "最多读取的行数，默认 4000，最大 8000") Integer limit,
+            @Param(value = "char_offset", required = false, description = "仅 @tool-results 使用：从此 UTF-16 字符位置分页") Integer charOffset,
+            @Param(value = "char_limit", required = false, description = "仅 @tool-results 使用：最多读取字符数，上限 16000") Integer charLimit,
+            String __cwd, String __sessionId) throws IOException {
         if (filePath == null) {
             throw new IllegalArgumentException("file_path 不能为空");
         }
         int start = offset == null || offset < 1 ? 1 : offset;
         int count = limit == null || limit < 1 ? DEFAULT_LINES : Math.min(limit, MAX_LINES);
+
+        if (ToolResultPaths.isVirtual(filePath)) {
+            try {
+                Path snapshot = toolResults.resolve(filePath, __sessionId, false);
+                if (charOffset != null || charLimit != null) {
+                    int requested = charLimit == null ? 12000 : Math.min(charLimit, SNAPSHOT_CHAR_LIMIT);
+                    if (charOffset != null && charOffset < 0 || requested < 1) {
+                        return "错误：char_offset 必须非负，char_limit 必须为正数。";
+                    }
+                    String id = filePath.substring(ToolResultPaths.ROOT.length() + 1, filePath.length() - 4);
+                    return artifactStore.restore(__sessionId, id, charOffset == null ? 0 : charOffset, requested);
+                }
+                String result = readWindow(snapshot, filePath, start, count, Files.size(snapshot), SNAPSHOT_OUTPUT_BYTES);
+                return "历史工具结果快照（只读，不代表当前工作区文件；超长行可用 char_offset/char_limit 分页）。\n" + result;
+            } catch (IOException e) {
+                return "错误：当前会话中找不到该工具结果，或路径无效。";
+            }
+        }
+
+        if (charOffset != null || charLimit != null) return "错误：char_offset/char_limit 仅适用于 @tool-results。";
 
         // Non-local virtual sources stay on Solon's MountSource read path and its
         // 10 MB guard. Local mounts use the same bounded scanner as workspace files.
@@ -157,6 +199,22 @@ public final class BoundedReadTool extends AbsTalent {
             return "(文件内容为空)\n文件版本 SHA-256: " + FileVersion.sha256(target);
         }
         String beforeVersion = fileSize <= MAX_VERSIONED_BYTES ? FileVersion.sha256(target) : null;
+        String cacheKey = beforeVersion == null || artifactStore == null || __sessionId == null
+                || __sessionId.isEmpty() ? null
+                : __sessionId + '\0' + target.toAbsolutePath().normalize() + '\0'
+                + filePath + '\0' + start + '\0' + count;
+        if (cacheKey != null) {
+            CachedRead cached;
+            synchronized (snapshots) { cached = snapshots.get(cacheKey); }
+            if (cached != null && beforeVersion.equals(cached.version)) {
+                try {
+                    artifactStore.load(__sessionId, cached.artifactId);
+                    return unchanged(filePath, start, count, cached);
+                } catch (IOException ignored) {
+                    synchronized (snapshots) { snapshots.remove(cacheKey); }
+                }
+            }
+        }
         String output = readWindow(target, filePath, start, count, fileSize);
         if (beforeVersion != null) {
             if (!beforeVersion.equals(FileVersion.sha256(target))) {
@@ -166,7 +224,55 @@ public final class BoundedReadTool extends AbsTalent {
                     + "（覆盖或编辑时传 expected_sha256）";
         }
         warmup(target);
+        if (cacheKey != null) {
+            try {
+                String invocation = "read-cache:v1:" + cacheKey + ':' + beforeVersion;
+                ContextArtifactStore.Artifact artifact = artifactStore.save(
+                        __sessionId, invocation, "read", output, "unchanged_read_reference", 0);
+                Matcher next = NEXT_OFFSET.matcher(output);
+                int nextOffset = next.find() ? Integer.parseInt(next.group(1)) : 0;
+                synchronized (snapshots) {
+                    snapshots.put(cacheKey, new CachedRead(beforeVersion, artifact.id, nextOffset));
+                    if (snapshots.size() > MAX_INDEX_ENTRIES) {
+                        snapshots.remove(snapshots.keySet().iterator().next());
+                    }
+                }
+            } catch (IOException ignored) {
+                // No recoverable snapshot means no short reference; keep the complete result.
+            }
+        }
         return output;
+    }
+
+    private static String unchanged(String path, int offset, int limit, CachedRead cached) {
+        return "<read-unchanged>\n文件 " + path + " 的 offset=" + offset + ", limit=" + limit
+                + " 与本会话先前读取的内容相同；文件版本 SHA-256: " + cached.version + "。\n"
+                + "复用已有正文；若它已不在上下文中，可用 read(file_path=\"@tool-results/"
+                + cached.artifactId + ".txt\") 读取完整历史快照。"
+                + (cached.nextOffset > 0 ? "\n原读取未完；继续当前文件请用 offset=" + cached.nextOffset + "。" : "")
+                + "\n</read-unchanged>";
+    }
+
+    private static final class CachedRead {
+        final String version;
+        final String artifactId;
+        final int nextOffset;
+
+        CachedRead(String version, String artifactId, int nextOffset) {
+            this.version = version;
+            this.artifactId = artifactId;
+            this.nextOffset = nextOffset;
+        }
+    }
+
+    /** Source-compatible entry point for direct callers; virtual results require injected session ID. */
+    public String read(String filePath, Integer offset, Integer limit, String __cwd) throws IOException {
+        return read(filePath, offset, limit, null, null, __cwd, null);
+    }
+
+    public String read(String filePath, Integer offset, Integer limit, String __cwd,
+                       String __sessionId) throws IOException {
+        return read(filePath, offset, limit, null, null, __cwd, __sessionId);
     }
 
     /**
@@ -202,6 +308,11 @@ public final class BoundedReadTool extends AbsTalent {
      * @throws IOException 读取文件时发生 I/O 错误
      */
     static String readWindow(Path target, String displayPath, int offset, int limit, long fileSize) throws IOException {
+        return readWindow(target, displayPath, offset, limit, fileSize, MAX_OUTPUT_BYTES);
+    }
+
+    static String readWindow(Path target, String displayPath, int offset, int limit, long fileSize,
+                             int outputBudget) throws IOException {
         StringBuilder body = new StringBuilder();
         int outputBytes = 0;
         long lineNumber = 1;
@@ -224,7 +335,17 @@ public final class BoundedReadTool extends AbsTalent {
                 String formatted = String.format("%6d | %s%s\n", lineNumber, line.text,
                         line.truncated ? "…(单行已截断)" : "");
                 int bytes = formatted.getBytes(StandardCharsets.UTF_8).length;
-                if (outputBytes + bytes > MAX_OUTPUT_BYTES) {
+                if (outputBytes + bytes > outputBudget) {
+                    if (emitted == 0) {
+                        String prefix = String.format("%6d | ", lineNumber);
+                        String marker = "…(单行已截断)\n";
+                        int allowance = outputBudget - prefix.getBytes(StandardCharsets.UTF_8).length
+                                - marker.getBytes(StandardCharsets.UTF_8).length;
+                        body.append(prefix).append(fitUtf8(line.text, Math.max(0, allowance))).append(marker);
+                        longLine = true;
+                        lastLine = lineNumber;
+                        emitted++;
+                    }
                     byteLimit = true;
                     hasMore = true;
                     break;
@@ -264,6 +385,20 @@ public final class BoundedReadTool extends AbsTalent {
             result.append("\n--- [文件读取完毕] ---");
         }
         return result.toString();
+    }
+
+    private static String fitUtf8(String value, int byteBudget) {
+        int end = 0;
+        int bytes = 0;
+        while (end < value.length()) {
+            int codePoint = value.codePointAt(end);
+            int width = codePoint <= 0x7f ? 1 : codePoint <= 0x7ff ? 2
+                    : codePoint <= 0xffff ? 3 : 4;
+            if (bytes + width > byteBudget) break;
+            bytes += width;
+            end += Character.charCount(codePoint);
+        }
+        return value.substring(0, end);
     }
 
     /**

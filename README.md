@@ -21,26 +21,37 @@ SolonCode、Solon Harness 和 `D:\code\dev-agent` 实现。
 ## 上下文工具结果治理
 
 设计与分期计划见 [docs/context-management-plan.md](docs/context-management-plan.md)。首批已在
-应用层接入大工具结果外置、读取结果去重、本批总预算和 `context_restore` 分页恢复；
+应用层接入大工具结果外置、读取结果去重和本批总预算；历史结果通过现有 `read`/`grep` 按需查看；
 原有框架压缩器继续承担全局容量兜底。该实现不跳过工具执行，不依赖额外模型调用。
 
-`model.yml` 的 `agent.context.tool-results` 控制开关和字符预算：默认单条 50,000、
-本批 200,000、预览 2,000、恢复正文最多 16,000 字符。字符数不是 Token 数。
+`model.yml` 的 `agent.context.tool-results` 控制开关和字符预算：默认单条 64,000、
+本批 256,000、预览 4,000 字符；`read`/`bash`/长错误的模型可见预算分别为
+160,000/20,000/16,000 字符。字符数不是 Token 数。
+`read` 默认尝试读取 4000 行、最多 8000 行，编号正文单次最多 256 KiB；超出后提示按行续读。未变化的同会话同范围重复读取只返回带可恢复快照路径的短引用。历史快照按需读取的
+单页正文最多 16 KiB，字符分页默认 12,000、最多 16,000 字符。
+`grep` 单页正文最多 32,000 字符，`ls`/`glob` 默认每页 200 项。
 预算为软限制：受保护、错误、媒体、直接返回、未知工具及引用本身无法再缩短的结果保留原样。
 当前治理的工具为 read/bash/grep/glob/ls/webfetch/websearch/codesearch/lsp；图表、Todo、
-恢复工具和自定义工具保持原行为。原文在保存失败时也保持原样。
+自定义工具保持原行为。原文在保存失败时也保持原样。
 
 原文与稳定预览保存在 `<agent.data-dir>/users/<userId>/context-artifacts/<workspaceId>/` 下，
-按会话隔离。模型用返回的 artifact ID 调用 `context_restore(artifact_id, offset, limit)`；
-offset/limit 使用 UTF-16 字符位置，并根据 next_offset 继续读取。
-恢复内容是历史快照，需要当前文件时仍应重新 read。读取去重仅在同参数、同正文的
-旧 Read 结果仍可见于 WorkingMemory 时生效；正文已退出后会重新提供结果。
+按会话隔离。模型可用 `read(file_path="@tool-results/<id>.txt", offset, limit)` 按行分页；
+超长单行可用 `char_offset/char_limit` 按 UTF-16 字符分页，
+或用 `grep(pattern, path="@tool-results")` 搜索当前会话已归档的结果；路径只读，不能由 `write/edit` 修改。
+读取内容是历史快照，需要当前文件时仍应重新 read。对不超过 16 MiB 的本地文件，重复读取先核对当前 SHA-256；即使旧 Read 正文已退出 WorkingMemory，也可用会话快照恢复。保存失败或版本变化时照常返回新读取结果。
+目前 `bash` 仍受 Solon 执行器约 1 MiB 的物理捕获上限约束；超限时进程会被终止，
+归档只能保存已捕获部分。执行过程中直接落盘、并完整保留更大输出，需要后续修改执行器输出流。
 
 批量治理在 Native Tool 模式的 ActionEnd 安全边界执行，只改变下一次请求将使用的本批结果。
 单条外置也支持文本 Observation 模式；文本模式批量治理暂不启用。
 同一引擎的子代理使用自身会话范围，未提供跨会话访问。快照目前无自动过期删除，
-应纳入现有数据目录权限与备份策略。关闭开关也会移除恢复工具；需要恢复旧快照时重新启用。
-新增任务档案、任务切换归档、关键词检索和恢复时的源文件版本检查：
+应纳入现有数据目录权限与备份策略。关闭开关也会关闭结果外置与虚拟路径。
+
+`context_restore`、`context_search`、`context_task_update`、`context_task_snapshot` 不再注册给 Agent；
+也不再要求模型为维护任务状态额外调用工具。旧任务档案和归档文件保留在磁盘上，
+但任务切换驱动的历史改写已停用。已有归档可通过 `@tool-results` 读取。
+
+此前任务档案方案（现为历史设计，默认 Agent 不再使用）：
 
 - `context_task_update(task_id, state, ...)` 记录模块、用户约束、结论、验证和下一步。
   激活新任务会暂停前一任务；关闭任务必须填写结论和验证说明。验证是 Agent 报告的证据，工具不会代替执行测试。

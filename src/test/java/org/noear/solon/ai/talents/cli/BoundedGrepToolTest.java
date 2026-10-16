@@ -1,5 +1,7 @@
 package org.noear.solon.ai.talents.cli;
 
+import com.udata.harness.common.context.ContextArtifactStore;
+
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import org.noear.solon.ai.talents.mount.MountManager;
@@ -23,6 +25,21 @@ class BoundedGrepToolTest {
     private BoundedGrepTool tool() {
         return new BoundedGrepTool(new TerminalTalent(new MountManager(workspace.toString())),
                 workspace.toString());
+    }
+
+    @Test
+    void searchesOnlyCurrentSessionToolResults() throws IOException {
+        ContextArtifactStore store = new ContextArtifactStore(workspace.resolve("artifacts"));
+        String own = store.save("session-a", "own", "bash", "needle-own\n", "large", 5).id;
+        store.save("session-b", "foreign", "bash", "needle-foreign\n", "large", 5);
+        BoundedGrepTool grep = new BoundedGrepTool(
+                new TerminalTalent(new MountManager(workspace.toString())), workspace.toString(), store);
+        String output = grep.grep("needle", "@tool-results", null, "content", null,
+                null, null, true, null, "session-a");
+        assertTrue(output.contains("@tool-results/" + own + ".txt:1: needle-own"));
+        assertFalse(output.contains("needle-foreign"));
+        assertTrue(grep.grep("needle", "@tool-results/../secret.txt", null, null, null,
+                null, null, null, null, "session-a").contains("路径无效"));
     }
 
     @Test
@@ -83,14 +100,15 @@ class BoundedGrepToolTest {
     @Test
     void characterBudgetReturnsAUsableContinuation() throws IOException {
         StringBuilder body = new StringBuilder();
-        for (int i = 0; i < 30; i++) {
+        for (int i = 0; i < 60; i++) {
             body.append("hit ").append(repeat('x', 700)).append('\n');
         }
         Files.write(workspace.resolve("many.txt"), body.toString().getBytes(StandardCharsets.UTF_8));
         String first = tool().grep("hit", ".", null, "content", null,
                 null, 100, null, null);
         assertTrue(first.contains("[内容未完]"));
-        assertTrue(first.length() < 13_000);
+        assertTrue(first.length() > 20_000);
+        assertTrue(first.length() < 33_000);
         String cursor = first.substring(first.indexOf("after=") + 6, first.indexOf(", limit="));
         int lastLine = Integer.parseInt(cursor.substring(cursor.lastIndexOf('#') + 1));
         String second = tool().grep("hit", ".", null, "content", null,
