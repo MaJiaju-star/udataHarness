@@ -17,6 +17,7 @@ import java.util.List;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class UserHarnessEngineServiceImplTest {
     @TempDir
@@ -117,6 +118,83 @@ class UserHarnessEngineServiceImplTest {
     }
 
     @Test
+    void optionalToolsAreHiddenByDefaultAndCanBeReenabled() throws Exception {
+        UserHarnessEngineServiceImpl disabled = runnableService();
+        org.noear.solon.ai.harness.HarnessEngine defaultEngine = disabled.get("alice");
+        org.noear.solon.ai.agent.react.ReActOptions defaultOptions = defaultEngine.getMainAgent()
+                .getConfig().getDefaultOptions();
+        for (String name : Utils.asList("render_echart", "render_antv_chart", "bash_start",
+                "bash_wait", "bash_stop", "todoread", "todowrite", "task", "multitask", "lsp", "now")) {
+            assertFalse(toolNames(defaultOptions).contains(name), name);
+        }
+        for (String name : Utils.asList("read", "write", "edit", "bash", "ls", "glob", "grep")) {
+            assertTrue(toolNames(defaultOptions).contains(name), name);
+        }
+        assertFalse(defaultEngine.isBashAsyncEnabled());
+        assertFalse(defaultEngine.isSubagentEnabled());
+        assertTrue(disabled.disabledOptionalTools().contains("lsp"));
+        assertTrue(disabled.disabledOptionalTools().contains("todo"));
+
+        UserHarnessEngineServiceImpl enabled = runnableService();
+        for (String field : Utils.asList("renderEchartEnabled", "renderAntvChartEnabled",
+                "bashStartEnabled", "bashWaitEnabled", "bashStopEnabled", "lspToolEnabled",
+                "todoReadEnabled", "todoWriteEnabled", "taskToolEnabled", "nowToolEnabled")) {
+            inject(enabled, field, true);
+        }
+        org.noear.solon.ai.harness.HarnessEngine enabledEngine = enabled.get("alice");
+        org.noear.solon.ai.agent.react.ReActOptions enabledOptions = enabledEngine.getMainAgent()
+                .getConfig().getDefaultOptions();
+        for (String name : Utils.asList("render_echart", "render_antv_chart",
+                "bash_start", "bash_wait", "bash_stop",
+                "todoread", "todowrite", "task", "multitask", "lsp", "now")) {
+            assertTrue(toolNames(enabledOptions).contains(name), name);
+        }
+        assertTrue(enabledEngine.isBashAsyncEnabled());
+        org.junit.jupiter.api.Assertions.assertTrue(enabledEngine.isSubagentEnabled());
+        assertTrue(enabled.disabledOptionalTools().isEmpty());
+    }
+
+    @Test
+    void todoSwitchesCanExposeOnlyOneTool() throws Exception {
+        UserHarnessEngineServiceImpl service = runnableService();
+        inject(service, "todoReadEnabled", true);
+        org.noear.solon.ai.agent.react.ReActOptions options = service.get("alice")
+                .getMainAgent().getConfig().getDefaultOptions();
+        assertTrue(toolNames(options).contains("todoread"));
+        assertFalse(toolNames(options).contains("todowrite"));
+
+        UserHarnessEngineServiceImpl writeOnly = runnableService();
+        inject(writeOnly, "todoWriteEnabled", true);
+        org.noear.solon.ai.agent.react.ReActOptions writeOptions = writeOnly.get("alice")
+                .getMainAgent().getConfig().getDefaultOptions();
+        assertTrue(toolNames(writeOptions).contains("todowrite"));
+        assertFalse(toolNames(writeOptions).contains("todoread"));
+    }
+
+    @Test
+    void shellSearchProfileHidesSearchToolsButKeepsGuardedFileTools() throws Exception {
+        UserHarnessEngineServiceImpl standard = runnableService();
+        for (String name : Utils.asList("ls", "glob", "grep")) {
+            assertTrue(toolNames(standard.get("alice").getMainAgent().getConfig()
+                    .getDefaultOptions()).contains(name));
+        }
+        assertTrue(standard.disabledFileTools().isEmpty());
+
+        UserHarnessEngineServiceImpl shellSearch = runnableService();
+        inject(shellSearch, "fileToolProfile", "shell-search");
+        assertEquals(Utils.asList("ls", "glob", "grep"), shellSearch.disabledFileTools());
+        java.util.Set<String> names = toolNames(shellSearch.get("alice").getMainAgent()
+                .getConfig().getDefaultOptions());
+        for (String name : Utils.asList("ls", "glob", "grep")) assertFalse(names.contains(name), name);
+        for (String name : Utils.asList("bash", "read", "edit", "write")) assertTrue(names.contains(name), name);
+
+        UserHarnessEngineServiceImpl invalid = runnableService();
+        inject(invalid, "fileToolProfile", "unknown");
+        org.junit.jupiter.api.Assertions.assertThrows(IllegalArgumentException.class,
+                () -> invalid.get("alice"));
+    }
+
+    @Test
     void persistsSandboxPreferenceForUser() throws Exception {
         UserHarnessEngineServiceImpl service = configuredService();
         inject(service, "dataDir", tempDir.resolve("data").toString());
@@ -206,6 +284,30 @@ class UserHarnessEngineServiceImplTest {
         inject(service, "provider", "openai");
         inject(service, "model", "deepseek-v4-flash");
         return service;
+    }
+
+    private UserHarnessEngineServiceImpl runnableService() throws Exception {
+        UserHarnessEngineServiceImpl service = configuredService();
+        inject(service, "sessionRepository", new SessionRepository(tempDir.resolve("data")));
+        inject(service, "workspaces", new UserWorkspaceServiceImpl(tempDir.resolve("workspace")));
+        inject(service, "dataDir", tempDir.resolve("data").toString());
+        inject(service, "harnessHome", ".soloncode");
+        return service;
+    }
+
+    private java.util.Set<String> toolNames(org.noear.solon.ai.agent.react.ReActOptions options) {
+        java.util.Set<String> names = options.getTools().stream()
+                .map(org.noear.solon.ai.chat.tool.FunctionTool::name)
+                .collect(java.util.stream.Collectors.toSet());
+        options.getModelOptions().talents().stream()
+                .flatMap(item -> {
+                    java.util.Collection<org.noear.solon.ai.chat.tool.FunctionTool> tools =
+                            item.target.getTools(null);
+                    return tools == null ? java.util.stream.Stream.empty() : tools.stream();
+                })
+                .map(org.noear.solon.ai.chat.tool.FunctionTool::name)
+                .forEach(names::add);
+        return names;
     }
 
     private void inject(Object target, String name, Object value) throws Exception {

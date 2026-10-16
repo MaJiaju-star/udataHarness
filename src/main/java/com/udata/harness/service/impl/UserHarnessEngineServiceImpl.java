@@ -142,6 +142,41 @@ public class UserHarnessEngineServiceImpl implements UserHarnessEngineService {
     @Inject("${agent.tools.web.webfetch-enabled:true}")
     private boolean webFetchEnabled = true;
 
+    /** Optional tools are off by default; each may be enabled in model.yml. */
+    @Inject("${agent.tools.optional.render-echart-enabled:false}")
+    private boolean renderEchartEnabled;
+
+    @Inject("${agent.tools.optional.render-antv-chart-enabled:false}")
+    private boolean renderAntvChartEnabled;
+
+    @Inject("${agent.tools.optional.bash-start-enabled:false}")
+    private boolean bashStartEnabled;
+
+    @Inject("${agent.tools.optional.bash-wait-enabled:false}")
+    private boolean bashWaitEnabled;
+
+    @Inject("${agent.tools.optional.bash-stop-enabled:false}")
+    private boolean bashStopEnabled;
+
+    @Inject("${agent.tools.optional.lsp-enabled:false}")
+    private boolean lspToolEnabled;
+
+    @Inject("${agent.tools.optional.todowrite-enabled:false}")
+    private boolean todoWriteEnabled;
+
+    @Inject("${agent.tools.optional.todoread-enabled:false}")
+    private boolean todoReadEnabled;
+
+    @Inject("${agent.tools.optional.task-enabled:false}")
+    private boolean taskToolEnabled;
+
+    @Inject("${agent.tools.optional.now-enabled:false}")
+    private boolean nowToolEnabled;
+
+    /** standard keeps structured search tools; shell-search delegates discovery to bash. */
+    @Inject("${agent.tools.file-profile:standard}")
+    private String fileToolProfile = "standard";
+
     /**
      * 每次新请求从持久化会话中恢复的最近消息数。
      *
@@ -477,8 +512,13 @@ public class UserHarnessEngineServiceImpl implements UserHarnessEngineService {
         HarnessEngine.Builder builder = HarnessEngine.of(workspace.toString(), harnessHome)
                 .systemPrompt(systemPrompt + (contextToolResultsEnabled
                         ? "\nLarge tool results may be saved as read-only historical snapshots at @tool-results/<id>.txt. "
-                        + "Use grep(path=\"@tool-results\") to locate archived evidence and read(file_path=\"@tool-results/<id>.txt\") to inspect it only when needed. "
+                        + (shellSearchProfile()
+                        ? "Use read(file_path=\"@tool-results/<id>.txt\") when the artifact ID is known; aggregate artifact search is unavailable in this profile. "
+                        : "Use grep(path=\"@tool-results\") to locate archived evidence and read(file_path=\"@tool-results/<id>.txt\") to inspect it only when needed. ")
                         + "Snapshots are not current workspace files; revalidate changed sources."
+                        : "")
+                        + (shellSearchProfile()
+                        ? "\nFile search profile: use bash for directory listing and file/content search. Prefer rg --files and rg -n when available; otherwise use commands appropriate to the actual shell. Bound command output. Use read for file contents and edit/write for mutations."
                         : ""))
                 .maxTurns(maxTurns)
                 .sessionWindowSize(sessionWindowSize)
@@ -487,14 +527,30 @@ public class UserHarnessEngineServiceImpl implements UserHarnessEngineService {
                 .sessionProvider(sessionRepository)
                 .toolsAdd(Arrays.asList(ToolName.TOOL_ALL_PUBLIC.getName(), ToolName.TOOL_HITL.getName()))
                 .disallowedToolsAdd(disabledWebTools())
+                .disallowedToolsAdd(disabledOptionalTools())
+                .disallowedToolsAdd(disabledFileTools())
                 .extensionAdd((engine, agentName, agentBuilder) -> {
                     // Only replace read when AgentFactory granted the built-in read to this agent.
                     agentBuilder.modelOptions(options -> {
+                        if (!nowToolEnabled) {
+                            // AgentFactory attaches ClockTalent unconditionally, outside the
+                            // disallowed-tools check; remove it before talents activate.
+                            options.talents().removeIf(item ->
+                                    item.target instanceof org.noear.solon.ai.talents.cli.ClockTalent);
+                        }
                         java.util.Set<String> terminalTools = options.talents().stream()
                                 .filter(item -> item.target instanceof TerminalTalentProxy)
                                 .flatMap(item -> item.target.getTools(null).stream())
                                 .map(tool -> tool.name())
                                 .collect(java.util.stream.Collectors.toSet());
+                        if (todoReadEnabled != todoWriteEnabled) {
+                            boolean todoGranted = options.talents().removeIf(
+                                    item -> item.target instanceof org.noear.solon.ai.talents.cli.TodoTalent);
+                            if (todoGranted) {
+                                options.toolAdd(engine.getTodoTalent().getToolAry(
+                                        todoReadEnabled ? "todoread" : "todowrite"));
+                            }
+                        }
                         if (terminalTools.contains("read")) {
                             // Talents activate in insertion order; the later read replaces Solon's built-in one.
                             options.talentAdd(new BoundedReadTool(engine.getTerminalTalent(), engine.getWorkspace(), contextStore));
@@ -516,8 +572,8 @@ public class UserHarnessEngineServiceImpl implements UserHarnessEngineService {
                                     engine.getWorkspace(), terminalTools.contains("write"), terminalTools.contains("edit")));
                         }
                     });
-                    agentBuilder.defaultToolAdd(CHART_TOOL);
-                    agentBuilder.defaultToolAdd(ANTV_CHART_TOOL);
+                    if (renderEchartEnabled) agentBuilder.defaultToolAdd(CHART_TOOL);
+                    if (renderAntvChartEnabled) agentBuilder.defaultToolAdd(ANTV_CHART_TOOL);
                     if (contextOptions != null) {
                         agentBuilder.defaultInterceptorAdd(1000,
                                 new ToolResultContextInterceptor(contextStore, contextOptions, null, workspace, contextCacheConfiguration));
@@ -534,8 +590,8 @@ public class UserHarnessEngineServiceImpl implements UserHarnessEngineService {
                 // 对其余可能修改工作区的命令使用此兜底规则进入人工审批。
                 .permissionRuleAdd(PermissionRule.ask("bash"))
                 .hitlEnabled(true)
-                .subagentEnabled(true)
-                .bashAsyncEnabled(true);
+                .subagentEnabled(taskToolEnabled)
+                .bashAsyncEnabled(bashStartEnabled || bashWaitEnabled || bashStopEnabled);
 
         if ("cache-aligned".equals(compactionMode)) {
             builder.compressionInterceptor(new CacheAlignedCompressionInterceptor(
@@ -624,6 +680,34 @@ public class UserHarnessEngineServiceImpl implements UserHarnessEngineService {
             tools.add(ToolName.TOOL_WEBFETCH.getName());
         }
         return tools;
+    }
+
+    /** Names checked by AgentFactory before it registers built-in tool groups. */
+    List<String> disabledOptionalTools() {
+        List<String> tools = new ArrayList<>();
+        if (!bashStartEnabled) tools.add("bash_start");
+        if (!bashWaitEnabled) tools.add("bash_wait");
+        if (!bashStopEnabled) tools.add("bash_stop");
+        if (!lspToolEnabled) tools.add(ToolName.TOOL_LSP.getName());
+        if (!todoReadEnabled) tools.add("todoread");
+        if (!todoWriteEnabled) tools.add("todowrite");
+        if (!todoReadEnabled && !todoWriteEnabled) tools.add(ToolName.TOOL_TODO.getName());
+        if (!taskToolEnabled) {
+            tools.add(ToolName.TOOL_TASK.getName());
+            tools.add("subagent");
+        }
+        return tools;
+    }
+
+    /** Opt-in A/B surface; never infer a shell-search profile from platform alone. */
+    List<String> disabledFileTools() {
+        return shellSearchProfile() ? Arrays.asList("ls", "glob", "grep") : java.util.Collections.emptyList();
+    }
+
+    private boolean shellSearchProfile() {
+        if ("standard".equalsIgnoreCase(fileToolProfile)) return false;
+        if ("shell-search".equalsIgnoreCase(fileToolProfile)) return true;
+        throw new IllegalArgumentException("agent.tools.file-profile must be standard or shell-search");
     }
 
     /**

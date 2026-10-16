@@ -11,12 +11,29 @@ SolonCode、Solon Harness 和 `D:\code\dev-agent` 实现。
 - SSE 流式思考、正文、工具调用、HITL 审批和最终状态；
 - 原生 HTML/CSS/JavaScript 文件树、搜索与编辑器；
 - 运行时 MCP 配置；
-- 运行时 LSP 语言服务器配置，用于定义、引用和诊断查询；
+- 运行时 LSP 语言服务器配置；Agent 的 `lsp` 工具可单独启用；
 - 后台 Skill 包仓库、ZIP 整包导入和按用户生效/停用；
-- Harness `task`/`multitask` 与自定义 Subagent；
+- 可选的 Harness `task`/`multitask` 与自定义 Subagent；
 - 定时 Loop 和带状态/轮次预算的 Goal。
 
 架构与安全边界见 [docs/architecture.md](docs/architecture.md)。
+
+## 可选工具开关
+
+`model.yml` 的 `agent.tools.optional` 默认关闭 `render_echart`、`render_antv_chart`、
+`bash_start`、`bash_wait`、`bash_stop`、`lsp`、`todowrite`、`todoread` 和 `task`。
+`now` 也默认关闭；需要当前时间时可使用同步 `bash`，或单独开启 `now-enabled`。
+每项均有独立的 `*-enabled` 开关，可按需开启；异步 Bash 三项建议一起开启。
+关闭 `task` 时同一 Talent 的 `multitask` 也不可用。基础文件、同步 `bash`
+和 Web 工具仍按各自原有配置工作。工具配置在引擎创建时生效，更改后需重启后端。
+
+`agent.tools.file-profile` 当前试用 `shell-search`：模型用同步 `bash` 做目录列举与代码搜索，
+仍使用专用 `read`、`edit`、`write` 处理文件正文及修改。设为 `standard` 可恢复 `ls/glob/grep`。
+试验配置将 Bash 可见结果提高到 64,000 字符，减少搜索结果落盘后的恢复调用。
+这是可回退的工具集实验，不代表已经证实更省 Token；在 Windows 上 Bash 工具实际运行的
+shell 可能是 PowerShell，搜索命令须按实际环境编写。`shell-search` 没有跨所有历史归档的
+`grep(path="@tool-results")`；已知 ID 的归档仍可用 `read` 查看。比较两种模式时应同时看
+总 Token、工具调用次数、任务完成率和误改率。
 
 ## 上下文工具结果治理
 
@@ -26,7 +43,7 @@ SolonCode、Solon Harness 和 `D:\code\dev-agent` 实现。
 
 `model.yml` 的 `agent.context.tool-results` 控制开关和字符预算：默认单条 64,000、
 本批 256,000、预览 4,000 字符；`read`/`bash`/长错误的模型可见预算分别为
-160,000/20,000/16,000 字符。字符数不是 Token 数。
+160,000/64,000/16,000 字符。字符数不是 Token 数。
 `read` 默认尝试读取 4000 行、最多 8000 行，编号正文单次最多 256 KiB；超出后提示按行续读。未变化的同会话同范围重复读取只返回带可恢复快照路径的短引用。历史快照按需读取的
 单页正文最多 16 KiB，字符分页默认 12,000、最多 16,000 字符。
 `grep` 单页正文最多 32,000 字符，`ls`/`glob` 默认每页 200 项。

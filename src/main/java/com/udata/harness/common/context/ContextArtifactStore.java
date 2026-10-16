@@ -90,7 +90,7 @@ public class ContextArtifactStore {
                 + "; sha256=" + digest(content) + "\n"
                 + "This is an immutable historical tool-result snapshot, not the current workspace file.\n"
                 + "Use read(file_path=\"@tool-results/" + id
-                + ".txt\") to retrieve a bounded range; grep(path=\"@tool-results\") searches this session.\n"
+                + ".txt\") to retrieve a bounded range.\n"
                 + "Preview:\n" + content.substring(0, end)
                 + (end < content.length() ? "\n[Preview truncated]" : "") + "\n</context-artifact>";
     }
