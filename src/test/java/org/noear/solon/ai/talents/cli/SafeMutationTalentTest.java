@@ -88,7 +88,7 @@ class SafeMutationTalentTest {
         TerminalTalent.EditOp bad = edit("missing", "nope", 2);
         reader().read("edit.txt", null, null, null, "session-a");
 
-        assertTrue(tool.edit("edit.txt", Arrays.asList(first, bad), null, "session-a").contains("编辑失败"));
+        assertTrue(tool.edit("edit.txt", Arrays.asList(first, bad), null, "session-a").contains("预检查失败"));
         assertEquals("\uFEFFfirst\r\nsecond\r\n", read(target));
         assertTrue(tool.edit("edit.txt", Arrays.asList(first), null, "session-a").contains("成功"));
         assertEquals("\uFEFFupdated\r\nsecond\r\n", read(target));
@@ -97,6 +97,26 @@ class SafeMutationTalentTest {
         Files.write(target, "external\r\nnext\r\n".getBytes(StandardCharsets.UTF_8));
         assertTrue(tool.edit("edit.txt", Arrays.asList(edit("next", "last", 2)), null,
                 "session-a").contains("版本冲突"));
+    }
+
+    @Test
+    void duplicateEditReportsCandidateLinesAndLineAnchorNeverFallsBack() throws IOException {
+        Files.write(workspace.resolve("repeated.txt"),
+                "head\nrepeat\nmiddle\nrepeat\n".getBytes(StandardCharsets.UTF_8));
+        reader().read("repeated.txt", null, null, null, "session-a");
+        SafeMutationTalent mutation = tool();
+        TerminalTalent.EditOp ambiguous = new TerminalTalent.EditOp();
+        ambiguous.oldStr = "repeat";
+        ambiguous.newStr = "changed";
+        String error = mutation.edit("repeated.txt", Arrays.asList(ambiguous), null, "session-a");
+        assertTrue(error.contains("候选起始行 [2, 4]"));
+        assertEquals("head\nrepeat\nmiddle\nrepeat\n", read(workspace.resolve("repeated.txt")));
+
+        assertTrue(mutation.edit("repeated.txt", Arrays.asList(edit("repeat", "changed", 3)),
+                null, "session-a").contains("未回退到其他位置"));
+        assertTrue(mutation.edit("repeated.txt", Arrays.asList(edit("repeat", "changed", 4)),
+                null, "session-a").contains("成功"));
+        assertEquals("head\nrepeat\nmiddle\nchanged\n", read(workspace.resolve("repeated.txt")));
     }
 
     @Test
@@ -170,6 +190,7 @@ class SafeMutationTalentTest {
         assertSame(replacement.getToolAry("edit").iterator().next(), options.tools().stream()
                 .filter(item -> "edit".equals(item.name())).findFirst().orElseThrow(AssertionError::new));
         assertFalse(options.tools().stream().anyMatch(item -> "write".equals(item.name())));
+        assertTrue(replacement.getToolAry("edit").iterator().next().inputSchema().contains("old_StrStartLine"));
     }
 
     private static TerminalTalent.EditOp edit(String oldText, String newText, int line) {

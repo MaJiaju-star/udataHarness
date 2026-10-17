@@ -95,7 +95,7 @@ public final class SafeMutationTalent extends AbsTalent {
 
     @Override
     public String getInstruction(Prompt prompt) {
-        return "本地 write 覆盖已有文件、edit 修改已有文件时，必须先在本会话 read，后端自动维护和校验版本。读取结果返回后再发起修改；版本冲突时重新 read 并重新决定修改，不要盲目重试。";
+        return "修改已有文件前先 read。edit 遇到重复文本时，在 edits 中传短 old_str 和 read 行号 old_StrStartLine；锚点不符会拒绝修改，歧义错误会列候选行号。版本冲突时重新 read。";
     }
 
     @Override
@@ -156,7 +156,7 @@ public final class SafeMutationTalent extends AbsTalent {
      * @return 编辑结果或版本冲突说明
      * @throws IOException 文件操作失败
      */
-    @ToolMapping(name = "edit", description = "按文本块编辑文件，保留 BOM 与换行风格。须先在本会话 read；后端自动校验已读版本，全部替换成功后才原子写入。")
+    @ToolMapping(name = "edit", description = "按文本块编辑文件。先 read；重复的 old_str 用 edits[].old_StrStartLine 指定 read 中的起始行号，锚点不符会拒绝修改。歧义时报候选行号；自动校验版本并原子写入。")
     public ToolResult editResult(
             @Param(value = "file_path", description = "工作区相对路径或逻辑路径") String filePath,
             @Param(value = "edits", description = "编辑操作列表") List<TerminalTalent.EditOp> edits,
@@ -200,12 +200,24 @@ public final class SafeMutationTalent extends AbsTalent {
                 if (operation == null || operation.oldStr == null || operation.oldStr.isEmpty()) {
                     return "预检查失败（操作 #" + (index + 1) + "）：old_str 不能为空。";
                 }
+                if (!Boolean.TRUE.equals(operation.replaceAll) && operation.oldStrStartLine != null) {
+                    if (operation.oldStrStartLine < 1) {
+                        return "预检查失败（操作 #" + (index + 1) + "）：old_StrStartLine 必须从 1 开始。";
+                    }
+                    String normalized = support.normalizeNewlines(working, operation.oldStr);
+                    if (support.findAtStartLine(working, normalized, operation.oldStrStartLine) == null) {
+                        return "预检查失败（操作 #" + (index + 1) + "）：第 " + operation.oldStrStartLine
+                                + " 行与 old_str 不匹配，未回退到其他位置。" + candidateLines(working, normalized);
+                    }
+                }
                 try {
                     working = support.applyEditLogic(working, operation.oldStr,
                             operation.newStr == null ? "" : operation.newStr,
                             Boolean.TRUE.equals(operation.replaceAll), operation.oldStrStartLine);
                 } catch (IllegalArgumentException e) {
-                    return "编辑失败（操作 #" + (index + 1) + "）：" + e.getMessage();
+                    return "编辑失败（操作 #" + (index + 1) + "）：" + e.getMessage()
+                            + (e.getMessage().contains("不唯一")
+                            ? candidateLines(working, support.normalizeNewlines(working, operation.oldStr)) : "");
                 }
             }
             String result = hadBom ? TerminalSupport.UTF8_BOM + working : working;
@@ -227,6 +239,23 @@ public final class SafeMutationTalent extends AbsTalent {
         } finally {
             lock.unlock();
         }
+    }
+
+    private static String candidateLines(String content, String oldText) {
+        List<Integer> lines = new ArrayList<>();
+        int total = 0;
+        int from = 0;
+        int line = 1;
+        int scanned = 0;
+        while ((from = content.indexOf(oldText, from)) >= 0) {
+            while (scanned < from) if (content.charAt(scanned++) == '\n') line++;
+            total++;
+            if (lines.size() < 8) lines.add(line);
+            from++;
+        }
+        if (total == 0) return " 未找到完全相同的候选文本；请 read 目标范围后重试。";
+        return " 候选起始行 " + lines + (total > lines.size() ? "（共 " + total + " 处，仅列前 8 处）" : "")
+                + "；请在 edits 中设置 old_StrStartLine。";
     }
 
     /**

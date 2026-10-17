@@ -198,6 +198,7 @@ class BoundedReadToolTest {
 
         String first = tool().read("lines.txt", null, null, null);
         assertTrue(first.contains("大文件预览"));
+        assertTrue(first.contains("通读可用 read(file_path, limit=所需行数)"));
         assertTrue(first.contains("总行数 4002"));
         assertTrue(first.contains("   400 | line-400"));
         assertFalse(first.contains("line-401"));
@@ -236,6 +237,59 @@ class BoundedReadToolTest {
         assertFalse(focused.contains("line-497"));
         assertTrue(reader.readResult("focus.java", 1, 10, null, null,
                 500, 2, null, "s").getContent().contains("不能与 offset/limit"));
+    }
+
+    @Test
+    void multipleFocusLinesMergeWindowsAndKeepCoverageExplicit() throws IOException {
+        StringBuilder body = new StringBuilder();
+        for (int line = 1; line <= 300; line++) body.append("line-").append(line).append('\n');
+        Files.write(workspace.resolve("methods.java"), body.toString().getBytes(StandardCharsets.UTF_8));
+        ContextArtifactStore store = new ContextArtifactStore(workspace.resolve("artifacts"));
+        BoundedReadTool reader = cachedTool(store);
+        String result = reader.readResult("methods.java", null, null, null, null,
+                null, java.util.Arrays.asList(200, 40, 47, 200), 5, null, "s").getContent();
+        assertTrue(result.contains("--- 原文件行 35-52 ---"));
+        assertTrue(result.contains("--- 原文件行 195-205 ---"));
+        assertTrue(result.contains("    40 | line-40"));
+        assertTrue(result.contains("   200 | line-200"));
+        assertFalse(result.contains("line-53"));
+        assertFalse(result.contains("line-194"));
+        assertEquals(1, result.split("40 \\| line-40", -1).length - 1);
+        assertTrue(result.contains("未展示窗口间的行"));
+        String repeat = reader.readResult("methods.java", null, null, null, null,
+                null, java.util.Arrays.asList(47, 200, 40), 5, null, "s").getContent();
+        assertTrue(repeat.startsWith("<read-unchanged>"));
+        assertTrue(repeat.contains("focus_lines=[40, 47, 200]"));
+        assertTrue(reader.getTools(org.noear.solon.ai.chat.prompt.Prompt.of("test")).stream()
+                .anyMatch(tool -> "read".equals(tool.name()) && tool.inputSchema().contains("focus_lines")));
+        org.noear.solon.ai.chat.tool.FunctionTool modelTool = reader.getTools(
+                org.noear.solon.ai.chat.prompt.Prompt.of("test")).stream()
+                .filter(tool -> "read".equals(tool.name())).findFirst().get();
+        java.util.Map<String, Object> args = new java.util.LinkedHashMap<>();
+        args.put("file_path", "methods.java");
+        args.put("focus_lines", java.util.Arrays.asList(40, 200));
+        args.put("context_lines", 1);
+        assertTrue(org.junit.jupiter.api.Assertions.assertDoesNotThrow(() -> modelTool.call(args))
+                .getContent().contains("200 | line-200"));
+    }
+
+    @Test
+    void multipleFocusLinesRejectConflictsAndReportOutOfRangePoints() throws IOException {
+        Files.write(workspace.resolve("short.java"), "one\ntwo\nthree\n".getBytes(StandardCharsets.UTF_8));
+        BoundedReadTool reader = tool();
+        assertTrue(reader.readResult("short.java", 1, null, null, null,
+                null, java.util.Arrays.asList(2, 3), 1, null, "s").getContent()
+                .contains("不能与 offset/limit"));
+        assertTrue(reader.readResult("short.java", null, null, null, null,
+                2, java.util.Arrays.asList(3), 1, null, "s").getContent()
+                .contains("不能同时使用"));
+        String result = reader.readResult("short.java", null, null, null, null,
+                null, java.util.Arrays.asList(2, 100), 1, null, "s").getContent();
+        assertTrue(result.contains("2 | two"));
+        assertTrue(result.contains("超出文件范围的焦点行：[100]"));
+        assertTrue(reader.readResult("short.java", null, null, null, null,
+                null, java.util.Arrays.asList(2, 3000), 1000, null, "s").getContent()
+                .contains("超过 1600 行"));
     }
 
     @Test

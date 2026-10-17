@@ -571,7 +571,7 @@ public class UserHarnessEngineServiceImpl implements UserHarnessEngineService {
                         }
                         if (terminalTools.contains("bash")) {
                             options.talentAdd(new BashCaptureTalent(engine.getTerminalTalent(), contextStore,
-                                    contextBashVisibleChars, bashMaxLogBytes));
+                                    contextBashVisibleChars, bashMaxLogBytes, engine.getWorkspace()));
                         }
                         if (terminalTools.contains("write") || terminalTools.contains("edit")) {
                             options.talentAdd(new SafeMutationTalent(engine.getTerminalTalent(),
@@ -597,6 +597,7 @@ public class UserHarnessEngineServiceImpl implements UserHarnessEngineService {
                 // BashToolStrategy 会优先放行只读命令、拒绝系统级危险命令；
                 // 对其余可能修改工作区的命令使用此兜底规则进入人工审批。
                 .permissionRuleAdd(PermissionRule.ask("bash"))
+                .permissionRuleAdd(PermissionRule.ask("verify"))
                 .hitlEnabled(true)
                 .subagentEnabled(taskToolEnabled)
                 .bashAsyncEnabled(bashStartEnabled || bashWaitEnabled || bashStopEnabled);

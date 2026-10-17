@@ -55,6 +55,24 @@ class StreamingProcessExecutorTest {
     }
 
     @Test
+    void verifyDetectsProjectAndReturnsCompactStatusWithRecoverableLog() throws Exception {
+        Files.write(workspace.resolve("pom.xml"), "<project/>".getBytes(StandardCharsets.UTF_8));
+        Fixture succeeded = fixture(8L * 1024 * 1024);
+        ToolResult passing = succeeded.tool.verify("test", "auto", 15000, null, "verify-ok");
+        assertTrue(passing.getContent().contains("[验证通过] maven test"));
+        assertEquals(EnvironmentResolver.isWindows() ? "mvn.cmd test" : "mvn test", succeeded.command.get());
+        assertTrue(passing.getContent().contains("日志：@tool-results/"));
+        assertFalse(passing.getContent().contains("MIDDLE-MARKER"));
+
+        Fixture failed = fixture(new ContextArtifactStore(workspace.resolve("failed-artifacts")),
+                8L * 1024 * 1024, true);
+        ToolResult failing = failed.tool.verify("test", "auto", 15000, null, "verify-fail");
+        assertTrue(failing.getContent().contains("[验证失败] maven test"));
+        assertTrue(failing.getContent().contains("src/Main.java:42: missing symbol"));
+        assertTrue(failing.getContent().contains("日志：@tool-results/"));
+    }
+
+    @Test
     void independentStorageQuotaStopsCaptureAndLabelsRecoverablePrefix() throws Exception {
         Fixture fixture = fixture(128 * 1024);
         ToolResult result = fixture.tool.bashResult("large", 15000, 1000, null, "quota");
@@ -140,21 +158,32 @@ class StreamingProcessExecutorTest {
 
     /** 创建指定归档后端的测试宿主，便于覆盖持久化失败。 */
     private Fixture fixture(ContextArtifactStore store, long quota) {
+        return fixture(store, quota, false);
+    }
+
+    private Fixture fixture(ContextArtifactStore store, long quota, boolean fail) {
+        AtomicReference<String> commandSeen = new AtomicReference<>();
         TerminalTalent terminal = new TerminalTalent(new MountManager(workspace.toString())) {
             @Override
             public String bash(String command, Integer timeout, Integer max, String cwd) {
+                commandSeen.set(command);
                 String java = Paths.get(System.getProperty("java.home"), "bin", EnvironmentResolver.isWindows() ? "java.exe" : "java").toString();
                 return getExecutor().executeCmd(workspace, Arrays.asList(java, "-cp", System.getProperty("java.class.path"),
-                        Output.class.getName(), command), Collections.emptyMap(), timeout, max, null);
+                        Output.class.getName(), fail ? "fail-middle" : command), Collections.emptyMap(), timeout, max, null);
             }
         };
-        return new Fixture(store, new BashCaptureTalent(terminal, store, 2000, quota));
+        return new Fixture(store, new BashCaptureTalent(terminal, store, 2000, quota, workspace.toString()), commandSeen);
     }
 
     private static final class Fixture {
         final ContextArtifactStore store;
         final BashCaptureTalent tool;
-        Fixture(ContextArtifactStore store, BashCaptureTalent tool) { this.store = store; this.tool = tool; }
+        final AtomicReference<String> command;
+        Fixture(ContextArtifactStore store, BashCaptureTalent tool, AtomicReference<String> command) {
+            this.store = store;
+            this.tool = tool;
+            this.command = command;
+        }
     }
 
     /** 独立 JVM 输出源，避免依赖部署机是否安装 Node/Python 或特定 shell。 */

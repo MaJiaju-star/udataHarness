@@ -186,7 +186,7 @@ class UserHarnessEngineServiceImplTest {
         java.util.Set<String> names = toolNames(shellSearch.get("alice").getMainAgent()
                 .getConfig().getDefaultOptions());
         for (String name : Utils.asList("ls", "glob", "grep")) assertFalse(names.contains(name), name);
-        for (String name : Utils.asList("bash", "read", "edit", "write")) assertTrue(names.contains(name), name);
+        for (String name : Utils.asList("bash", "verify", "read", "edit", "write")) assertTrue(names.contains(name), name);
 
         UserHarnessEngineServiceImpl invalid = runnableService();
         inject(invalid, "fileToolProfile", "unknown");

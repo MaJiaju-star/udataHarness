@@ -20,8 +20,11 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
+import java.util.ArrayList;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
+import java.util.TreeSet;
 import java.util.UUID;
 import java.util.function.Consumer;
 import java.util.regex.Matcher;
@@ -53,6 +56,8 @@ public final class BoundedReadTool extends AbsTalent {
     static final long LARGE_FILE_THRESHOLD_BYTES = 32L * 1024;
     /** 单次读取行数硬上限（传入更大的 limit 会被截断到该值）。 */
     static final int MAX_LINES = 8000;
+    static final int MAX_FOCUS_POINTS = 8;
+    static final int MAX_FOCUS_TOTAL_LINES = 1600;
     /** 单行显示字符数上限；超出部分截断并标记 {@code …(单行已截断)}。 */
     static final int MAX_LINE_CHARS = 64 * 1024;
     /** 单次编号正文的 UTF-8 字节上限（256 KiB，含行号，不含页眉和提示）。 */
@@ -131,7 +136,7 @@ public final class BoundedReadTool extends AbsTalent {
      */
     @Override
     public String getInstruction(Prompt prompt) {
-        return "read 默认读取小文件前 4000 行；超过 32 KiB 时先预览前 400 行。grep 定位后用 focus_line 看附近代码，或用 offset/limit 续读。@tool-results 是只读历史快照，分页位置不是原文件行号。";
+        return "read 默认读取小文件前 4000 行；大文件预览前 400 行。局部查看用 focus_line；同一文件多个位置用 focus_lines（最多 8 点，重叠窗口合并）。通读可显式传 limit。@tool-results 是只读历史快照。";
     }
 
     /**
@@ -159,7 +164,7 @@ public final class BoundedReadTool extends AbsTalent {
      * @throws IOException        读取过程中发生 I/O 错误
      * @throws IllegalArgumentException {@code filePath} 为 null
      */
-    @ToolMapping(name = "read", description = "读取文本文件。默认读取小文件前 4000 行；超过 32 KiB 时预览前 400 行。搜索后用 focus_line 定向读取，或用 offset/limit 指定范围。")
+    @ToolMapping(name = "read", description = "读取文本文件。大文件默认预览前 400 行；单处用 focus_line，多处用 focus_lines 一次读取并合并重叠窗口；通读时显式设置 limit（最多 8000 行、256 KiB）。")
     public ToolResult readResult(
             @Param(value = "file_path", description = "工作区相对路径或 @ 开头的逻辑路径") String filePath,
             @Param(value = "offset", required = false, description = "起始行号，从 1 开始；@tool-results 路径按快照物理行计数，不是原文件行号") Integer offset,
@@ -167,11 +172,12 @@ public final class BoundedReadTool extends AbsTalent {
             @Param(value = "char_offset", required = false, description = "仅 @tool-results 使用：从此 UTF-16 字符位置分页") Integer charOffset,
             @Param(value = "char_limit", required = false, description = "仅 @tool-results 使用：最多读取字符数，上限 16000") Integer charLimit,
             @Param(value = "focus_line", required = false, description = "原文件中的目标行号；返回该行附近代码，不可与 offset/limit 同用") Integer focusLine,
-            @Param(value = "context_lines", required = false, description = "focus_line 前后各读取的行数，默认 80，最多 1000") Integer contextLines,
+            @Param(value = "focus_lines", required = false, description = "同一原文件的多个目标行号，最多 8 个；重叠窗口合并，不可与 focus_line/offset/limit 同用") List<Integer> focusLines,
+            @Param(value = "context_lines", required = false, description = "每个焦点前后各读取的行数；单点默认 80，多点默认 40，最多 1000") Integer contextLines,
             String __cwd, String __sessionId) throws IOException {
         Map<String, Object> metadata = new LinkedHashMap<>();
         String content = readBody(filePath, offset, limit, charOffset, charLimit,
-                focusLine, contextLines, __cwd, __sessionId, metadata);
+                focusLine, focusLines, contextLines, __cwd, __sessionId, metadata);
         ToolResult result = ToolResult.success(content);
         result.metas().putAll(metadata);
         return result;
@@ -181,37 +187,69 @@ public final class BoundedReadTool extends AbsTalent {
     public String read(String filePath, Integer offset, Integer limit, Integer charOffset,
                        Integer charLimit, String __cwd, String __sessionId) throws IOException {
         return readResult(filePath, offset, limit, charOffset, charLimit,
-                null, null, __cwd, __sessionId).getContent();
+                null, null, null, __cwd, __sessionId).getContent();
+    }
+
+    /** Keep the existing single-focus Java signature. */
+    public ToolResult readResult(String filePath, Integer offset, Integer limit, Integer charOffset,
+                                 Integer charLimit, Integer focusLine, Integer contextLines,
+                                 String __cwd, String __sessionId) throws IOException {
+        return readResult(filePath, offset, limit, charOffset, charLimit,
+                focusLine, null, contextLines, __cwd, __sessionId);
     }
 
     /** Compatibility entry point for existing callers; focus options are model-facing. */
     public ToolResult readResult(String filePath, Integer offset, Integer limit, Integer charOffset,
                                  Integer charLimit, String __cwd, String __sessionId) throws IOException {
         return readResult(filePath, offset, limit, charOffset, charLimit,
-                null, null, __cwd, __sessionId);
+                null, null, null, __cwd, __sessionId);
     }
 
     /** 执行有界读取，并把本次精确版本写入仅供后端使用的元数据。 */
     private String readBody(String filePath, Integer offset, Integer limit, Integer charOffset,
-                            Integer charLimit, Integer focusLine, Integer contextLines,
+                            Integer charLimit, Integer focusLine, List<Integer> focusLines, Integer contextLines,
                             String __cwd, String __sessionId,
                             Map<String, Object> metadata) throws IOException {
         if (filePath == null) {
             throw new IllegalArgumentException("file_path 不能为空");
         }
-        if (focusLine != null && (offset != null || limit != null || charOffset != null || charLimit != null)) {
-            return "错误：focus_line 不能与 offset/limit 或快照字符分页参数同用。";
+        boolean multiFocus = focusLines != null;
+        if (focusLine != null && multiFocus) return "错误：focus_line 与 focus_lines 不能同时使用。";
+        if ((focusLine != null || multiFocus)
+                && (offset != null || limit != null || charOffset != null || charLimit != null)) {
+            return "错误：focus_line/focus_lines 不能与 offset/limit 或快照字符分页参数同用。";
         }
-        if (contextLines != null && focusLine == null) return "错误：context_lines 需要 focus_line。";
+        if (contextLines != null && focusLine == null && !multiFocus) {
+            return "错误：context_lines 需要 focus_line 或 focus_lines。";
+        }
         if (focusLine != null && focusLine < 1) return "错误：focus_line 必须从 1 开始。";
-        int radius = contextLines == null ? 80 : Math.max(0, Math.min(contextLines, 1000));
+        if (multiFocus && (focusLines.isEmpty() || focusLines.size() > MAX_FOCUS_POINTS)) {
+            return "错误：focus_lines 需要 1～8 个原文件行号。";
+        }
+        int radius = contextLines == null ? multiFocus ? 40 : 80 : Math.max(0, Math.min(contextLines, 1000));
+        List<Integer> anchors = null;
+        List<FocusWindow> windows = null;
+        if (multiFocus) {
+            TreeSet<Integer> unique = new TreeSet<>();
+            for (Integer point : focusLines) {
+                if (point == null || point < 1) return "错误：focus_lines 中每个行号都必须从 1 开始。";
+                unique.add(point);
+            }
+            anchors = new ArrayList<>(unique);
+            windows = focusWindows(anchors, radius);
+            long total = 0;
+            for (FocusWindow window : windows) total += (long) window.end - window.start + 1;
+            if (total > MAX_FOCUS_TOTAL_LINES) {
+                return "错误：合并后的焦点窗口超过 1600 行；请减少 context_lines 或分批读取。";
+            }
+        }
         int start = focusLine == null ? offset == null || offset < 1 ? 1 : offset
                 : Math.max(1, focusLine - radius);
         int count = focusLine == null ? limit == null || limit < 1 ? DEFAULT_LINES : Math.min(limit, MAX_LINES)
                 : Math.min(MAX_LINES, radius * 2 + 1);
 
         if (ToolResultPaths.isVirtual(filePath)) {
-            if (focusLine != null) return "错误：focus_line 仅适用于当前工作区文件；历史快照请使用 offset/limit。";
+            if (focusLine != null || multiFocus) return "错误：focus_line/focus_lines 仅适用于当前工作区文件；历史快照请使用 offset/limit。";
             try {
                 Path snapshot = toolResults.resolve(filePath, __sessionId, false);
                 String id = filePath.substring(ToolResultPaths.ROOT.length() + 1, filePath.length() - 4);
@@ -240,6 +278,7 @@ public final class BoundedReadTool extends AbsTalent {
             ResolvedResource resource = mountManager.resolveResource(filePath);
             if (!resource.getSource().capabilities().isLocalPathAccessible()
                     || !resource.getLocalPath().isPresent()) {
+                if (multiFocus) return "错误：focus_lines 需要可本地读取的文件；该逻辑挂载请分次读取。";
                 return terminal.read(filePath, start, count, __cwd);
             }
         }
@@ -258,14 +297,15 @@ public final class BoundedReadTool extends AbsTalent {
             return "错误：该文件是二进制格式，无法作为文本读取。";
         }
         long fileSize = Files.size(target);
-        boolean automaticPreview = focusLine == null && offset == null && limit == null
+        boolean automaticPreview = focusLine == null && !multiFocus && offset == null && limit == null
                 && fileSize > LARGE_FILE_THRESHOLD_BYTES;
         if (automaticPreview) count = LARGE_FILE_PREVIEW_LINES;
         //1. 按会话、文件真实路径和归一化后的读取范围查找上次结果。
         String beforeVersion = fileSize <= MAX_VERSIONED_BYTES ? FileVersion.sha256(target) : null;
         String cacheKey = beforeVersion == null || artifactStore == null || __sessionId == null
                 || __sessionId.isEmpty() ? null
-                : __sessionId + '\0' + target.toRealPath() + '\0' + start + '\0' + count;
+                : __sessionId + '\0' + target.toRealPath() + '\0'
+                + (multiFocus ? "focus:" + anchors + ":" + radius : start + "\0" + count);
         if (cacheKey != null) {
             CachedRead cached;
             synchronized (snapshots) { cached = snapshots.get(cacheKey); }
@@ -274,7 +314,8 @@ public final class BoundedReadTool extends AbsTalent {
                     artifactStore.load(__sessionId, cached.artifactId);
                     fileVersions.remember(__sessionId, target, beforeVersion);
                     metadata.put("sourceHash", beforeVersion);
-                    return unchanged(filePath, start, count, cached);
+                    return multiFocus ? unchangedMulti(filePath, anchors, radius, cached)
+                            : unchanged(filePath, start, count, cached);
                 } catch (IOException ignored) {
                     synchronized (snapshots) { snapshots.remove(cacheKey); }
                 }
@@ -282,12 +323,13 @@ public final class BoundedReadTool extends AbsTalent {
         }
         //2. 文件变化或快照不可恢复时读取最新正文，并检查读取期间的变化。
         String output = fileSize == 0 ? "(文件内容为空)"
+                : multiFocus ? readFocusWindows(target, filePath, windows, anchors, radius, fileSize)
                 : readWindow(target, filePath, start, count, fileSize);
         if (automaticPreview && !output.startsWith("错误：")) {
             String total = fileSize <= MAX_VERSIONED_BYTES
                     ? String.valueOf(countLines(target)) : "未统计（文件超过 16 MiB）";
             output = "[大文件预览：总行数 " + total
-                    + "；仅展示起始部分；用 grep 定位或 read(offset, limit/focus_line) 查看其他位置]\n"
+                    + "；仅展示前 400 行。通读可用 read(file_path, limit=所需行数)，最多 8000 行/256 KiB；定位后用 focus_line 或 offset/limit]\n"
                     + output;
         }
         if (beforeVersion != null) {
@@ -306,7 +348,7 @@ public final class BoundedReadTool extends AbsTalent {
                 ContextArtifactStore.Artifact artifact = artifactStore.save(
                         __sessionId, invocation, "read", output, "unchanged_read_reference", 0);
                 Matcher next = NEXT_OFFSET.matcher(output);
-                int nextOffset = next.find() ? Integer.parseInt(next.group(1)) : 0;
+                int nextOffset = !multiFocus && next.find() ? Integer.parseInt(next.group(1)) : 0;
                 synchronized (snapshots) {
                     snapshots.put(cacheKey, new CachedRead(beforeVersion, artifact.id, nextOffset));
                     if (snapshots.size() > MAX_INDEX_ENTRIES) {
@@ -361,6 +403,84 @@ public final class BoundedReadTool extends AbsTalent {
                 + cached.artifactId + ".txt\") 读取完整历史快照。"
                 + (cached.nextOffset > 0 ? "\n原读取未完；继续当前文件请用 offset=" + cached.nextOffset + "。" : "")
                 + "\n</read-unchanged>";
+    }
+
+    private static String unchangedMulti(String path, List<Integer> anchors, int radius, CachedRead cached) {
+        return "<read-unchanged>\n文件 " + path + " 的 focus_lines=" + anchors
+                + ", context_lines=" + radius + " 未发生变更，请参考本会话上次 read 的结果。\n"
+                + "若上次正文已不在上下文中，可用 read(file_path=\"@tool-results/"
+                + cached.artifactId + ".txt\") 读取完整历史快照。\n</read-unchanged>";
+    }
+
+    private static List<FocusWindow> focusWindows(List<Integer> anchors, int radius) {
+        List<FocusWindow> windows = new ArrayList<>();
+        for (Integer point : anchors) {
+            int start = Math.max(1, point - radius);
+            int end = (int) Math.min(Integer.MAX_VALUE, (long) point + radius);
+            if (!windows.isEmpty() && start <= (long) windows.get(windows.size() - 1).end + 1) {
+                FocusWindow previous = windows.get(windows.size() - 1);
+                previous.end = Math.max(previous.end, end);
+            } else {
+                windows.add(new FocusWindow(start, end));
+            }
+        }
+        return windows;
+    }
+
+    /** Scan the source once, returning only the merged, numbered focus windows. */
+    private static String readFocusWindows(Path target, String displayPath, List<FocusWindow> windows,
+                                           List<Integer> anchors, int radius, long fileSize) throws IOException {
+        StringBuilder body = new StringBuilder();
+        int outputBytes = 0;
+        long lineNumber = 1, lastScanned = 0, lastShown = 0;
+        int windowIndex = 0, headingIndex = -1;
+        boolean reachedEof = false, byteLimit = false, longLine = false;
+        try (PushbackReader reader = new PushbackReader(
+                new BufferedReader(Files.newBufferedReader(target, StandardCharsets.UTF_8), 8192), 1)) {
+            while (windowIndex < windows.size()) {
+                FocusWindow window = windows.get(windowIndex);
+                if (lineNumber > window.end) { windowIndex++; continue; }
+                Line line = readLine(reader, lineNumber == 1);
+                if (line == null) { reachedEof = true; break; }
+                lastScanned = lineNumber;
+                if (lineNumber < window.start) { lineNumber++; continue; }
+                String heading = headingIndex == windowIndex ? ""
+                        : "--- 原文件行 " + window.start + "-" + window.end + " ---\n";
+                String formatted = String.format("%6d | %s%s\n", lineNumber, line.text,
+                        line.truncated ? "…(单行已截断)" : "");
+                int bytes = (heading + formatted).getBytes(StandardCharsets.UTF_8).length;
+                if (outputBytes + bytes > MAX_OUTPUT_BYTES) { byteLimit = true; break; }
+                body.append(heading).append(formatted);
+                outputBytes += bytes;
+                headingIndex = windowIndex;
+                longLine |= line.truncated;
+                lastShown = lineNumber;
+                lineNumber++;
+            }
+        }
+        if (lastShown == 0 && reachedEof) return "错误：所有 focus_lines 均超出文件范围。";
+        StringBuilder result = new StringBuilder("--- File: ").append(displayPath)
+                .append(" (Focus lines: ").append(anchors).append(", Context: ").append(radius)
+                .append(", Size: ").append(String.format("%.2f KB", fileSize / 1024.0))
+                .append(") ---\n").append(body);
+        if (longLine) result.append("提示：超长单行仅显示前 ").append(MAX_LINE_CHARS)
+                .append(" 字符；该行剩余内容未返回。\n");
+        if (byteLimit) result.append("--- [焦点结果不完整：正文达到 256 KiB 上限] ---\n")
+                .append("请缩小 context_lines 或分批传 focus_lines；当前位置可用 offset=")
+                .append(lastShown + 1).append(" 续读。\n");
+        else result.append("--- [已返回请求的焦点窗口；未展示窗口间的行] ---\n");
+        if (reachedEof) {
+            List<Integer> missing = new ArrayList<>();
+            for (Integer anchor : anchors) if (anchor > lastScanned) missing.add(anchor);
+            if (!missing.isEmpty()) result.append("超出文件范围的焦点行：").append(missing).append("。\n");
+        }
+        return result.toString();
+    }
+
+    private static final class FocusWindow {
+        final int start;
+        int end;
+        FocusWindow(int start, int end) { this.start = start; this.end = end; }
     }
 
     private static final class CachedRead {
