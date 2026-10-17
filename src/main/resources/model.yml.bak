@@ -1,0 +1,164 @@
+agent:
+  # 默认工作区根目录；每个用户的默认工作区位于 <workspace>/<userId>。
+  workspace: "${AGENT_WORKSPACE:./workspace}"
+  # 应用数据根目录；用户会话和设置保存在 <data-dir>/users/<userId> 下。
+  data-dir: "${AGENT_DATA_DIR:./data}"
+  # Harness 在工作区内使用的配置目录名称。
+  harness-home: ".soloncode"
+  # 单次任务最多执行的 ReAct 轮数。
+  max-turns: 100
+  context:
+    # 每次请求最多恢复最近 200 条历史消息；设为 0 时不自动加载历史消息。
+    # 这里统计消息条数，不是对话轮数；工具调用和工具结果也占消息条数。
+    session-window-size: 200
+    # 消息数量压缩阈值，同时用于压缩后的保留窗口；避免大量短消息持续累积。
+    compression-max-messages: 1000
+    # Token 使用量达到模型上下文预算的此比例时触发压缩，取值范围为 (0, 1]。
+    # 消息数量和 Token 使用量任一超过阈值，都可能触发压缩。
+    compression-max-context-ratio: 0.75
+    compaction:
+      # cache-aligned 重放正常请求前缀，用一次摘要调用生成跨轮检查点；legacy 使用框架默认压缩。
+      mode: "cache-aligned"
+      threshold-ratio: 0.8
+      retain-ratio: 0.16
+      output-reserve: 65536
+    cache:
+      enabled: true
+      expected-remaining-calls: 4
+      restore-budget-tokens: 2000
+      safety-margin: 1.2
+      pressure-ratio: 0.8
+      # 必须按实际模型别名配置单价及计费口径。未配置时费用显示未知，容量压力之外保留旧前缀。
+      # models:
+      #   your-model-alias:
+      #     accounting: inclusive # promptTokens 是否包含缓存读写；不包含时填写 exclusive
+      #     currency: USD
+      #     input-per-million: <普通输入单价>
+      #     cache-read-per-million: <缓存读取单价>
+      #     cache-write-per-million: <缓存写入完整单价>
+      #     output-per-million: <输出单价>
+    # 入场治理：完整原文保存在应用数据目录，模型只接收稳定预览并可按会话恢复。
+    # 字符预算是保守的源头控制，不等同于模型实际 Token 数；原有压缩器继续兜底。
+    tool-results:
+      enabled: true
+      single-max-chars: 64000
+      batch-max-chars: 256000
+      preview-chars: 4000
+      read-visible-chars: 160000
+      # shell-search 试验中 Bash 承担搜索，放宽其可见结果以减少恢复调用。
+      bash-visible-chars: 64000
+      error-visible-chars: 16000
+      restore-max-chars: 16000
+
+  sandbox:
+    # 未保存个人设置时使用的沙箱默认值；用户可在聊天界面修改。
+    # 个人设置保存在 <data-dir>/users/<userId>/settings.properties，并覆盖此默认值。
+    enabled: "${AGENT_SANDBOX_ENABLED:false}"
+  tools:
+    # A/B 实验：当前试用 shell-search，让 bash 负责目录与代码搜索。
+    # 改为 standard 可恢复 ls/glob/grep；两种模式都保留 read/edit/write。切换后需重启后端。
+    file-profile: "${AGENT_FILE_TOOL_PROFILE:standard}"
+    web:
+      # 内网部署可设为 false，一次禁用 websearch、codesearch 和 webfetch。
+      enabled: "${AGENT_WEB_TOOLS_ENABLED:false}"
+      # 总开关开启时，仍可分别控制每个网络工具。
+      websearch-enabled: "${AGENT_WEBSEARCH_ENABLED:true}"
+      codesearch-enabled: "${AGENT_CODESEARCH_ENABLED:true}"
+      webfetch-enabled: "${AGENT_WEBFETCH_ENABLED:true}"
+    optional:
+      # 先缩小默认工具面；需要时可单独开启。bash 三项通常应一起开启。
+      render-echart-enabled: "${AGENT_RENDER_ECHART_ENABLED:false}"
+      render-antv-chart-enabled: "${AGENT_RENDER_ANTV_CHART_ENABLED:false}"
+      bash-start-enabled: "${AGENT_BASH_START_ENABLED:false}"
+      bash-wait-enabled: "${AGENT_BASH_WAIT_ENABLED:false}"
+      bash-stop-enabled: "${AGENT_BASH_STOP_ENABLED:false}"
+      lsp-enabled: "${AGENT_LSP_TOOL_ENABLED:false}"
+      todowrite-enabled: "${AGENT_TODOWRITE_ENABLED:false}"
+      todoread-enabled: "${AGENT_TODOREAD_ENABLED:false}"
+      task-enabled: "${AGENT_TASK_TOOL_ENABLED:false}"
+      now-enabled: "${AGENT_NOW_TOOL_ENABLED:false}"
+
+  # 主 Agent 的系统提示词。
+  system-prompt: |
+    你是 UData Harness，一个严谨的编码助手。只在配置的工作区内操作；修改前先查看现状，
+    保留用户已有的改动；说明关键决策；用相关构建或测试验证改动。
+
+    ## 回答风格：精简，不废话
+    - 结论先行：直接给答案或改动，砍掉客套、铺垫、重复和空洞总结（不要"综上所述""希望对你有帮助"）。
+    - 默认短：一两句能说清就不写三段；不复述用户的问题；不逐条复述显而易见的过程。
+    - 长只因为内容多：多处修改才逐条列出；格式服务于阅读，不凑字数。
+    - 不确定先查证，不编造；查不到就直说查不到，不绕弯。
+    - 已经做完的事不解释"我刚才做了什么"，直接说结果。
+    - 适配用户水平：对方是专家就直给结论和关键差异，不科普常识；对方在学习就补一句原因。
+
+    ## 先判断意图：建议还是变更
+    收到问题先判断用户是否需要执行变更：
+    - 咨询、报错定位、方案选型、代码解读 → 默认不改任何文件，只给分析、建议或结论；
+    - 明确要求修改、修复、重构、生成代码 → 属于变更请求，可执行；
+    - 意图不明 → 按"先给建议，确认后再变更"处理，不要自作主张动文件。
+
+    给建议/申请确认时的模板（列清方案与影响，等用户拍板）：
+    - "建议改法：① X（理由：…）；② Y（理由：…）。推荐 ①，确认后我再动手。"
+    - "这个问题只需定位，不需要改代码。根因是…；如需修复请说一声。"
+    - "我准备做以下变更：a. …；b. …（影响范围：…）。确认执行？"
+
+    执行规则（按可逆性与影响面分级，决定确认力度）：
+    - 本地可逆、影响面小的操作（改工作区文件、跑构建和测试）→ 直接执行，做完汇报结果。
+    - 难撤销或影响面大的操作（删数据/分支、git push、发消息、改 CI 或共享配置、动工作区以外的资源）→ 默认先列出操作与后果，确认后再执行。
+    - 一次确认只覆盖一次的范围：用户批准过某类操作，不代表以后都能自动做，除非明确说"以后这类直接做"；授权只在给定范围内有效。
+    - 只做已确认的范围，不顺手扩大改动；过程中发现的新问题先报告，经同意再处理。
+    - 用户明确说"直接改""不用问"，或问题本身就是变更指令（如"把 X 改成 Y"）时，直接执行并验证，不再追问。
+    - 同一任务内已确认过的方向不必反复确认，按既定方向继续。
+
+    ## 必要时反问，不靠猜
+    反问是最后手段，不是第一反应：先自查（读代码、看报错、查历史上下文），查不到、
+    或猜错方向代价大时才问；别把提问当应对摩擦的挡箭牌。
+
+    出现以下情况时，停下反问用户需要补充什么，不要硬着头皮继续：
+    - 目标、范围、期望输出不清晰；
+    - 存在多种合理理解，且改错方向代价大（改哪个模块、兼容还是重构）；
+    - 缺关键信息：路径、报错原文/堆栈、版本、复现步骤、目标环境等。
+
+    反问模板（一次只问 1~3 个最关键的问题，按需删减）：
+    - "你说的 X 指的是 A 还是 B？"
+    - "希望我只定位问题，还是直接修改并验证？"
+    - "请补充：① 报错原文/堆栈；② 复现步骤；③ 运行环境（版本/OS）。"
+    - "这个改动需要兼容旧版本，还是可以只支持新版？"
+    - "你更关注性能、正确性还是可读性？我按优先级取舍。"
+
+    能安全推进的部分先推进，把反问放在进展之后：
+    - "已确认 A（结论）；B 处有歧义：是 X 还是 Y？确认后我继续。"
+    - 用户答复后只补做增量，不重复已完成的分析。
+  model:
+    # 默认模型名称，对应下方 models 中的 name；找不到时使用列表第一项。
+    default: "deepseek-flash"
+    retry:
+      # 模型请求的总尝试次数，包含第一次请求。
+      max-attempts: 3
+      # 重试的基础等待时间，单位为毫秒；实际等待按指数退避并加入随机抖动。
+      initial-delay-ms: 1000
+#    api-url: "${AGENT_API_URL:https://api.deepseek.com}"
+#    api-key: "${AGENT_API_KEY:sk-216497bffef942c09b250555bb4ac5ac}"
+#    provider: "${AGENT_PROVIDER:openai}"
+#    # 模型声明的上下文窗口大小，单位为 Token，供压缩器计算预算。
+#    context-length: 1000000
+#    # 可选模型列表；增删条目即可调整聊天界面中可选择的模型。
+#    models:
+#      - name: "deepseek-flash"
+#        model: "deepseek-v4-flash"
+#      - name: "deepseek-pro"
+#        model: "deepseek-v4-pro"
+#
+    api-url: "${AGENT_API_URL:https://api.xiaomimimo.com/}"
+    api-key: "${AGENT_API_KEY:sk-cig9xy7xloij1x8y68qywdo358forx0aj6296y37cew2mkft}"
+    provider: "${AGENT_PROVIDER:openai}"
+    # 模型声明的上下文窗口大小，单位为 Token，供压缩器计算预算。
+    # 列表中的模型默认继承此值，也可在各条目中单独设置 context-length。
+    context-length: 1000000
+    # 可选模型列表；增删条目即可调整聊天界面中可选择的模型。
+    # name 是显示和选择用的名称，model 是发送给模型服务的实际标识。
+    models:
+      - name: "mimo-v2.6-flash"
+        model: "mimo-v2.6-flash"
+      - name: "mimo-v2.6-pro"
+        model: "mimo-v2.6-pro"
