@@ -97,7 +97,7 @@ public final class SafeMutationTalent extends AbsTalent {
 
     @Override
     public String getInstruction(Prompt prompt) {
-        return "修改已有文件前先 read。替换较长代码块用 edit 的 line_edits(start_line,end_line,new_str)，无需重发旧代码；短文本用 edits(old_str,new_str)，重复时加 old_StrStartLine。版本冲突时重新 read。";
+        return "修改已有文件前先 read，并比较 edit 两种方式的参数成本：已知原文件行号、替换整行或连续多行时，优先 line_edits(start_line,end_line,new_str)，无需重发旧代码；只改长行中的短片段、重发整行更贵时，用 edits(old_str,old_StrStartLine,new_str)。非本地逻辑挂载仅支持 edits。两种方式不能混用；版本冲突时重新 read。";
     }
 
     @Override
@@ -158,11 +158,11 @@ public final class SafeMutationTalent extends AbsTalent {
      * @return 编辑结果或版本冲突说明
      * @throws IOException 文件操作失败
      */
-    @ToolMapping(name = "edit", description = "修改已读取的文件。长块用 line_edits 的原文件行区间替换，省去 old_str；短块用 edits 文本替换。两种列表择一，后端校验已读版本并原子写入。")
+    @ToolMapping(name = "edit", description = "修改已读取的文件。比较参数成本：整行或连续多行且已知行号时优先 line_edits，只传新内容；长行内的短片段替换可用 edits，避免重发整行。非本地逻辑挂载仅支持 edits。两种列表择一，后端校验已读版本并原子写入。")
     public ToolResult editResult(
             @Param(value = "file_path", description = "工作区相对路径或逻辑路径") String filePath,
-            @Param(value = "edits", required = false, description = "旧式文本替换列表；重复的 old_str 可用 old_StrStartLine 定位。与 line_edits 二选一") List<TerminalTalent.EditOp> edits,
-            @Param(value = "line_edits", required = false, description = "按原文件行号替换的列表；start_line/end_line 均包含在区间内。与 edits 二选一") List<LineEditOp> lineEdits,
+            @Param(value = "edits", required = false, description = "短片段文本替换；提供 old_str、old_StrStartLine 和 new_str。适合重发整行更贵或非本地逻辑挂载的情况；与 line_edits 二选一") List<TerminalTalent.EditOp> edits,
+            @Param(value = "line_edits", required = false, description = "整行或连续多行替换，已知行号时通常更省 Token；只需 start_line、end_line、new_str，首尾行均包含。与 edits 二选一") List<LineEditOp> lineEdits,
             String __cwd, String __sessionId, String __fileVersionBatch) throws IOException {
         Map<String, Object> metadata = new LinkedHashMap<>();
         String content = editBody(filePath, edits, lineEdits, __cwd, __sessionId, __fileVersionBatch, metadata);

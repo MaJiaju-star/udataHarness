@@ -62,7 +62,7 @@ shell 可能是 PowerShell，搜索命令须按实际环境编写。`shell-searc
 或用 `grep(pattern, path="@tool-results")` 搜索当前会话已归档的结果；路径只读，不能由 `write/edit` 修改。
 读取内容是历史快照，需要当前文件时仍应重新 read。对不超过 16 MiB 的本地文件，重复读取先核对当前 SHA-256；即使旧 Read 正文已退出 WorkingMemory，也可用会话快照恢复。保存失败或版本变化时照常返回新读取结果。
 同步 `bash` 输出通过流式执行器落盘；展示截断不会终止命令，超时、取消、归档故障或独立日志存储上限会标明捕获不完整。构建和测试成功时压缩常规日志；失败时优先展示诊断行，完整已捕获日志仍可回读。
-`verify(task="test", build_system="auto")` 从当前目录识别 Maven、Gradle 或 Node 项目，生成单条跨平台命令并返回验证状态、失败诊断及会话日志路径；`task` 可选 `test`、`build`、`compile`（Node 项目不支持 `compile`）。`verify` 与 `bash` 使用相同的人工审批规则。`edit` 在先 `read` 后有两种互斥操作：短文本用 `edits[].old_str/new_str`，重复文本可加 `old_StrStartLine`；较长代码块用 `line_edits=[{"start_line":120,"end_line":140,"new_str":"..."}]`，首尾行均包含在替换范围内，无需重发旧代码。多处行区间按原文件行号从下往上应用，重叠或越界会整体拒绝；空 `new_str` 删除整行。后端仍校验文件版本并原子写入。
+`verify(task="test", build_system="auto")` 从当前目录识别 Maven、Gradle 或 Node 项目，生成单条跨平台命令并返回验证状态、失败诊断及会话日志路径；`task` 可选 `test`、`build`、`compile`（Node 项目不支持 `compile`）。`verify` 与 `bash` 使用相同的人工审批规则。`edit` 在先 `read` 后比较两种互斥操作的参数成本：整行或连续多行且已知行号时优先 `line_edits=[{"start_line":120,"end_line":140,"new_str":"..."}]`，无需重发旧代码；仅修改长行内的短片段时可用 `edits[].old_str/old_StrStartLine/new_str`，避免重发整行。非本地逻辑挂载仅支持 `edits`。多处行区间按原文件行号从下往上应用，重叠或越界会整体拒绝；空 `new_str` 删除整行。后端仍校验文件版本并原子写入。
 
 `bash` 的短且完整结果只显示退出码和正文；日志仍归档，路径保留在工具元数据中。模型可见正文会去掉 ANSI 颜色控制码，归档保存原始解码文本。长输出、失败摘要或捕获不完整时继续在结果中给出 `@tool-results` 回查路径。
 
