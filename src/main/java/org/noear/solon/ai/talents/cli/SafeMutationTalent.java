@@ -28,6 +28,8 @@ import java.util.Collection;
 import java.util.List;
 import java.util.Map;
 import java.util.LinkedHashMap;
+import java.util.HashMap;
+import java.util.TreeSet;
 import java.util.Set;
 import java.util.concurrent.locks.ReentrantLock;
 import java.util.function.Function;
@@ -95,7 +97,7 @@ public final class SafeMutationTalent extends AbsTalent {
 
     @Override
     public String getInstruction(Prompt prompt) {
-        return "修改已有文件前先 read。edit 遇到重复文本时，在 edits 中传短 old_str 和 read 行号 old_StrStartLine；锚点不符会拒绝修改，歧义错误会列候选行号。版本冲突时重新 read。";
+        return "修改已有文件前先 read。替换较长代码块用 edit 的 line_edits(start_line,end_line,new_str)，无需重发旧代码；短文本用 edits(old_str,new_str)，重复时加 old_StrStartLine。版本冲突时重新 read。";
     }
 
     @Override
@@ -156,16 +158,32 @@ public final class SafeMutationTalent extends AbsTalent {
      * @return 编辑结果或版本冲突说明
      * @throws IOException 文件操作失败
      */
-    @ToolMapping(name = "edit", description = "按文本块编辑文件。先 read；重复的 old_str 用 edits[].old_StrStartLine 指定 read 中的起始行号，锚点不符会拒绝修改。歧义时报候选行号；自动校验版本并原子写入。")
+    @ToolMapping(name = "edit", description = "修改已读取的文件。长块用 line_edits 的原文件行区间替换，省去 old_str；短块用 edits 文本替换。两种列表择一，后端校验已读版本并原子写入。")
     public ToolResult editResult(
             @Param(value = "file_path", description = "工作区相对路径或逻辑路径") String filePath,
-            @Param(value = "edits", description = "编辑操作列表") List<TerminalTalent.EditOp> edits,
+            @Param(value = "edits", required = false, description = "旧式文本替换列表；重复的 old_str 可用 old_StrStartLine 定位。与 line_edits 二选一") List<TerminalTalent.EditOp> edits,
+            @Param(value = "line_edits", required = false, description = "按原文件行号替换的列表；start_line/end_line 均包含在区间内。与 edits 二选一") List<LineEditOp> lineEdits,
             String __cwd, String __sessionId, String __fileVersionBatch) throws IOException {
         Map<String, Object> metadata = new LinkedHashMap<>();
-        String content = editBody(filePath, edits, __cwd, __sessionId, __fileVersionBatch, metadata);
+        String content = editBody(filePath, edits, lineEdits, __cwd, __sessionId, __fileVersionBatch, metadata);
         ToolResult result = ToolResult.success(content);
         result.metas().putAll(metadata);
         return result;
+    }
+
+    /** Preserve the Java caller signature used before line edits were added. */
+    public ToolResult editResult(String filePath, List<TerminalTalent.EditOp> edits,
+                                 String cwd, String sessionId, String batchId) throws IOException {
+        return editResult(filePath, edits, null, cwd, sessionId, batchId);
+    }
+
+    public static final class LineEditOp {
+        @Param(value = "start_line", description = "read 输出中的原文件起始行号，从 1 开始，包含该行")
+        public Integer startLine;
+        @Param(value = "end_line", description = "原文件结束行号，包含该行；必须不小于 start_line")
+        public Integer endLine;
+        @Param(value = "new_str", description = "替换区间的新内容；空字符串表示删除这些行，不必提交旧代码")
+        public String newStr;
     }
 
     /** 保留直接调用入口，结构化 diff 由工具结果元数据传给 UI。 */
@@ -175,11 +193,17 @@ public final class SafeMutationTalent extends AbsTalent {
     }
 
     /** 在原有版本守卫内执行全部替换，仅为成功提交的内容生成 diff。 */
-    private String editBody(String filePath, List<TerminalTalent.EditOp> edits, String __cwd,
+    private String editBody(String filePath, List<TerminalTalent.EditOp> edits, List<LineEditOp> lineEdits, String __cwd,
                             String __sessionId, String __fileVersionBatch, Map<String, Object> metadata) throws IOException {
-        if (filePath == null || edits == null || edits.isEmpty()) return "错误：file_path 和 edits 均不能为空。";
+        boolean textMode = edits != null && !edits.isEmpty();
+        boolean lineMode = lineEdits != null && !lineEdits.isEmpty();
+        if (filePath == null || textMode == lineMode) {
+            return "错误：file_path 必填，且 edits 与 line_edits 必须恰好提供一种非空列表。";
+        }
         if (ToolResultPaths.isVirtual(filePath)) return "错误：@tool-results 是只读历史快照，不能编辑。";
-        if (isNonLocalVirtual(filePath)) return terminal.edit(filePath, edits, __cwd);
+        if (isNonLocalVirtual(filePath)) return lineMode
+                ? "错误：line_edits 仅支持可本地读取的文件；该逻辑挂载请使用 edits。"
+                : terminal.edit(filePath, edits, __cwd);
         Path target = resolve(filePath, __cwd, true);
         ReentrantLock lock = lockFor(target);
         lock.lock();
@@ -195,7 +219,13 @@ public final class SafeMutationTalent extends AbsTalent {
             String raw = new String(Files.readAllBytes(target), StandardCharsets.UTF_8);
             boolean hadBom = TerminalSupport.hasUtf8Bom(raw);
             String working = TerminalSupport.stripUtf8Bom(raw);
-            for (int index : executionOrder(edits)) {
+            if (lineMode) {
+                try {
+                    working = applyLineEdits(working, lineEdits);
+                } catch (IllegalArgumentException e) {
+                    return "预检查失败：" + e.getMessage();
+                }
+            } else for (int index : executionOrder(edits)) {
                 TerminalTalent.EditOp operation = edits.get(index);
                 if (operation == null || operation.oldStr == null || operation.oldStr.isEmpty()) {
                     return "预检查失败（操作 #" + (index + 1) + "）：old_str 不能为空。";
@@ -231,7 +261,7 @@ public final class SafeMutationTalent extends AbsTalent {
             preparedDiff.archive(artifactStore, __sessionId);
             Map<String, Object> diff = preparedDiff.details;
             metadata.put("editDiff", diff);
-            return withDiagnostics("文件 " + filePath + " 成功完成 " + edits.size()
+            return withDiagnostics("文件 " + filePath + " 成功完成 " + (lineMode ? lineEdits.size() : edits.size())
                     + " 处修改。（+" + diff.get("addedLines") + " / -" + diff.get("deletedLines")
                     + " 行，首个修改行 " + diff.get("firstChangedLine") + "）"
                     + (Boolean.TRUE.equals(diff.get("coarse")) ? "（合并差异块统计，可能包含未变行）" : "")
@@ -239,6 +269,98 @@ public final class SafeMutationTalent extends AbsTalent {
         } finally {
             lock.unlock();
         }
+    }
+
+    private String applyLineEdits(String content, List<LineEditOp> edits) {
+        if (edits.size() > 64) throw new IllegalArgumentException("line_edits 一次最多 64 处；请分批修改。");
+        List<LineRange> ranges = new ArrayList<>();
+        TreeSet<Integer> boundaries = new TreeSet<>();
+        for (int i = 0; i < edits.size(); i++) {
+            LineEditOp edit = edits.get(i);
+            if (edit == null || edit.startLine == null || edit.endLine == null || edit.newStr == null
+                    || edit.startLine < 1 || edit.endLine < edit.startLine || edit.endLine == Integer.MAX_VALUE) {
+                throw new IllegalArgumentException("操作 #" + (i + 1)
+                        + " 需要有效的 start_line/end_line（包含首尾）与 new_str；空字符串可删除区间。");
+            }
+            ranges.add(new LineRange(i + 1, edit));
+            boundaries.add(edit.startLine);
+            boundaries.add(edit.endLine + 1);
+        }
+        ranges.sort((left, right) -> Integer.compare(left.edit.startLine, right.edit.startLine));
+        for (int i = 1; i < ranges.size(); i++) {
+            if (ranges.get(i).edit.startLine <= ranges.get(i - 1).edit.endLine) {
+                throw new IllegalArgumentException("操作 #" + ranges.get(i - 1).number + " 与 #"
+                        + ranges.get(i).number + " 的原文件行区间重叠；未写入任何修改。");
+            }
+        }
+        Map<Integer, Integer> offsets = new HashMap<>();
+        int physicalLines = lineOffsets(content, boundaries, offsets);
+        for (LineRange range : ranges) {
+            if (range.edit.endLine > physicalLines) {
+                throw new IllegalArgumentException("操作 #" + range.number + " 的结束行 "
+                        + range.edit.endLine + " 超出文件范围（共 " + physicalLines + " 行）；未写入任何修改。");
+            }
+        }
+        String working = content;
+        for (int i = ranges.size() - 1; i >= 0; i--) {
+            LineEditOp edit = ranges.get(i).edit;
+            int start = offsets.get(edit.startLine);
+            int end = offsets.get(edit.endLine + 1);
+            String ending = lineEndingAt(content, end);
+            String newline = ending.isEmpty() ? preferredNewline(content) : ending;
+            String replacement = edit.newStr.replace("\r\n", "\n").replace('\r', '\n')
+                    .replace("\n", newline);
+            if (!replacement.isEmpty() && !ending.isEmpty()
+                    && !replacement.endsWith("\n") && !replacement.endsWith("\r")) {
+                replacement += ending;
+            }
+            working = working.substring(0, start) + replacement + working.substring(end);
+        }
+        return working;
+    }
+
+    /** Collect only requested line boundaries, counting CRLF as one terminator. */
+    private static int lineOffsets(String content, TreeSet<Integer> requested, Map<Integer, Integer> offsets) {
+        int line = 1;
+        if (requested.contains(1)) offsets.put(1, 0);
+        boolean endedInBreak = false;
+        for (int index = 0; index < content.length();) {
+            char value = content.charAt(index++);
+            if (value == '\r' || value == '\n') {
+                if (value == '\r' && index < content.length() && content.charAt(index) == '\n') index++;
+                line++;
+                if (requested.contains(line)) offsets.put(line, index);
+                endedInBreak = true;
+            } else {
+                endedInBreak = false;
+            }
+        }
+        if (!content.isEmpty() && !endedInBreak && requested.contains(line + 1)) {
+            offsets.put(line + 1, content.length());
+        }
+        return content.isEmpty() ? 0 : line - (endedInBreak ? 1 : 0);
+    }
+
+    private static String lineEndingAt(String content, int end) {
+        if (end == 0) return "";
+        if (content.charAt(end - 1) == '\n') {
+            return end > 1 && content.charAt(end - 2) == '\r' ? "\r\n" : "\n";
+        }
+        return content.charAt(end - 1) == '\r' ? "\r" : "";
+    }
+
+    private static String preferredNewline(String content) {
+        int lf = content.indexOf('\n');
+        int cr = content.indexOf('\r');
+        if (cr >= 0 && (lf < 0 || cr < lf)) return cr + 1 < content.length() && content.charAt(cr + 1) == '\n'
+                ? "\r\n" : "\r";
+        return "\n";
+    }
+
+    private static final class LineRange {
+        final int number;
+        final LineEditOp edit;
+        LineRange(int number, LineEditOp edit) { this.number = number; this.edit = edit; }
     }
 
     private static String candidateLines(String content, String oldText) {

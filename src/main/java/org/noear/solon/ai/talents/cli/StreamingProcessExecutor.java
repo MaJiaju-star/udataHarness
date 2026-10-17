@@ -18,7 +18,21 @@ import java.util.concurrent.TimeUnit;
 import java.util.function.Consumer;
 import java.util.function.Supplier;
 
-/** 只替换已通过 TerminalTalent 校验的同步 bash 输出捕获，不改变其他执行入口。 */
+/**
+ * 同步 bash 流式捕获执行器：以装饰器方式包装 {@link ProcessExecutor}，仅接管已通过
+ * TerminalTalent 校验的同步 bash 输出捕获，其余执行入口（非流式、无捕获作用域）
+ * 均原样委托给被包装的原执行器。
+ *
+ * <p>核心行为：进程输出由独立读取线程增量解码，实时写入当前会话的只读归档
+ * （{@link ContextArtifactStore}）；返回给模型的则是受展示预算约束的有界首尾片段
+ * 与诊断摘要，完整日志通过 {@code @tool-results/<id>.txt} 路径回查。</p>
+ *
+ * <p>终止策略：展示截断不终止命令；仅在执行超时、调用方取消、日志存储配额耗尽
+ * 或持久化故障时终止进程树，并在结果中标注终止原因与捕获完整性。</p>
+ *
+ * <p>线程安全：捕获作用域通过 {@link ThreadLocal} 绑定，仅对当前同步 bash 调用生效，
+ * 不影响并行工具调用。</p>
+ */
 final class StreamingProcessExecutor extends ProcessExecutor {
     private final ProcessExecutor original;
     private final ThreadLocal<Scope> current = new ThreadLocal<>();

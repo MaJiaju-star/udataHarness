@@ -120,6 +120,72 @@ class SafeMutationTalentTest {
     }
 
     @Test
+    void lineEditsReplaceOriginalLineRangesWithoutOldTextAndKeepCrLfBom() throws IOException {
+        Path target = workspace.resolve("ranges.txt");
+        Files.write(target, "\uFEFFone\r\ntwo\r\nthree\r\nfour\r\n".getBytes(StandardCharsets.UTF_8));
+        reader().read("ranges.txt", null, null, null, "session-a");
+        SafeMutationTalent mutation = tool();
+        org.noear.solon.ai.chat.tool.ToolResult result = mutation.editResult("ranges.txt", null,
+                Arrays.asList(lineEdit(2, 3, "new-two\nnew-three")), null, "session-a", null);
+        assertTrue(result.getContent().contains("成功"));
+        assertEquals("\uFEFFone\r\nnew-two\r\nnew-three\r\nfour\r\n", read(target));
+        assertTrue(result.metas().containsKey("editDiff"));
+        String schema = mutation.getToolAry("edit").iterator().next().inputSchema();
+        assertTrue(schema.contains("line_edits"));
+        assertTrue(schema.contains("start_line"));
+        assertTrue(schema.contains("end_line"));
+        java.util.Map<String, Object> invocation = new java.util.LinkedHashMap<>();
+        invocation.put("file_path", "ranges.txt");
+        java.util.Map<String, Object> range = new java.util.LinkedHashMap<>();
+        range.put("start_line", 1);
+        range.put("end_line", 1);
+        range.put("new_str", "");
+        invocation.put("line_edits", java.util.Collections.singletonList(range));
+        assertTrue(org.junit.jupiter.api.Assertions.assertDoesNotThrow(() ->
+                mutation.getToolAry("edit").iterator().next().call(invocation)).getContent()
+                .contains("版本冲突"));
+    }
+
+    @Test
+    void lineEditsApplyFromBottomAndRejectOverlapWithoutWriting() throws IOException {
+        Path target = workspace.resolve("ordered.txt");
+        Files.write(target, "a\nb\nc\nd".getBytes(StandardCharsets.UTF_8));
+        reader().read("ordered.txt", null, null, null, "session-a");
+        SafeMutationTalent mutation = tool();
+        String overlap = mutation.editResult("ordered.txt", null,
+                Arrays.asList(lineEdit(2, 3, "B"), lineEdit(3, 4, "D")),
+                null, "session-a", null).getContent();
+        assertTrue(overlap.contains("重叠"));
+        assertEquals("a\nb\nc\nd", read(target));
+        String invalid = mutation.editResult("ordered.txt", null,
+                Arrays.asList(lineEdit(5, 5, "missing")), null, "session-a", null).getContent();
+        assertTrue(invalid.contains("超出文件范围"));
+        String success = mutation.editResult("ordered.txt", null,
+                Arrays.asList(lineEdit(3, 3, "C"), lineEdit(1, 1, "A"), lineEdit(4, 4, "D")),
+                null, "session-a", null).getContent();
+        assertTrue(success.contains("成功"));
+        assertEquals("A\nb\nC\nD", read(target));
+        assertTrue(mutation.editResult("ordered.txt", null,
+                Arrays.asList(lineEdit(2, 2, "")), null, "session-b", null).getContent()
+                .contains("尚未读取"));
+    }
+
+    @Test
+    void lineEditsDeleteWholeLinesAndRejectMixedModes() throws IOException {
+        Path target = workspace.resolve("delete.txt");
+        Files.write(target, "a\r\nb\r\nc\r\n".getBytes(StandardCharsets.UTF_8));
+        reader().read("delete.txt", null, null, null, "session-a");
+        SafeMutationTalent mutation = tool();
+        assertTrue(mutation.editResult("delete.txt", Arrays.asList(edit("a", "A", 1)),
+                Arrays.asList(lineEdit(2, 2, "B")), null, "session-a", null).getContent()
+                .contains("恰好提供一种"));
+        assertTrue(mutation.editResult("delete.txt", null,
+                Arrays.asList(lineEdit(2, 2, "")), null, "session-a", null).getContent()
+                .contains("成功"));
+        assertEquals("a\r\nc\r\n", read(target));
+    }
+
+    @Test
     void rereadingInSameBatchCannotAuthorizeAnAlreadyGeneratedEdit() throws IOException {
         Path target = workspace.resolve("batch.txt");
         Files.write(target, "old".getBytes(StandardCharsets.UTF_8));
@@ -198,6 +264,14 @@ class SafeMutationTalentTest {
         operation.oldStr = oldText;
         operation.newStr = newText;
         operation.oldStrStartLine = line;
+        return operation;
+    }
+
+    private static SafeMutationTalent.LineEditOp lineEdit(int start, int end, String replacement) {
+        SafeMutationTalent.LineEditOp operation = new SafeMutationTalent.LineEditOp();
+        operation.startLine = start;
+        operation.endLine = end;
+        operation.newStr = replacement;
         return operation;
     }
 
