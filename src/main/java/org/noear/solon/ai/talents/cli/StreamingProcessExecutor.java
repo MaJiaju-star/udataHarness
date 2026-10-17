@@ -175,13 +175,18 @@ final class StreamingProcessExecutor extends ProcessExecutor {
             scope.details.put("exitCode", process.isAlive() ? null : process.exitValue());
             scope.details.put("terminationReason", scope.stopReason);
             scope.details.put("displayTruncated", scope.chars > scope.visibleChars);
+            int exitCode = process.isAlive() ? -1 : process.exitValue();
+            String preview = scope.preview(exitCode, complete);
+            // 全文已经展示时，归档路径和捕获字节数只放在元数据中，避免每次重复消耗上下文。
+            if (complete && scope.fullOutputVisible(exitCode)) {
+                return "[exit_code=" + exitCode + "]" + (preview.isEmpty() ? "" : "\n" + preview);
+            }
             String header = "<bash-output capture_complete=\"" + complete + "\">\n"
                     + (scope.stopReason == null ? "" : scope.stopReason + "\n")
                     + "[exit_code=" + (process.isAlive() ? "unknown" : process.exitValue()) + "]\n"
                     + "已捕获 " + scope.bytes + " 字节；"
                     + (complete ? "完整日志" : "已捕获部分") + "：read(file_path=\"" + path + "\")，可用 grep 搜索。\n";
-            int exitCode = process.isAlive() ? -1 : process.exitValue();
-            return header + scope.preview(exitCode, complete) + "\n</bash-output>";
+            return header + preview + "\n</bash-output>";
         } catch (Exception e) {
             if (process != null) TerminalSessionManager.destroyProcessTree(process);
             if (e instanceof InterruptedException) {
@@ -246,6 +251,7 @@ final class StreamingProcessExecutor extends ProcessExecutor {
         final Map<String, Object> details = new LinkedHashMap<>();
         final StringBuilder head = new StringBuilder(), tail = new StringBuilder();
         final StringBuilder pendingLine = new StringBuilder();
+        final AnsiStripper ansiStripper = new AnsiStripper();
         final List<String> firstDiagnostics = new ArrayList<>();
         final Deque<String> lastDiagnostics = new ArrayDeque<>();
         int diagnosticCount;
@@ -278,12 +284,19 @@ final class StreamingProcessExecutor extends ProcessExecutor {
             try { log.append(piece); }
             catch (IOException e) { throw new LogPersistenceException(e); }
             bytes += size;
-            chars += piece.length();
-            captureDiagnostics(piece);
+            String visible = ansiStripper.strip(piece);
+            chars += visible.length();
+            captureDiagnostics(visible);
             int half = visibleChars / 2;
-            if (head.length() < half) head.append(piece, 0, Math.min(piece.length(), half - head.length()));
-            tail.append(piece);
+            if (head.length() < half) head.append(visible, 0, Math.min(visible.length(), half - head.length()));
+            tail.append(visible);
             if (tail.length() > visibleChars) tail.delete(0, tail.length() - visibleChars);
+        }
+
+        boolean fullOutputVisible(int exitCode) {
+            return !binary && chars <= visibleChars
+                    && !(buildOrTest && exitCode == 0 && chars > 3000)
+                    && !(exitCode != 0 && chars > 2000);
         }
 
         /** 返回有界首尾片段，避免在 UTF-16 代理对中间截断。 */
@@ -362,6 +375,38 @@ final class StreamingProcessExecutor extends ProcessExecutor {
             int start = Math.max(0, value.length() - length);
             if (start < value.length() && Character.isLowSurrogate(value.charAt(start))) start++;
             return value.subSequence(start, value.length()).toString();
+        }
+    }
+
+    /** 仅清理模型可见文本；会话归档仍保留进程原始输出中的 ANSI 序列。 */
+    private static final class AnsiStripper {
+        private int state; // 0=正文，1=ESC，2=CSI，3=OSC，4=OSC 后的 ESC
+
+        String strip(String piece) {
+            if (state == 0 && piece.indexOf('\u001b') < 0) return piece;
+            StringBuilder result = new StringBuilder(piece.length());
+            for (int i = 0; i < piece.length(); i++) {
+                char c = piece.charAt(i);
+                switch (state) {
+                    case 0:
+                        if (c == '\u001b') state = 1;
+                        else result.append(c);
+                        break;
+                    case 1:
+                        state = c == '[' ? 2 : c == ']' ? 3 : 0;
+                        break;
+                    case 2:
+                        if (c >= '@' && c <= '~') state = 0;
+                        break;
+                    case 3:
+                        if (c == '\u0007') state = 0;
+                        else if (c == '\u001b') state = 4;
+                        break;
+                    default:
+                        state = c == '\\' ? 0 : c == '\u001b' ? 4 : 3;
+                }
+            }
+            return result.toString();
         }
     }
 

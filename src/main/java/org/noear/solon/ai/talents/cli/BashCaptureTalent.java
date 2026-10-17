@@ -57,7 +57,7 @@ public final class BashCaptureTalent extends AbsTalent {
 
     @Override
     public String getInstruction(Prompt prompt) {
-        return "bash 执行任意命令；构建验证优先用 verify(build_system=auto, task=test/build/compile)，无需 shell 拼接。输出归档到 @tool-results，失败显示诊断。";
+        return "bash 使用当前终端方言执行命令（Windows 默认 PowerShell 7，支持多行、&&、||、>；显式切换时以实际终端为准）。PowerShell 查询状态时只选需要的属性，避免对整个对象使用 Format-List。构建验证优先用 verify(build_system=auto, task=test/build/compile)。短结果直接显示退出码和正文，长结果归档到 @tool-results，失败显示诊断。";
     }
 
     /**
@@ -73,7 +73,7 @@ public final class BashCaptureTalent extends AbsTalent {
      * @param __sessionId 框架注入的会话标识
      * @return 有界展示、日志恢复入口及仅供 UI 使用的捕获元数据
      */
-    @ToolMapping(name = "bash", description = "执行非交互式命令。输出流式归档到 @tool-results，可用 read/grep 回查；模型只看有界摘要，失败优先显示诊断。展示截断不终止命令；超时或日志配额耗尽会标注不完整。实际 shell 取决于系统。")
+    @ToolMapping(name = "bash", description = "在当前 shell 执行非交互式命令；Windows 默认 PowerShell 7，支持多行、&&、||、>，显式切换时遵循所选 shell。输出流式归档到 @tool-results，可用 read/grep 回查；模型只看有界摘要，失败优先显示诊断。展示截断不终止命令；超时或日志配额耗尽会标注不完整。")
     public ToolResult bashResult(
             @Param(value = "command", description = "要执行的命令；多行命令支持由当前 shell 解释") String command,
             @Param(value = "timeout", required = false, defaultValue = "120000", description = "超时时间，毫秒") Integer timeout,

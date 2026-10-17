@@ -64,6 +64,8 @@ shell 可能是 PowerShell，搜索命令须按实际环境编写。`shell-searc
 同步 `bash` 输出通过流式执行器落盘；展示截断不会终止命令，超时、取消、归档故障或独立日志存储上限会标明捕获不完整。构建和测试成功时压缩常规日志；失败时优先展示诊断行，完整已捕获日志仍可回读。
 `verify(task="test", build_system="auto")` 从当前目录识别 Maven、Gradle 或 Node 项目，生成单条跨平台命令并返回验证状态、失败诊断及会话日志路径；`task` 可选 `test`、`build`、`compile`（Node 项目不支持 `compile`）。`verify` 与 `bash` 使用相同的人工审批规则。`edit` 在先 `read` 后有两种互斥操作：短文本用 `edits[].old_str/new_str`，重复文本可加 `old_StrStartLine`；较长代码块用 `line_edits=[{"start_line":120,"end_line":140,"new_str":"..."}]`，首尾行均包含在替换范围内，无需重发旧代码。多处行区间按原文件行号从下往上应用，重叠或越界会整体拒绝；空 `new_str` 删除整行。后端仍校验文件版本并原子写入。
 
+`bash` 的短且完整结果只显示退出码和正文；日志仍归档，路径保留在工具元数据中。模型可见正文会去掉 ANSI 颜色控制码，归档保存原始解码文本。长输出、失败摘要或捕获不完整时继续在结果中给出 `@tool-results` 回查路径。
+
 批量治理在 Native Tool 模式的 ActionEnd 安全边界执行，只改变下一次请求将使用的本批结果。
 单条外置也支持文本 Observation 模式；文本模式批量治理暂不启用。
 同一引擎的子代理使用自身会话范围，未提供跨会话访问。快照目前无自动过期删除，
@@ -199,6 +201,12 @@ mvn test
 mvn package -DskipTests
 java -jar target/udata-harness.jar
 ```
+
+Windows 启动时默认要求 PowerShell 7（`pwsh.exe` 在服务进程的 `PATH` 中）；
+Harness 会在创建终端前探测版本并选用 `pwsh`。找不到可用的 PowerShell 7 时启动会给出明确错误，
+不会静默使用 PowerShell 5.1。需要改用其他终端时，可在启动前设置
+`SOLON_AI_CLI_SHELL=powershell` 或 `SOLON_AI_CLI_SHELL=cmd`；
+JVM 属性 `-Dsolon.ai.cli.shell=...` 优先于环境变量。切换后须重启服务。
 
 React/Vite 源码位于 `frontend/src`；生产构建会输出到
 `src/main/resources/static`，由 Solon Web 直接提供。

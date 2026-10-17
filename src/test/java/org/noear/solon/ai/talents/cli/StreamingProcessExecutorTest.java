@@ -55,6 +55,22 @@ class StreamingProcessExecutorTest {
     }
 
     @Test
+    void shortOutputOmitsArchiveEnvelopeAndStripsAnsiOnlyFromPreview() throws Exception {
+        Fixture fixture = fixture(1024 * 1024);
+        ToolResult result = fixture.tool.bashResult("short-ansi", 15000, 2000, null, "short");
+        assertTrue(result.getContent().startsWith("[exit_code=0]\n"));
+        assertTrue(result.getContent().endsWith("Name: pwsh\nVersion: 7.6.7\n"));
+        assertFalse(result.getContent().contains("\u001b["));
+        assertFalse(result.getContent().contains("@tool-results/"));
+        Map<?, ?> details = (Map<?, ?>) result.metas().get("bashOutput");
+        assertEquals(Boolean.TRUE, details.get("captureComplete"));
+        String path = (String) details.get("path");
+        String id = path.substring("@tool-results/".length(), path.length() - 4);
+        String archived = new String(Files.readAllBytes(fixture.store.bodyPath("short", id)), StandardCharsets.UTF_8);
+        assertTrue(archived.contains("\u001b[32;1m"));
+    }
+
+    @Test
     void verifyDetectsProjectAndReturnsCompactStatusWithRecoverableLog() throws Exception {
         Files.write(workspace.resolve("pom.xml"), "<project/>".getBytes(StandardCharsets.UTF_8));
         Fixture succeeded = fixture(8L * 1024 * 1024);
@@ -189,6 +205,11 @@ class StreamingProcessExecutorTest {
     /** 独立 JVM 输出源，避免依赖部署机是否安装 Node/Python 或特定 shell。 */
     public static final class Output {
         public static void main(String[] args) throws Exception {
+            if ("short-ansi".equals(args[0])) {
+                System.out.write("\u001b[32;1mName\u001b[0m: pwsh\nVersion: 7.6.7\n"
+                        .getBytes(StandardCharsets.UTF_8));
+                return;
+            }
             if ("closed-stdout".equals(args[0])) {
                 System.out.close();
                 System.err.close();
