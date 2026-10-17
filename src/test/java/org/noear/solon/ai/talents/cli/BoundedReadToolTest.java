@@ -40,10 +40,10 @@ class BoundedReadToolTest {
         for (int line = 1; line <= 3500; line++) content.append("class line").append(line).append(" {}\n");
         Files.write(source, content.toString().getBytes(StandardCharsets.UTF_8));
 
-        String first = reader.read("source.java", null, null, null, "session-a");
+        String first = reader.read("source.java", 1, 4000, null, "session-a");
         assertTrue(first.contains("3500 | class line3500"));
         assertTrue(first.contains("[文件读取完毕]"));
-        String second = reader.read("source.java", null, null, null, "session-a");
+        String second = reader.read("source.java", 1, 4000, null, "session-a");
         assertTrue(second.startsWith("<read-unchanged>"));
         assertTrue(second.length() < 600);
         assertTrue(second.contains("@tool-results/"));
@@ -52,9 +52,9 @@ class BoundedReadToolTest {
         assertTrue(store.restore("session-a", id, 0, first.length()).endsWith(first));
 
         assertTrue(reader.read("source.java", 2, 10, null, "session-a").contains("2 | class line2"));
-        assertTrue(reader.read("source.java", null, null, null, "session-b").contains("3500 | class line3500"));
+        assertTrue(reader.read("source.java", 1, 4000, null, "session-b").contains("3500 | class line3500"));
         Files.write(source, (content.toString() + "changed\n").getBytes(StandardCharsets.UTF_8));
-        assertTrue(reader.read("source.java", null, null, null, "session-a").contains("changed"));
+        assertTrue(reader.read("source.java", 1, 4000, null, "session-a").contains("changed"));
     }
 
     @Test
@@ -191,16 +191,20 @@ class BoundedReadToolTest {
     }
 
     @Test
-    void defaultsToFourThousandLinesAndProvidesContinuation() throws IOException {
+    void largeFileDefaultsToPreviewAndProvidesContinuation() throws IOException {
         StringBuilder contents = new StringBuilder();
         for (int i = 1; i <= 4002; i++) contents.append("line-").append(i).append('\n');
         Files.write(workspace.resolve("lines.txt"), contents.toString().getBytes(StandardCharsets.UTF_8));
 
         String first = tool().read("lines.txt", null, null, null);
-        assertTrue(first.contains("  4000 | line-4000"));
-        assertFalse(first.contains("line-4001"));
-        assertTrue(first.contains("offset=4001, limit=4000"));
+        assertTrue(first.contains("大文件预览"));
+        assertTrue(first.contains("总行数 4002"));
+        assertTrue(first.contains("   400 | line-400"));
+        assertFalse(first.contains("line-401"));
+        assertTrue(first.contains("offset=401, limit=400"));
         assertFalse(first.contains("SHA-256"));
+        String complete = tool().read("lines.txt", 1, 4000, null);
+        assertTrue(complete.contains("  4000 | line-4000"));
         String second = tool().read("lines.txt", 4001, null, null);
         assertTrue(second.contains("line-4002"));
         assertTrue(second.contains("[文件读取完毕]"));
@@ -214,9 +218,24 @@ class BoundedReadToolTest {
         StringBuilder content = new StringBuilder();
         for (int line = 1; line <= 4002; line++) content.append("line-").append(line).append('\n');
         Files.write(workspace.resolve("partial.java"), content.toString().getBytes(StandardCharsets.UTF_8));
-        assertTrue(reader.read("partial.java", null, null, null, "session-a").contains("offset=4001"));
-        assertTrue(reader.read("partial.java", null, null, null, "session-a")
+        assertTrue(reader.read("partial.java", 1, 4000, null, "session-a").contains("offset=4001"));
+        assertTrue(reader.read("partial.java", 1, 4000, null, "session-a")
                 .contains("继续当前文件请用 offset=4001"));
+    }
+
+    @Test
+    void focusLineReadsLocalWindowAndRejectsConflictingRanges() throws IOException {
+        StringBuilder body = new StringBuilder();
+        for (int line = 1; line <= 1000; line++) body.append("line-").append(line).append('\n');
+        Files.write(workspace.resolve("focus.java"), body.toString().getBytes(StandardCharsets.UTF_8));
+        BoundedReadTool reader = tool();
+        String focused = reader.readResult("focus.java", null, null, null, null,
+                500, 2, null, "s").getContent();
+        assertTrue(focused.contains("   498 | line-498"));
+        assertTrue(focused.contains("   502 | line-502"));
+        assertFalse(focused.contains("line-497"));
+        assertTrue(reader.readResult("focus.java", 1, 10, null, null,
+                500, 2, null, "s").getContent().contains("不能与 offset/limit"));
     }
 
     @Test

@@ -7,6 +7,9 @@ import java.io.InputStream;
 import java.lang.reflect.Field;
 import java.nio.file.Path;
 import java.util.LinkedHashMap;
+import java.util.ArrayDeque;
+import java.util.ArrayList;
+import java.util.Deque;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
@@ -163,7 +166,8 @@ final class StreamingProcessExecutor extends ProcessExecutor {
                     + "[exit_code=" + (process.isAlive() ? "unknown" : process.exitValue()) + "]\n"
                     + "已捕获 " + scope.bytes + " 字节；"
                     + (complete ? "完整日志" : "已捕获部分") + "：read(file_path=\"" + path + "\")，可用 grep 搜索。\n";
-            return header + scope.preview() + "\n</bash-output>";
+            int exitCode = process.isAlive() ? -1 : process.exitValue();
+            return header + scope.preview(exitCode, complete) + "\n</bash-output>";
         } catch (Exception e) {
             if (process != null) TerminalSessionManager.destroyProcessTree(process);
             if (e instanceof InterruptedException) {
@@ -218,22 +222,35 @@ final class StreamingProcessExecutor extends ProcessExecutor {
 
     /** 单次命令的有界展示缓冲与独立存储配额。 */
     static final class Scope {
+        private static final java.util.regex.Pattern DIAGNOSTIC = java.util.regex.Pattern.compile(
+                "(?i)(\\berror\\b|\\bfailed\\b|\\bfailure\\b|\\bfatal\\b|exception|traceback|caused by|assertion|\\[ERROR\\])");
         final ContextArtifactStore store;
         final String sessionId;
         final int visibleChars;
         final long maxLogBytes;
+        final boolean buildOrTest;
         final Map<String, Object> details = new LinkedHashMap<>();
         final StringBuilder head = new StringBuilder(), tail = new StringBuilder();
+        final StringBuilder pendingLine = new StringBuilder();
+        final List<String> firstDiagnostics = new ArrayList<>();
+        final Deque<String> lastDiagnostics = new ArrayDeque<>();
+        int diagnosticCount;
         long rawBytes, bytes, chars;
         volatile String stopReason;
         boolean binary;
         boolean limitReached;
 
         Scope(ContextArtifactStore store, String sessionId, int visibleChars, long maxLogBytes) {
+            this(store, sessionId, visibleChars, maxLogBytes, false);
+        }
+
+        Scope(ContextArtifactStore store, String sessionId, int visibleChars, long maxLogBytes,
+              boolean buildOrTest) {
             this.store = store;
             this.sessionId = sessionId;
             this.visibleChars = visibleChars;
             this.maxLogBytes = maxLogBytes;
+            this.buildOrTest = buildOrTest;
         }
 
         /** 写入日志并更新有界首尾缓存；持久化错误交给调用者终止命令。 */
@@ -248,6 +265,7 @@ final class StreamingProcessExecutor extends ProcessExecutor {
             catch (IOException e) { throw new LogPersistenceException(e); }
             bytes += size;
             chars += piece.length();
+            captureDiagnostics(piece);
             int half = visibleChars / 2;
             if (head.length() < half) head.append(piece, 0, Math.min(piece.length(), half - head.length()));
             tail.append(piece);
@@ -255,14 +273,81 @@ final class StreamingProcessExecutor extends ProcessExecutor {
         }
 
         /** 返回有界首尾片段，避免在 UTF-16 代理对中间截断。 */
-        String preview() {
+        String preview() { return preview(0, true); }
+
+        String preview(int exitCode, boolean complete) {
             if (binary) return "[检测到二进制输出，已省略模型可见正文；归档保存的是解码文本，不是原始二进制文件。]";
+            if (pendingLine.length() > 0) {
+                rememberDiagnostic(pendingLine.toString());
+                pendingLine.setLength(0);
+            }
+            if ((exitCode != 0 || !complete) && chars > 2000) {
+                StringBuilder result = new StringBuilder("[失败诊断] 已捕获诊断行 ")
+                        .append(diagnosticCount).append(" 条；完整日志见上方路径。\n");
+                for (String line : firstDiagnostics) result.append("- ").append(line).append('\n');
+                if (diagnosticCount > firstDiagnostics.size() + lastDiagnostics.size()) {
+                    result.append("- …中间诊断行省略…\n");
+                }
+                for (String line : lastDiagnostics) result.append("- ").append(line).append('\n');
+                int tailBudget = Math.max(0, Math.min(2000, visibleChars - result.length() - 64));
+                if (tailBudget > 0) result.append("末尾输出：\n")
+                        .append(safeTail(tail, tailBudget));
+                if (result.length() < visibleChars) return result.toString();
+            }
+            if (buildOrTest && exitCode == 0 && chars > 3000) {
+                int headChars = Math.min(300, head.length());
+                int tailChars = Math.min(1300, tail.length());
+                return safeHead(head, headChars) + "\n[构建/测试成功；常规日志已省略，完整日志见上方路径]\n"
+                        + safeTail(tail, tailChars);
+            }
             if (chars <= visibleChars) return tail.toString();
             int end = head.length();
             if (end > 0 && Character.isHighSurrogate(head.charAt(end - 1))) end--;
             int start = Math.max(0, tail.length() - (visibleChars - visibleChars / 2));
             if (start < tail.length() && Character.isLowSurrogate(tail.charAt(start))) start++;
             return head.substring(0, end) + "\n[展示已截断；命令不因此终止，完整日志见上方路径]\n" + tail.substring(start);
+        }
+
+        private void captureDiagnostics(String piece) {
+            int start = 0;
+            for (int i = 0; i < piece.length(); i++) {
+                if (piece.charAt(i) != '\n') continue;
+                appendLinePart(piece, start, i);
+                rememberDiagnostic(pendingLine.toString());
+                pendingLine.setLength(0);
+                start = i + 1;
+            }
+            appendLinePart(piece, start, piece.length());
+        }
+
+        private void appendLinePart(String piece, int start, int end) {
+            if (pendingLine.length() < 1024 && end > start) {
+                pendingLine.append(piece, start, Math.min(end, start + 1024 - pendingLine.length()));
+            }
+        }
+
+        private void rememberDiagnostic(String line) {
+            if (!DIAGNOSTIC.matcher(line).find()) return;
+            diagnosticCount++;
+            String bounded = line.trim();
+            if (bounded.length() > 240) bounded = bounded.substring(0, 240) + "…";
+            if (firstDiagnostics.size() < 3) firstDiagnostics.add(bounded);
+            else {
+                lastDiagnostics.addLast(bounded);
+                if (lastDiagnostics.size() > 3) lastDiagnostics.removeFirst();
+            }
+        }
+
+        private static String safeHead(CharSequence value, int length) {
+            int end = Math.min(value.length(), length);
+            if (end > 0 && Character.isHighSurrogate(value.charAt(end - 1))) end--;
+            return value.subSequence(0, end).toString();
+        }
+
+        private static String safeTail(CharSequence value, int length) {
+            int start = Math.max(0, value.length() - length);
+            if (start < value.length() && Character.isLowSurrogate(value.charAt(start))) start++;
+            return value.subSequence(start, value.length()).toString();
         }
     }
 

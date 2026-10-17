@@ -46,8 +46,7 @@ class BoundedLsToolTest {
         assertTrue(flat.contains("a/ [浅层"));
         assertFalse(flat.contains("deep.txt"));
         String recursive = tool().ls(".", true, false, null, null, null);
-        assertTrue(recursive.contains("[DIR] a/b/c/"));
-        assertTrue(recursive.contains("[FILE] a/b/c/deep.txt"));
+        assertTrue(recursive.contains("└── a/\n    └── b/\n        └── c/\n            └── deep.txt"));
         assertTrue(recursive.contains("[目录列举完毕]"));
         assertTrue(tool().ls(".", false, true, null, null, null).contains(".hidden"));
     }
@@ -100,8 +99,11 @@ class BoundedLsToolTest {
         Files.createFile(application.resolve("ExampleService.java"));
         Files.createFile(tools.resolve("ExampleTool.java"));
         String result = tool().ls("src/main/java", true, false, null, null, null);
-        assertTrue(result.contains("[FILE] src/main/java/com/udata/harness/service/impl/ExampleService.java"));
-        assertTrue(result.contains("[FILE] src/main/java/org/noear/solon/ai/talents/cli/ExampleTool.java"));
+        assertTrue(result.contains("src/main/java/ （递归路径树"));
+        assertTrue(result.contains("└── ExampleService.java"));
+        assertTrue(result.contains("└── ExampleTool.java"));
+        assertTrue(result.contains("├── com/"));
+        assertTrue(result.contains("└── org/"));
         assertTrue(result.contains("不限深度"));
     }
 
@@ -110,36 +112,45 @@ class BoundedLsToolTest {
         Files.createDirectories(workspace.resolve("a/b/c/d"));
         Files.createFile(workspace.resolve("a/b/c/d/deep.txt"));
         String result = tool().ls(".", true, false, null, null, null, 3, null);
-        assertTrue(result.contains("[DIR] a/b/c/ [达到 max_depth，未展开]"));
+        assertTrue(result.contains("└── c/ [达到 max_depth，未展开]"));
         assertFalse(result.contains("deep.txt"));
         assertFalse(result.contains("[目录列举完毕]"));
         assertTrue(result.contains("after 仅续接本深度范围内"));
-        assertTrue(tool().ls(".", true, false, null, 1, null, 3, null).contains("recursive=true, max_depth=3"));
+        assertTrue(tool().ls(".", true, false, null, 1, null, 3, null).contains("max_depth=3"));
     }
 
     @Test
     void recursivePaginationKeepsDeepEntriesReachableWithoutDuplicates() throws IOException {
         Path nested = Files.createDirectories(workspace.resolve("a/b/c/d"));
         for (int i = 0; i < 10; i++) Files.createFile(nested.resolve("file-" + i + ".txt"));
-        java.util.Set<String> entries = new java.util.HashSet<>();
+        java.util.Set<String> cursors = new java.util.HashSet<>();
+        boolean sawLastFile = false;
         String cursor = null;
         int pages = 0;
         while (true) {
             String result = tool().ls(".", true, false, cursor, 3, null);
             pages++;
             assertTrue(pages < 10);
-            for (String line : result.split("\n")) if (line.startsWith("[DIR]") || line.startsWith("[FILE]")) assertTrue(entries.add(line));
+            if (result.contains("file-9.txt")) sawLastFile = true;
             java.util.regex.Matcher next = java.util.regex.Pattern.compile("after=([^,\\n]+)").matcher(result);
             if (!next.find()) { assertTrue(result.contains("[目录列举完毕]")); break; }
             assertTrue(result.contains("recursive=true")); cursor = next.group(1);
+            assertTrue(cursors.add(cursor));
         }
-        assertTrue(entries.contains("[FILE] a/b/c/d/file-9.txt"));
-        org.junit.jupiter.api.Assertions.assertEquals(14, entries.size());
+        assertTrue(sawLastFile);
+        org.junit.jupiter.api.Assertions.assertEquals(4, cursors.size());
     }
 
     @Test
     void validatesDepthAndPublishesTheOptionalParameterInTheToolSchema() throws IOException {
-        assertTrue(tool().ls(".", false, false, null, null, null, 3, null).contains("max_depth 仅用于"));
+        Path nested = Files.createDirectories(workspace.resolve("nested/deeper"));
+        Files.createFile(nested.resolve("Deep.java"));
+        String implicitRecursive = tool().ls(".", null, false, null, null, null, 2, null);
+        assertTrue(implicitRecursive.contains("递归路径树；max_depth=2"));
+        assertTrue(implicitRecursive.contains("deeper/ [达到 max_depth，未展开]"));
+        assertFalse(implicitRecursive.contains("Deep.java"));
+        assertTrue(tool().ls(".", false, false, null, null, null, 2, null).contains("不能同时设置 recursive=false"));
+        assertTrue(tool().ls(".", null, false, null, null, "flat", 2, null).contains("mode=flat"));
         assertTrue(tool().ls(".", true, false, null, null, null, 0, null).contains("1～64"));
         assertTrue(tool().ls(".", true, false, null, null, null, 65, null).contains("1～64"));
         assertTrue(tool().getTools(org.noear.solon.ai.chat.prompt.Prompt.of(java.util.Collections.emptyList())).stream()
@@ -165,7 +176,7 @@ class BoundedLsToolTest {
                 org.noear.solon.ai.chat.prompt.Prompt.of(java.util.Collections.emptyList())).stream()
                 .filter(item -> "ls".equals(item.name())).findFirst().get();
         java.util.Map<String, Object> args = new java.util.LinkedHashMap<>();
-        args.put("path", "."); args.put("recursive", true); args.put("max_depth", 1);
+        args.put("path", "."); args.put("max_depth", 1);
         org.noear.solon.ai.chat.tool.ToolResult result = org.junit.jupiter.api.Assertions.assertDoesNotThrow(() -> ls.call(args));
         assertTrue(result.getContent().contains("达到 max_depth，未展开"));
         assertFalse(result.getContent().contains("Deep.java"));

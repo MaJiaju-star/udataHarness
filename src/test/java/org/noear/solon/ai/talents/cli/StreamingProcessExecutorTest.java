@@ -42,6 +42,19 @@ class StreamingProcessExecutorTest {
     }
 
     @Test
+    void failureShowsMiddleDiagnosticAndSuccessfulBuildShowsCompactLog() {
+        Fixture fixture = fixture(8L * 1024 * 1024);
+        ToolResult failed = fixture.tool.bashResult("fail-middle", 15000, 2000, null, "failure");
+        assertTrue(failed.getContent().contains("[exit_code=1]"));
+        assertTrue(failed.getContent().contains("[ERROR] src/Main.java:42: missing symbol"));
+        assertTrue(failed.getContent().contains("完整日志"));
+
+        ToolResult succeeded = fixture.tool.bashResult("mvn test", 15000, 2000, null, "build");
+        assertTrue(succeeded.getContent().contains("构建/测试成功；常规日志已省略"));
+        assertTrue(succeeded.getContent().contains("[exit_code=0]"));
+    }
+
+    @Test
     void independentStorageQuotaStopsCaptureAndLabelsRecoverablePrefix() throws Exception {
         Fixture fixture = fixture(128 * 1024);
         ToolResult result = fixture.tool.bashResult("large", 15000, 1000, null, "quota");
@@ -158,6 +171,15 @@ class StreamingProcessExecutorTest {
                 System.out.flush();
                 Thread.sleep(30000);
                 return;
+            }
+            if ("fail-middle".equals(args[0])) {
+                byte[] noise = new byte[8192];
+                Arrays.fill(noise, (byte) 'x');
+                noise[noise.length - 1] = '\n';
+                System.out.write(noise);
+                System.out.write("[ERROR] src/Main.java:42: missing symbol\n".getBytes(StandardCharsets.UTF_8));
+                System.out.write(noise);
+                System.exit(1);
             }
             byte[] chunk = new byte[8192];
             Arrays.fill(chunk, (byte) 'x');

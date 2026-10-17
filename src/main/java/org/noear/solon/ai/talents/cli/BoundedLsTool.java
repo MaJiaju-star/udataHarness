@@ -94,7 +94,7 @@ public final class BoundedLsTool extends AbsTalent {
      */
     @Override
     public String getInstruction(Prompt prompt) {
-        return "ls 默认以 ├──/└── 树形展示当前层，并自动展开最多 12 项的小子树至第三级；大目录只给概览。recursive=true 遍历全部层级并分页，可用 max_depth 限制深度；mode=flat 仅列当前层。续页需保持 path/recursive/max_depth 不变。已知文件名模式时直接用 glob。";
+        return "ls 默认显示浅层树：小子树展开到第三级，大目录收起；recursive=true 或 max_depth 显示递归路径树并分页。已知文件名模式用 glob。";
     }
 
     /**
@@ -105,7 +105,7 @@ public final class BoundedLsTool extends AbsTalent {
      *   <li>逻辑路径（{@code @xxx}）：若挂载来源不可本地访问，回落委托 {@link TerminalTalent#ls} 处理；</li>
      *   <li>参数归一：{@code after} 游标长度校验（&le; 4096 字符）、{@code limit} 钳制到 [1, {@value #MAX_LIMIT}]；</li>
      *   <li>路径校验：经 {@code resolveSafePath} 取得安全路径，不存在或非目录返回错误字符串；</li>
- *   <li>遍历收集：{@link Files#walkFileTree} 按递归选项或显式深度上限遍历，
+     *   <li>遍历收集：{@link Files#walkFileTree} 按递归选项或显式深度上限遍历，
      *       应用忽略规则、沙箱读策略与隐藏文件过滤后，用容量为 {@code pageSize+1} 的
      *       最大堆维持"字典序最小的 pageSize+1 条"；</li>
      *   <li>出页渲染：排序、截断到最后一条，拼接输出并在末尾附游标提示。</li>
@@ -115,44 +115,48 @@ public final class BoundedLsTool extends AbsTalent {
      * 以便模型读到错误文本后自行修正参数重试。
      *
      * @param path         目录相对路径或逻辑路径；null/空表示当前工作区（{@code .}）
- * @param recursive    是否递归全部层级；null 视为 false
+     * @param recursive    是否递归全部层级；不传时可由 max_depth 启用递归
      * @param showHidden   是否包含以 {@code .} 开头的条目；null 视为 false
      * @param after        上一页返回的 {@code after} 游标，仅列出字典序严格大于它的条目；
      *                     超过 4096 字符直接拒绝
      * @param limit        单页条数，默认 {@value #DEFAULT_LIMIT}，钳制上限 {@value #MAX_LIMIT}
-     * @param mode         auto（默认）或 flat；recursive=true 时使用原详细递归模式
- * @param maxDepth     仅递归模式可选，限制相对目标的条目深度，范围 1～64；不传则不限深度
+     * @param mode         auto（默认）或 flat；递归时显示路径树
+     * @param maxDepth     相对目标的条目深度，范围 1～64；单独设置即启用递归
      * @param __cwd        当前目录（Solon 注入）；null 时使用工作区根
      * @return 格式化列表（{@code [DIR]}/{@code [FILE]} 前缀）+ 页尾状态与续页游标；或错误字符串
      * @throws IOException 遍历文件树时发生 I/O 错误（调用方捕获转为会话错误）
      */
-    @ToolMapping(name = "ls", description = "列出目录。默认用 ├──/└── 树形概览：优先展示同级目录，小子树展开到第三级，大目录收起。recursive=true 递归全部层级并分页；可用 max_depth 限制深度。mode=flat 保留单层列举。支持 after 续页。")
+    @ToolMapping(name = "ls", description = "查看目录树。默认展开小子树到第三级，大目录收起；设置 max_depth 即按指定深度递归，recursive=true 可不限深度递归；支持 after 续页。")
     public String ls(
             @Param(value = "path", required = false, description = "目录相对路径或逻辑路径，默认当前工作区") String path,
             @Param(value = "recursive", required = false, description = "是否递归全部子目录；仍受分页和输出上限约束") Boolean recursive,
             @Param(value = "show_hidden", required = false, description = "是否显示隐藏文件") Boolean showHidden,
             @Param(value = "after", required = false, description = "上一页返回的 after 游标") String after,
             @Param(value = "limit", required = false, description = "当前层最多返回条数，默认 200，最大 500；小子树展开另受有界限制") Integer limit,
-            @Param(value = "mode", required = false, description = "auto（默认，自适应浅层概览）或 flat（只列当前层）；recursive=true 时使用详细递归列举") String mode,
-            @Param(value = "max_depth", required = false, description = "仅 recursive=true 可用；相对目标的最大条目深度，1～64；不传则不限深度") Integer maxDepth,
+            @Param(value = "mode", required = false, description = "auto（默认，小子树展开到第三级）或 flat（只列当前层）；recursive=true 时显示递归路径树") String mode,
+            @Param(value = "max_depth", required = false, description = "相对目标的递归深度，1～64；单独设置即启用递归；与 recursive=false 或 mode=flat 冲突") Integer maxDepth,
             String __cwd) throws IOException {
         String selectedMode = mode == null || mode.isEmpty() ? "auto" : mode;
         if (!"auto".equals(selectedMode) && !"flat".equals(selectedMode)) {
             return "错误：mode 只能是 auto 或 flat。";
         }
-        if (Boolean.TRUE.equals(recursive) && "flat".equals(selectedMode)) {
-            return "错误：recursive=true 与 mode=flat 不能同时使用。";
+        if (maxDepth != null && (maxDepth < 1 || maxDepth > 64)) {
+            return "错误：max_depth 取值范围为 1～64。";
         }
-        if (maxDepth != null && (!Boolean.TRUE.equals(recursive) || maxDepth < 1 || maxDepth > 64)) {
-            return "错误：max_depth 仅用于 recursive=true，取值范围为 1～64。";
+        if (maxDepth != null && Boolean.FALSE.equals(recursive)) {
+            return "错误：max_depth 会启用递归，不能同时设置 recursive=false。";
+        }
+        boolean effectiveRecursive = Boolean.TRUE.equals(recursive) || maxDepth != null;
+        if (effectiveRecursive && "flat".equals(selectedMode)) {
+            return "错误：递归列举（recursive=true 或 max_depth）与 mode=flat 不能同时使用。";
         }
         String selectedPath = path == null || path.isEmpty() ? "." : path;
         if (selectedPath.startsWith("@")) {
             ResolvedResource resource = mounts.resolveResource(selectedPath);
             if (!resource.getSource().capabilities().isLocalPathAccessible()
                     || !resource.getLocalPath().isPresent()) {
-                String original = terminal.ls(selectedPath, recursive, showHidden, __cwd);
-                return Boolean.TRUE.equals(recursive)
+                String original = terminal.ls(selectedPath, effectiveRecursive, showHidden, __cwd);
+                return effectiveRecursive
                         ? "提示：非本地逻辑挂载沿用 Solon 原始 ls；不保证完整递归，也不应用 max_depth/after/limit。\n" + original
                         : "auto".equals(selectedMode)
                         ? "提示：非本地逻辑挂载暂不支持自适应概览，沿用 Solon 原始 ls。\n" + original
@@ -160,7 +164,7 @@ public final class BoundedLsTool extends AbsTalent {
             }
         }
         if (after != null && after.length() > 4096) return "错误：after 游标过长。";
-        if ((Boolean.TRUE.equals(recursive) || "flat".equals(selectedMode))
+        if ((effectiveRecursive || "flat".equals(selectedMode))
                 && after != null && after.matches("[01]:.+")) {
             return "错误：auto 模式的 after 游标不能用于 flat/recursive；请不带 after 重新列出。";
         }
@@ -171,13 +175,13 @@ public final class BoundedLsTool extends AbsTalent {
         if (!Files.exists(target)) return "错误：路径不存在";
         if (!Files.isDirectory(target)) return "错误：目标不是目录";
         Path policyRoot = support.getSandboxPolicyRoot(workPath, selectedPath);
-        if (!Boolean.TRUE.equals(recursive) && "auto".equals(selectedMode)) {
+        if (!effectiveRecursive && "auto".equals(selectedMode)) {
             return adaptiveLs(target, workPath, policyRoot, selectedPath,
                     Boolean.TRUE.equals(showHidden), after, pageSize);
         }
         PriorityQueue<Entry> page = new PriorityQueue<>(Comparator.comparing((Entry entry) -> entry.key).reversed());
         boolean includeHidden = Boolean.TRUE.equals(showHidden);
-        int depth = Boolean.TRUE.equals(recursive) ? maxDepth == null ? Integer.MAX_VALUE : maxDepth : 1;
+        int depth = effectiveRecursive ? maxDepth == null ? Integer.MAX_VALUE : maxDepth : 1;
         int[] depthBoundaries = new int[1];
         int[] failures = new int[1];
         boolean[] cancelled = new boolean[1];
@@ -196,7 +200,7 @@ public final class BoundedLsTool extends AbsTalent {
                     public FileVisitResult visitFile(Path file, BasicFileAttributes attrs) {
                         if (Thread.currentThread().isInterrupted()) { cancelled[0] = true; return FileVisitResult.TERMINATE; }
                         if (!filtered(file)) {
-                            boolean boundary = Boolean.TRUE.equals(recursive) && attrs.isDirectory();
+                            boolean boundary = effectiveRecursive && attrs.isDirectory();
                             if (boundary) depthBoundaries[0]++;
                             offer(file, attrs.isDirectory(), boundary);
                         }
@@ -234,26 +238,42 @@ public final class BoundedLsTool extends AbsTalent {
         boolean hasMore = ordered.size() > pageSize;
         if (hasMore) ordered.remove(ordered.size() - 1);
         String root = ".".equals(selectedPath) ? "" : selectedPath.replace('\\', '/').replaceAll("/+$", "") + "/";
-        StringBuilder output = new StringBuilder(Boolean.TRUE.equals(recursive)
-                ? "递归目录列表（" + (maxDepth == null ? "不限深度" : "max_depth=" + maxDepth) + "）\n" : "");
-        String lastKey = null;
-        for (Entry entry : ordered) {
-            String line = (entry.directory ? "[DIR] " : "[FILE] ")
-                    + root + entry.key + (entry.directory ? "/" : "")
-                    + (entry.depthBoundary ? " [达到 max_depth，未展开]" : "") + "\n";
-            if (output.length() + line.length() + entry.key.length() > MAX_OUTPUT_CHARS - 512) {
+        StringBuilder output;
+        String lastKey;
+        if (effectiveRecursive) {
+            String heading = (".".equals(selectedPath) ? "." : selectedPath.replace('\\', '/'))
+                    + "/ （递归路径树；" + (maxDepth == null ? "不限深度" : "max_depth=" + maxDepth)
+                    + "；续页可能重复显示上级目录）\n";
+            List<Entry> visible = new ArrayList<>(ordered);
+            String tree = recursiveTree(visible);
+            while (!visible.isEmpty() && heading.length() + tree.length() > MAX_OUTPUT_CHARS - 512) {
+                visible.remove(visible.size() - 1);
                 hasMore = true;
-                break;
+                tree = recursiveTree(visible);
             }
-            output.append(line);
-            lastKey = entry.key;
+            if (visible.isEmpty()) return "错误：目录项路径过长，无法在输出上限内显示。";
+            output = new StringBuilder(heading).append(tree);
+            lastKey = visible.get(visible.size() - 1).key;
+        } else {
+            output = new StringBuilder();
+            lastKey = null;
+            for (Entry entry : ordered) {
+                String line = (entry.directory ? "[DIR] " : "[FILE] ")
+                        + root + entry.key + (entry.directory ? "/" : "") + "\n";
+                if (output.length() + line.length() + entry.key.length() > MAX_OUTPUT_CHARS - 512) {
+                    hasMore = true;
+                    break;
+                }
+                output.append(line);
+                lastKey = entry.key;
+            }
         }
         if (lastKey == null) return "错误：目录项路径过长，无法在输出上限内显示。";
         if (hasMore) {
             output.append("--- [内容未完] ---\n继续列出请使用 after=")
                     .append(lastKey)
                     .append(", limit=").append(pageSize);
-            if (Boolean.TRUE.equals(recursive)) output.append(", recursive=true");
+            if (effectiveRecursive && maxDepth == null) output.append(", recursive=true");
             if (maxDepth != null) output.append(", max_depth=").append(maxDepth);
         } else {
             output.append(depthBoundaries[0] > 0 || failures[0] > 0
@@ -425,13 +445,38 @@ public final class BoundedLsTool extends AbsTalent {
         return output.toString();
     }
 
+    private static String recursiveTree(List<Entry> entries) {
+        List<TreeNode> roots = new ArrayList<>();
+        for (Entry entry : entries) {
+            String[] components = entry.key.split("/");
+            List<TreeNode> level = roots;
+            for (int index = 0; index < components.length; index++) {
+                String name = components[index];
+                TreeNode node = null;
+                for (TreeNode candidate : level) {
+                    if (candidate.name.equals(name)) { node = candidate; break; }
+                }
+                if (node == null) {
+                    node = new TreeNode(name, index < components.length - 1 || entry.directory);
+                    level.add(node);
+                }
+                if (index == components.length - 1) node.depthBoundary = entry.depthBoundary;
+                level = node.children;
+            }
+        }
+        StringBuilder output = new StringBuilder();
+        appendTree(output, roots, "");
+        return output.toString();
+    }
+
     private static void appendTree(StringBuilder output, List<TreeNode> nodes, String prefix) {
         nodes.sort(Comparator.comparing((TreeNode node) -> !node.directory).thenComparing(node -> node.name));
         for (int i = 0; i < nodes.size(); i++) {
             TreeNode node = nodes.get(i);
             boolean last = i == nodes.size() - 1;
             output.append(prefix).append(last ? "└── " : "├── ")
-                    .append(node.name).append(node.directory ? "/" : "").append('\n');
+                    .append(node.name).append(node.directory ? "/" : "")
+                    .append(node.depthBoundary ? " [达到 max_depth，未展开]" : "").append('\n');
             appendTree(output, node.children, prefix + (last ? "    " : "│   "));
         }
     }
@@ -512,6 +557,7 @@ public final class BoundedLsTool extends AbsTalent {
         final String name;
         final boolean directory;
         final List<TreeNode> children = new ArrayList<>();
+        boolean depthBoundary;
 
         TreeNode(String name, boolean directory) {
             this.name = name;

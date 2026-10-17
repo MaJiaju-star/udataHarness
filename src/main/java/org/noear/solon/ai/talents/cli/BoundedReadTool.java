@@ -11,7 +11,9 @@ import org.noear.solon.ai.talents.mount.MountManager;
 import org.noear.solon.ai.talents.mount.ResolvedResource;
 
 import java.io.BufferedReader;
+import java.io.BufferedInputStream;
 import java.io.IOException;
+import java.io.InputStream;
 import java.io.PushbackReader;
 import java.lang.reflect.Field;
 import java.nio.charset.StandardCharsets;
@@ -47,6 +49,8 @@ import java.util.regex.Pattern;
 public final class BoundedReadTool extends AbsTalent {
     /** 默认返回行数（未显式传 limit 时生效）。 */
     static final int DEFAULT_LINES = 4000;
+    static final int LARGE_FILE_PREVIEW_LINES = 400;
+    static final long LARGE_FILE_THRESHOLD_BYTES = 32L * 1024;
     /** 单次读取行数硬上限（传入更大的 limit 会被截断到该值）。 */
     static final int MAX_LINES = 8000;
     /** 单行显示字符数上限；超出部分截断并标记 {@code …(单行已截断)}。 */
@@ -127,7 +131,7 @@ public final class BoundedReadTool extends AbsTalent {
      */
     @Override
     public String getInstruction(Prompt prompt) {
-        return "read 默认尝试读取前 4000 行；未变化的同范围重复读取只返回引用。@tool-results/<id>.txt 是只读历史结果，回读保留原文、不添加行号。快照的 offset/limit 指快照物理行，char_offset/char_limit 指快照 UTF-16 字符位置，都不是原文件行号；按快照续读提示使用同一快照路径。";
+        return "read 默认读取小文件前 4000 行；超过 32 KiB 时先预览前 400 行。grep 定位后用 focus_line 看附近代码，或用 offset/limit 续读。@tool-results 是只读历史快照，分页位置不是原文件行号。";
     }
 
     /**
@@ -155,16 +159,19 @@ public final class BoundedReadTool extends AbsTalent {
      * @throws IOException        读取过程中发生 I/O 错误
      * @throws IllegalArgumentException {@code filePath} 为 null
      */
-    @ToolMapping(name = "read", description = "读取文本文件。默认返回最多 4000 行；单次最多 8000 行、256 KiB 编号正文。未变化的同范围重复读取只返回快照引用。历史快照回读保留原文、不添加行号，单次正文最多 16 KiB；按快照专用提示续读，不要混用原文件行号。")
+    @ToolMapping(name = "read", description = "读取文本文件。默认读取小文件前 4000 行；超过 32 KiB 时预览前 400 行。搜索后用 focus_line 定向读取，或用 offset/limit 指定范围。")
     public ToolResult readResult(
             @Param(value = "file_path", description = "工作区相对路径或 @ 开头的逻辑路径") String filePath,
             @Param(value = "offset", required = false, description = "起始行号，从 1 开始；@tool-results 路径按快照物理行计数，不是原文件行号") Integer offset,
-            @Param(value = "limit", required = false, description = "最多读取的行数，默认 4000，最大 8000") Integer limit,
+            @Param(value = "limit", required = false, description = "最多读取的行数；默认小文件 4000 行、大文件预览 400 行，显式指定时最多 8000 行") Integer limit,
             @Param(value = "char_offset", required = false, description = "仅 @tool-results 使用：从此 UTF-16 字符位置分页") Integer charOffset,
             @Param(value = "char_limit", required = false, description = "仅 @tool-results 使用：最多读取字符数，上限 16000") Integer charLimit,
+            @Param(value = "focus_line", required = false, description = "原文件中的目标行号；返回该行附近代码，不可与 offset/limit 同用") Integer focusLine,
+            @Param(value = "context_lines", required = false, description = "focus_line 前后各读取的行数，默认 80，最多 1000") Integer contextLines,
             String __cwd, String __sessionId) throws IOException {
         Map<String, Object> metadata = new LinkedHashMap<>();
-        String content = readBody(filePath, offset, limit, charOffset, charLimit, __cwd, __sessionId, metadata);
+        String content = readBody(filePath, offset, limit, charOffset, charLimit,
+                focusLine, contextLines, __cwd, __sessionId, metadata);
         ToolResult result = ToolResult.success(content);
         result.metas().putAll(metadata);
         return result;
@@ -173,20 +180,38 @@ public final class BoundedReadTool extends AbsTalent {
     /** 保留直接调用入口，内部版本元数据不进入返回正文。 */
     public String read(String filePath, Integer offset, Integer limit, Integer charOffset,
                        Integer charLimit, String __cwd, String __sessionId) throws IOException {
-        return readResult(filePath, offset, limit, charOffset, charLimit, __cwd, __sessionId).getContent();
+        return readResult(filePath, offset, limit, charOffset, charLimit,
+                null, null, __cwd, __sessionId).getContent();
+    }
+
+    /** Compatibility entry point for existing callers; focus options are model-facing. */
+    public ToolResult readResult(String filePath, Integer offset, Integer limit, Integer charOffset,
+                                 Integer charLimit, String __cwd, String __sessionId) throws IOException {
+        return readResult(filePath, offset, limit, charOffset, charLimit,
+                null, null, __cwd, __sessionId);
     }
 
     /** 执行有界读取，并把本次精确版本写入仅供后端使用的元数据。 */
     private String readBody(String filePath, Integer offset, Integer limit, Integer charOffset,
-                            Integer charLimit, String __cwd, String __sessionId,
+                            Integer charLimit, Integer focusLine, Integer contextLines,
+                            String __cwd, String __sessionId,
                             Map<String, Object> metadata) throws IOException {
         if (filePath == null) {
             throw new IllegalArgumentException("file_path 不能为空");
         }
-        int start = offset == null || offset < 1 ? 1 : offset;
-        int count = limit == null || limit < 1 ? DEFAULT_LINES : Math.min(limit, MAX_LINES);
+        if (focusLine != null && (offset != null || limit != null || charOffset != null || charLimit != null)) {
+            return "错误：focus_line 不能与 offset/limit 或快照字符分页参数同用。";
+        }
+        if (contextLines != null && focusLine == null) return "错误：context_lines 需要 focus_line。";
+        if (focusLine != null && focusLine < 1) return "错误：focus_line 必须从 1 开始。";
+        int radius = contextLines == null ? 80 : Math.max(0, Math.min(contextLines, 1000));
+        int start = focusLine == null ? offset == null || offset < 1 ? 1 : offset
+                : Math.max(1, focusLine - radius);
+        int count = focusLine == null ? limit == null || limit < 1 ? DEFAULT_LINES : Math.min(limit, MAX_LINES)
+                : Math.min(MAX_LINES, radius * 2 + 1);
 
         if (ToolResultPaths.isVirtual(filePath)) {
+            if (focusLine != null) return "错误：focus_line 仅适用于当前工作区文件；历史快照请使用 offset/limit。";
             try {
                 Path snapshot = toolResults.resolve(filePath, __sessionId, false);
                 String id = filePath.substring(ToolResultPaths.ROOT.length() + 1, filePath.length() - 4);
@@ -233,6 +258,9 @@ public final class BoundedReadTool extends AbsTalent {
             return "错误：该文件是二进制格式，无法作为文本读取。";
         }
         long fileSize = Files.size(target);
+        boolean automaticPreview = focusLine == null && offset == null && limit == null
+                && fileSize > LARGE_FILE_THRESHOLD_BYTES;
+        if (automaticPreview) count = LARGE_FILE_PREVIEW_LINES;
         //1. 按会话、文件真实路径和归一化后的读取范围查找上次结果。
         String beforeVersion = fileSize <= MAX_VERSIONED_BYTES ? FileVersion.sha256(target) : null;
         String cacheKey = beforeVersion == null || artifactStore == null || __sessionId == null
@@ -255,6 +283,13 @@ public final class BoundedReadTool extends AbsTalent {
         //2. 文件变化或快照不可恢复时读取最新正文，并检查读取期间的变化。
         String output = fileSize == 0 ? "(文件内容为空)"
                 : readWindow(target, filePath, start, count, fileSize);
+        if (automaticPreview && !output.startsWith("错误：")) {
+            String total = fileSize <= MAX_VERSIONED_BYTES
+                    ? String.valueOf(countLines(target)) : "未统计（文件超过 16 MiB）";
+            output = "[大文件预览：总行数 " + total
+                    + "；仅展示起始部分；用 grep 定位或 read(offset, limit/focus_line) 查看其他位置]\n"
+                    + output;
+        }
         if (beforeVersion != null) {
             if (!beforeVersion.equals(FileVersion.sha256(target))) {
                 return "错误：文件在读取期间发生变化，请重新读取。";
@@ -283,6 +318,31 @@ public final class BoundedReadTool extends AbsTalent {
             }
         }
         return output;
+    }
+
+    /** Count line endings without materializing the file or assuming LF-only source. */
+    private static long countLines(Path path) throws IOException {
+        long lines = 0;
+        boolean sawByte = false, previousCr = false, endedInBreak = false;
+        try (InputStream input = new BufferedInputStream(Files.newInputStream(path))) {
+            int value;
+            while ((value = input.read()) != -1) {
+                sawByte = true;
+                if (value == '\r') {
+                    lines++;
+                    previousCr = true;
+                    endedInBreak = true;
+                } else if (value == '\n') {
+                    if (!previousCr) lines++;
+                    previousCr = false;
+                    endedInBreak = true;
+                } else {
+                    previousCr = false;
+                    endedInBreak = false;
+                }
+            }
+        }
+        return lines + (sawByte && !endedInBreak ? 1 : 0);
     }
 
     /**

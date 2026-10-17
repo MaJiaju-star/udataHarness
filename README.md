@@ -27,8 +27,9 @@ SolonCode、Solon Harness 和 `D:\code\dev-agent` 实现。
 关闭 `task` 时同一 Talent 的 `multitask` 也不可用。基础文件、同步 `bash`
 和 Web 工具仍按各自原有配置工作。工具配置在引擎创建时生效，更改后需重启后端。
 
-`agent.tools.file-profile` 当前试用 `shell-search`：模型用同步 `bash` 做目录列举与代码搜索，
-仍使用专用 `read`、`edit`、`write` 处理文件正文及修改。设为 `standard` 可恢复 `ls/glob/grep`。
+`agent.tools.file-profile` 默认为 `standard`，提供专用 `ls/glob/grep/read/edit/write`。
+试用 `shell-search` 时，模型用同步 `bash` 做目录列举与代码搜索，
+仍使用专用 `read`、`edit`、`write` 处理文件正文及修改。
 试验配置将 Bash 可见结果提高到 64,000 字符，减少搜索结果落盘后的恢复调用。
 这是可回退的工具集实验，不代表已经证实更省 Token；在 Windows 上 Bash 工具实际运行的
 shell 可能是 PowerShell，搜索命令须按实际环境编写。`shell-search` 没有跨所有历史归档的
@@ -44,12 +45,12 @@ shell 可能是 PowerShell，搜索命令须按实际环境编写。`shell-searc
 `model.yml` 的 `agent.context.tool-results` 控制开关和字符预算：默认单条 64,000、
 本批 256,000、预览 4,000 字符；`read`/`bash`/长错误的模型可见预算分别为
 160,000/64,000/16,000 字符。字符数不是 Token 数。
-`read` 默认尝试读取 4000 行、最多 8000 行，编号正文单次最多 256 KiB；超出后提示按行续读。未变化的同会话同范围重复读取只返回带可恢复快照路径的短引用。历史快照按需读取的
+`read` 对不超过 32 KiB 的文件默认尝试读取 4000 行；较大文件默认预览前 400 行并显示总行数（超过 16 MiB 时不统计）。可用 `focus_line`/`context_lines` 定向读取命中附近，或用 `offset`/`limit` 显式扩大范围；单次最多 8000 行、256 KiB 编号正文。未变化的同会话同范围重复读取只返回带可恢复快照路径的短引用。历史快照按需读取的
 单页正文最多 16 KiB，字符分页默认 12,000、最多 16,000 字符。
-`grep` 单页正文最多 32,000 字符，`ls`/`glob` 默认每页 200 项。
+`grep` 默认返回按文件聚合的搜索概览（命中计数、少量带行号片段及完整性提示）；`output_mode=content` 保留逐条结果与续页，单页正文最多 32,000 字符。`ls`/`glob` 默认每页 200 项。
 `ls` 未开启递归时默认给 `├──` / `└──` 树形浅层概览：直属目录优先，小子树展开至第三级，
 超过 12 项的子树只标注有界概览；`mode=flat` 可恢复仅列当前层。
-`recursive=true` 默认递归全部层级并分页，可选 `max_depth`（1～64）限制深度；达到边界时标注未展开，
+`recursive=true` 以树形递归列出全部层级并分页；单独设置 `max_depth`（1～64）即启用指定深度的递归。续页可能重复显示上级目录作为路径定位；达到深度边界时标注未展开，
 不会误报完整递归结束。递归续页保持 path/recursive/max_depth 一致，详见 [目录概览说明](docs/ls-adaptive-overview.md)。
 预算为软限制：受保护、错误、媒体、直接返回、未知工具及引用本身无法再缩短的结果保留原样。
 当前治理的工具为 read/bash/grep/glob/ls/webfetch/websearch/codesearch/lsp；图表、Todo、
@@ -60,8 +61,7 @@ shell 可能是 PowerShell，搜索命令须按实际环境编写。`shell-searc
 超长单行可用 `char_offset/char_limit` 按 UTF-16 字符分页，
 或用 `grep(pattern, path="@tool-results")` 搜索当前会话已归档的结果；路径只读，不能由 `write/edit` 修改。
 读取内容是历史快照，需要当前文件时仍应重新 read。对不超过 16 MiB 的本地文件，重复读取先核对当前 SHA-256；即使旧 Read 正文已退出 WorkingMemory，也可用会话快照恢复。保存失败或版本变化时照常返回新读取结果。
-目前 `bash` 仍受 Solon 执行器约 1 MiB 的物理捕获上限约束；超限时进程会被终止，
-归档只能保存已捕获部分。执行过程中直接落盘、并完整保留更大输出，需要后续修改执行器输出流。
+同步 `bash` 输出通过流式执行器落盘；展示截断不会终止命令，超时、取消、归档故障或独立日志存储上限会标明捕获不完整。构建和测试成功时压缩常规日志；失败时优先展示诊断行，完整已捕获日志仍可回读。
 
 批量治理在 Native Tool 模式的 ActionEnd 安全边界执行，只改变下一次请求将使用的本批结果。
 单条外置也支持文本 Observation 模式；文本模式批量治理暂不启用。

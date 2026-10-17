@@ -33,7 +33,8 @@ import java.util.regex.PatternSyntaxException;
  *
  * <p>核心特性：
  * <ul>
- *   <li><b>三种输出模式</b>：{@code content}（默认，逐行展示匹配行及前后文）、
+ *   <li><b>四种输出模式</b>：{@code summary}（默认，按文件聚合并显示少量定位行）、
+ *       {@code content}（逐行展示匹配行及前后文）、
  *       {@code files_with_matches}（只定位文件）、{@code count}（统计每个文件的匹配行数）；</li>
  *   <li><b>有界输出</b>：单页默认 {@value #DEFAULT_LIMIT} 行、上限 {@value #MAX_LIMIT} 行，
  *       正文另受 {@value #MAX_BODY_CHARS} 字符预算约束，单条片段截断至 {@value #MAX_SNIPPET_CHARS} 字符；</li>
@@ -57,6 +58,9 @@ public final class BoundedGrepTool extends AbsTalent {
     private static final int MAX_LIMIT = 500;
     /** 单次输出正文的字符预算；累计超出即触发续页提示。 */
     private static final int MAX_BODY_CHARS = 32_000;
+    private static final int SUMMARY_FILES = 20;
+    private static final int SUMMARY_SAMPLES = 2;
+    private static final int SUMMARY_SNIPPET_CHARS = 180;
     /** 读入单行的字符上限；超出部分丢弃并将该行标记为超长（不参与匹配）。 */
     private static final int MAX_LINE_CHARS = 16 * 1024;
     /** 单条匹配片段的展示上限（字符），超出截断并标记。 */
@@ -99,11 +103,11 @@ public final class BoundedGrepTool extends AbsTalent {
      */
     @Override
     public String getInstruction(Prompt prompt) {
-        return "grep 默认显示最多 200 条匹配行；只想定位文件时使用 output_mode=files_with_matches，统计分布时用 count。path=@tool-results 仅搜索当前会话已归档的历史工具结果。";
+        return "先用 grep 的默认概览定位文件和行号，再用 read 查看相关代码；需要逐条匹配和续页时使用 output_mode=content。path=@tool-results 仅搜索当前会话归档。";
     }
 
     /**
-     * 按正则搜索文件内容，支持三种输出模式与游标分页。
+     * 按正则搜索文件内容，支持概览、逐行、文件名和计数输出。
      *
      * <p>执行流程：目标为非本地逻辑挂载时，若请求了输出模式、前后文或分页等高级参数
      * 直接返回错误，否则降级为 Solon 原始 grep（结果可能不完整）。本地搜索则先校验
@@ -125,12 +129,12 @@ public final class BoundedGrepTool extends AbsTalent {
      * @return 结果页文本，尾部带“内容未完/搜索完毕”标记；参数非法时返回 {@code 错误：…} 说明
      * @throws IOException 遍历目标路径失败时抛出
      */
-    @ToolMapping(name = "grep", description = "搜索文件内容。output_mode 可选 content（默认）、files_with_matches、count；content 可用 context 添加前后文。默认 200 项，最多 500 项，after 续页。")
+    @ToolMapping(name = "grep", description = "定位文本所在文件和行号。默认返回命中分布与关键片段；需要逐条结果时用 output_mode=content，再用 read 查看代码。")
     public String grep(
             @Param(value = "pattern", description = "正则表达式；若需字面搜索请设置 literal=true") String pattern,
             @Param(value = "path", required = false, description = "搜索根目录，默认工作区") String path,
             @Param(value = "include", required = false, description = "文件名 glob 模式，例如 *.{ts,tsx}") String include,
-            @Param(value = "output_mode", required = false, description = "content、files_with_matches 或 count；默认 content") String outputMode,
+            @Param(value = "output_mode", required = false, description = "summary（默认）、content、files_with_matches 或 count") String outputMode,
             @Param(value = "context", required = false, description = "content 模式下每个匹配前后各展示几行，最多 3 行") Integer contextLines,
             @Param(value = "after", required = false, description = "相同 pattern/path/include/output_mode 的上一页 after 游标") String after,
             @Param(value = "limit", required = false, description = "单页结果数，默认 200，最大 500") Integer limit,
@@ -148,9 +152,13 @@ public final class BoundedGrepTool extends AbsTalent {
             return "提示：非本地逻辑挂载沿用 Solon 原始 grep，结果上限与续页行为不同，可能不完整。\n"
                     + access.terminal.grep(pattern, selectedPath, include, __cwd);
         }
-        String mode = outputMode == null || outputMode.isEmpty() ? "content" : outputMode;
-        if (!"content".equals(mode) && !"files_with_matches".equals(mode) && !"count".equals(mode)) {
-            return "错误：output_mode 只能是 content、files_with_matches 或 count。";
+        String mode = outputMode == null || outputMode.isEmpty() ? "summary" : outputMode;
+        if (!"summary".equals(mode) && !"content".equals(mode)
+                && !"files_with_matches".equals(mode) && !"count".equals(mode)) {
+            return "错误：output_mode 只能是 summary、content、files_with_matches 或 count。";
+        }
+        if ("summary".equals(mode) && after != null) {
+            return "错误：summary 是全局概览，没有 after 游标；请缩小 path/include 或使用 output_mode=content 续页。";
         }
         if (after != null && after.length() > 4096) return "错误：after 游标过长。";
         final Pattern matcher;
@@ -179,6 +187,10 @@ public final class BoundedGrepTool extends AbsTalent {
         if (!Files.exists(target)) return "错误：路径不存在。";
         Path policyRoot = virtualResults ? null : access.support.getSandboxPolicyRoot(workPath, selectedPath);
         PriorityQueue<Entry> page = new PriorityQueue<>(Comparator.comparing((Entry entry) -> entry.key).reversed());
+        PriorityQueue<SummaryFile> summaries = new PriorityQueue<>(
+                Comparator.comparingInt((SummaryFile file) -> file.matches)
+                        .thenComparing((left, right) -> right.path.compareTo(left.path)));
+        int[] summaryTotals = new int[2]; // matching files, matching lines
         int[] omitted = new int[3]; // oversized lines, oversized files, unreadable files
         Files.walkFileTree(target, new SimpleFileVisitor<Path>() {
             @Override
@@ -209,6 +221,7 @@ public final class BoundedGrepTool extends AbsTalent {
                 String display = virtualResults ? ToolResultPaths.ROOT + "/" + file.getFileName()
                         : access.display(workPath, selectedPath, target, file);
                 int matches = 0;
+                List<String> samples = "summary".equals(mode) ? new ArrayList<>() : null;
                 Deque<ContextLine> before = new ArrayDeque<>();
                 List<Entry> pending = new ArrayList<>();
                 try (PushbackReader reader = new PushbackReader(
@@ -234,6 +247,13 @@ public final class BoundedGrepTool extends AbsTalent {
                             continue;
                         }
                         matches++;
+                        if ("summary".equals(mode)) {
+                            if (samples.size() < SUMMARY_SAMPLES) {
+                                samples.add(display + ":" + number + ": "
+                                        + snippet(line.text, SUMMARY_SNIPPET_CHARS));
+                            }
+                            continue;
+                        }
                         if ("files_with_matches".equals(mode)) break;
                         if ("content".equals(mode)) {
                             String key = keyPath + "#" + String.format("%010d", number);
@@ -253,7 +273,14 @@ public final class BoundedGrepTool extends AbsTalent {
                     omitted[2]++;
                     return FileVisitResult.CONTINUE;
                 }
+                if ("summary".equals(mode) && matches > 0) {
+                    summaryTotals[0]++;
+                    summaryTotals[1] += matches;
+                    summaries.offer(new SummaryFile(display, matches, samples));
+                    if (summaries.size() > SUMMARY_FILES) summaries.poll();
+                }
                 if (matches > 0 && !"content".equals(mode)
+                        && !"summary".equals(mode)
                         && (after == null || keyPath.compareTo(after) > 0)) {
                     String text = "count".equals(mode)
                             ? display + ": " + matches + " matching lines" : display;
@@ -268,6 +295,7 @@ public final class BoundedGrepTool extends AbsTalent {
                 return FileVisitResult.CONTINUE;
             }
         });
+        if ("summary".equals(mode)) return renderSummary(new ArrayList<>(summaries), summaryTotals, omitted);
         List<Entry> ordered = new ArrayList<>(page);
         ordered.sort(Comparator.comparing(entry -> entry.key));
         boolean hasMore = ordered.size() > pageSize;
@@ -297,6 +325,43 @@ public final class BoundedGrepTool extends AbsTalent {
                     .append("、读取失败的文件 ").append(omitted[2]).append("。请缩小范围或另用工具核对。");
         }
         return output.toString();
+    }
+
+    private static String renderSummary(List<SummaryFile> files, int[] totals, int[] omitted) {
+        files.sort(Comparator.comparingInt((SummaryFile file) -> file.matches).reversed()
+                .thenComparing(file -> file.path));
+        StringBuilder output = new StringBuilder("[搜索概览] 命中文件 ")
+                .append(totals[0]).append(" 个，命中行 ").append(totals[1]).append(" 处。\n");
+        int shown = 0;
+        for (SummaryFile file : files) {
+            if (shown >= SUMMARY_FILES) break;
+            StringBuilder item = new StringBuilder("[FILE] ").append(file.path)
+                    .append("（").append(file.matches).append(" 行）\n");
+            for (String sample : file.samples) item.append("  ").append(sample).append('\n');
+            if (output.length() + item.length() > MAX_BODY_CHARS - 512) break;
+            output.append(item);
+            shown++;
+        }
+        if (totals[0] > shown) output.append("仅展示 ").append(shown)
+                .append(" 个文件；缩小 path/include 或使用 output_mode=content 查看其余命中。\n");
+        int skipped = omitted[0] + omitted[1] + omitted[2];
+        output.append(skipped == 0 ? "[搜索扫描完毕]\n" : "[搜索不完整]\n");
+        if (skipped > 0) output.append("跳过超长行 ").append(omitted[0])
+                .append("、超过 10 MiB 的文件 ").append(omitted[1])
+                .append("、读取失败的文件 ").append(omitted[2]).append("；上述计数不包含这些内容。\n");
+        output.append("用 read(file_path, offset, limit) 查看命中行附近代码；逐条结果用 output_mode=content。\n");
+        return output.toString();
+    }
+
+    private static final class SummaryFile {
+        final String path;
+        final int matches;
+        final List<String> samples;
+        SummaryFile(String path, int matches, List<String> samples) {
+            this.path = path;
+            this.matches = matches;
+            this.samples = samples;
+        }
     }
 
     /**

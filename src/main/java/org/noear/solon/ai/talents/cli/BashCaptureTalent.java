@@ -45,7 +45,7 @@ public final class BashCaptureTalent extends AbsTalent {
 
     @Override
     public String getInstruction(Prompt prompt) {
-        return "bash 输出流式保存到当前会话的 @tool-results，只展示有界首尾片段。展示截断不终止命令；超时、取消或独立日志存储上限会终止，并标明捕获不完整。";
+        return "bash 流式归档输出到当前会话 @tool-results，只展示有界首尾片段；展示截断不终止命令。失败优先显示诊断；超时、取消或日志配额耗尽会标注捕获不完整。";
     }
 
     /**
@@ -61,7 +61,7 @@ public final class BashCaptureTalent extends AbsTalent {
      * @param __sessionId 框架注入的会话标识
      * @return 有界展示、日志恢复入口及仅供 UI 使用的捕获元数据
      */
-    @ToolMapping(name = "bash", description = "在当前终端执行非交互式命令；实际 shell 可能是 PowerShell、CMD 或 Unix shell。输出流式保存到当前会话，展示截断不停止执行；超时、取消或独立存储上限会停止并标注原因。")
+    @ToolMapping(name = "bash", description = "执行非交互式命令。输出流式归档到 @tool-results，可用 read/grep 回查；模型只看有界摘要，失败优先显示诊断。展示截断不终止命令；超时或日志配额耗尽会标注不完整。实际 shell 取决于系统。")
     public ToolResult bashResult(
             @Param(value = "command", description = "要执行的命令；多行命令支持由当前 shell 解释") String command,
             @Param(value = "timeout", required = false, defaultValue = "120000", description = "超时时间，毫秒") Integer timeout,
@@ -70,7 +70,8 @@ public final class BashCaptureTalent extends AbsTalent {
         if (store == null) return ToolResult.success(terminal.bash(command, timeout, CAPTURE_CHARS, __cwd));
         int budget = maxOutputChars == null || maxOutputChars <= 0 ? visibleChars
                 : Math.min(visibleChars, Math.max(600, maxOutputChars));
-        StreamingProcessExecutor.Scope scope = new StreamingProcessExecutor.Scope(store, __sessionId, budget, maxLogBytes);
+        StreamingProcessExecutor.Scope scope = new StreamingProcessExecutor.Scope(
+                store, __sessionId, budget, maxLogBytes, isBuildOrTest(command));
         String output = executor.capture(scope, () -> terminal.bash(command, timeout, budget, __cwd));
         ToolResult result = ToolResult.success(output);
         if (!scope.details.isEmpty()) result.metas().put("bashOutput", scope.details);
@@ -80,5 +81,11 @@ public final class BashCaptureTalent extends AbsTalent {
     /** 保留直接调用入口；生产工具调用由框架注入会话标识。 */
     public String bash(String command, Integer timeout, Integer maxOutputChars, String cwd) {
         return bashResult(command, timeout, maxOutputChars, cwd, null).getContent();
+    }
+
+    private static boolean isBuildOrTest(String command) {
+        return command != null && command.matches(
+                "(?is).*\\b(?:mvn|gradle|gradlew|npm|pnpm|yarn)(?:\\.cmd|\\.bat)?\\b"
+                        + ".*\\b(?:test|build|package|verify|check|install)\\b.*");
     }
 }

@@ -66,6 +66,22 @@ class BoundedGrepToolTest {
     }
 
     @Test
+    void defaultSummaryShowsCoverageAndUsefulLinesWithoutDumpingEveryMatch() throws IOException {
+        Files.write(workspace.resolve("a.java"),
+                "needle one\nneedle two\nneedle three\n".getBytes(StandardCharsets.UTF_8));
+        Files.write(workspace.resolve("b.java"), "needle four\n".getBytes(StandardCharsets.UTF_8));
+        String summary = tool().grep("needle", ".", "*.java", null, null,
+                null, null, true, null);
+        assertTrue(summary.contains("命中文件 2 个，命中行 4 处"));
+        assertTrue(summary.contains("a.java:1: needle one"));
+        assertTrue(summary.contains("a.java:2: needle two"));
+        assertFalse(summary.contains("needle three"));
+        assertTrue(summary.contains("[搜索扫描完毕]"));
+        assertTrue(tool().grep("needle", ".", null, "summary", null,
+                "a.java", null, true, null).contains("没有 after 游标"));
+    }
+
+    @Test
     void literalSearchAndInvalidRegexAreExplicit() throws IOException {
         Files.write(workspace.resolve("plain.txt"), "[tag]\n".getBytes(StandardCharsets.UTF_8));
         assertTrue(tool().grep("[", ".", null, null, null, null, null, null, null).contains("无效正则"));
@@ -93,6 +109,10 @@ class BoundedGrepToolTest {
         assertTrue(result.contains("large.txt:2: hit"));
         assertTrue(result.contains("搜索不完整"));
         assertTrue(result.contains("跳过超长行 1"));
+        String summary = tool().grep("hit", ".", null, null, null, null, null, null, null);
+        assertTrue(summary.contains("命中文件 1 个，命中行 1 处"));
+        assertTrue(summary.contains("[搜索不完整]"));
+        assertTrue(summary.contains("跳过超长行 1"));
         assertThrows(SecurityException.class,
                 () -> tool().grep("hit", "..", null, null, null, null, null, null, null));
     }
