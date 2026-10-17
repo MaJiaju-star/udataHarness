@@ -24,7 +24,7 @@ import java.util.PriorityQueue;
  * <p>核心特性：
  * <ul>
  *   <li><b>稳定排序</b>：结果按键（路径）字典序排序，保证同一查询多次执行顺序一致；</li>
- *   <li><b>有界输出</b>：单页默认返回 100 项、上限 500 项，正文另受 {@link #MAX_BODY_CHARS} 字符预算约束，
+ *   <li><b>有界输出</b>：单页默认返回 80 项、上限 500 项，正文另受 {@link #MAX_BODY_CHARS} 字符预算约束，
  *       避免大目录树撑爆上下文；</li>
  *   <li><b>游标续页</b>：内容未完时输出 {@code after} 游标（上一页最后一条的键），
  *       调用方带相同 {@code path}/{@code pattern} 与 {@code after} 即可继续取下一页；</li>
@@ -38,7 +38,7 @@ import java.util.PriorityQueue;
  * @see #glob(String, String, String, Integer, String)
  */
 public final class BoundedGlobTool extends AbsTalent {
-    private static final int DEFAULT_LIMIT = 200;
+    private static final int DEFAULT_LIMIT = 80;
     private static final int MAX_LIMIT = 500;
     private static final int MAX_BODY_CHARS = 60_000;
     // Java 8 anonymous visitors must access this directly: a synthetic access$0
@@ -63,7 +63,7 @@ public final class BoundedGlobTool extends AbsTalent {
      */
     @Override
     public String getInstruction(Prompt prompt) {
-        return "用 glob 按文件名定位路径；搜索文件内容用 grep。结果未完时按 after 续页。";
+        return "用 glob 按文件名定位路径；搜索文件内容用 grep。共享目录前缀会压缩为树形结果，子路径仍可拼回完整路径；结果未完时按 after 续页，尽量先缩小 path/pattern。";
     }
 
     /**
@@ -81,12 +81,12 @@ public final class BoundedGlobTool extends AbsTalent {
      * @return 分页结果文本；内容未完时附带 {@code after}/{@code limit} 续页提示，参数非法时返回错误描述
      * @throws IOException 目录遍历期间发生 I/O 异常
      */
-    @ToolMapping(name = "glob", description = "按文件名模式查找路径；搜索代码正文请用 grep。结果按路径排序并支持续页。")
+    @ToolMapping(name = "glob", description = "按文件名模式查找路径；搜索代码正文请用 grep。结果按路径排序，共享目录前缀压缩为树形展示；页尾给出匹配总数与续页游标。")
     public String glob(
             @Param(value = "pattern", description = "glob 模式，例如 **/*.java") String pattern,
             @Param(value = "path", required = false, description = "搜索根目录，默认当前工作区") String path,
             @Param(value = "after", required = false, description = "相同 path/pattern 的上一页输出的 after 游标") String after,
-            @Param(value = "limit", required = false, description = "单页最多返回项数，默认 200，最大 500") Integer limit,
+            @Param(value = "limit", required = false, description = "单页最多返回项数，默认 80，最大 500") Integer limit,
             String __cwd) throws IOException {
         if (pattern == null || pattern.isEmpty()) return "错误：pattern 不能为空。";
         String selectedPath = path == null || path.isEmpty() ? "." : path;
@@ -111,6 +111,8 @@ public final class BoundedGlobTool extends AbsTalent {
         Path policyRoot = access.support.getSandboxPolicyRoot(workPath, selectedPath);
         PriorityQueue<Entry> page = new PriorityQueue<>(Comparator.comparing((Entry entry) -> entry.key).reversed());
         int[] skipped = new int[1];
+        long[] matched = new long[1];
+        long[] eligible = new long[1];
         Files.walkFileTree(target, new SimpleFileVisitor<Path>() {
             @Override
             public FileVisitResult preVisitDirectory(Path dir, BasicFileAttributes attrs) {
@@ -126,8 +128,10 @@ public final class BoundedGlobTool extends AbsTalent {
                 Path relative = target.relativize(file);
                 if (matcher.matches(relative) || matcher.matches(file)
                         || (relative.toString().isEmpty() && matcher.matches(file.getFileName()))) {
+                    matched[0]++;
                     String key = SearchToolAccess.relative(target, file);
                     if (after == null || key.compareTo(after) > 0) {
+                        eligible[0]++;
                         page.offer(new Entry(key, access.display(workPath, selectedPath, target, file)));
                         if (page.size() > pageSize + 1) page.poll();
                     }
@@ -142,7 +146,7 @@ public final class BoundedGlobTool extends AbsTalent {
             }
         });
         if (page.isEmpty()) {
-            return (after == null ? "未找到匹配文件。" : "(没有更多匹配文件)")
+            return (after == null ? "未找到匹配文件。" : "没有更多匹配文件（当前共 " + matched[0] + " 个）。")
                     + (skipped[0] == 0 ? "" : "\n警告：有 " + skipped[0] + " 个路径读取失败，结果可能不完整。");
         }
         List<Entry> ordered = new ArrayList<>(page);
@@ -151,26 +155,55 @@ public final class BoundedGlobTool extends AbsTalent {
         if (hasMore) ordered.remove(ordered.size() - 1);
         StringBuilder output = new StringBuilder();
         String lastKey = null;
-        for (Entry entry : ordered) {
-            String line = "[FILE] " + entry.display + "\n";
-            if (output.length() + line.length() > MAX_BODY_CHARS) {
-                hasMore = true;
-                break;
+        int shown = 0;
+        boolean bodyFull = false;
+        for (int start = 0; start < ordered.size() && !bodyFull;) {
+            String directory = start + 1 < ordered.size()
+                    ? commonDirectoryPrefix(ordered.get(start).display, ordered.get(start + 1).display)
+                    : "";
+            int end = start + 1;
+            while (!directory.isEmpty() && end < ordered.size()
+                    && ordered.get(end).display.startsWith(directory)) end++;
+            int groupSize = end - start;
+            boolean group = !directory.isEmpty() && (long) (groupSize - 1) * directory.length() > 1L + 4L * groupSize;
+            for (int index = start; index < end; index++) {
+                Entry entry = ordered.get(index);
+                String line = group
+                        ? (index == start ? directory + "\n" : "")
+                            + (index == end - 1 && (end < ordered.size() || !hasMore) ? "└── " : "├── ")
+                            + entry.display.substring(directory.length()) + "\n"
+                        : entry.display + "\n";
+                if (output.length() + line.length() > MAX_BODY_CHARS) {
+                    hasMore = true;
+                    bodyFull = true;
+                    break;
+                }
+                output.append(line);
+                lastKey = entry.key;
+                shown++;
             }
-            output.append(line);
-            lastKey = entry.key;
+            start = end;
         }
         if (lastKey == null) return "错误：单个文件路径过长，无法在输出预算内展示。";
+        long position = matched[0] - eligible[0] + shown;
         if (hasMore) {
-            output.append("--- [内容未完] ---\n继续搜索请使用 after=")
-                    .append(lastKey).append(", limit=").append(pageSize);
+            output.append("--- ").append(position).append('/').append(matched[0])
+                    .append("；继续 after=").append(lastKey).append(", limit=").append(pageSize).append(" ---");
         } else {
-            output.append("--- [搜索完毕] ---");
+            output.append("--- ").append(position).append('/').append(matched[0]).append("；搜索完毕 ---");
         }
         if (skipped[0] > 0) {
             output.append("\n警告：有 ").append(skipped[0]).append(" 个路径读取失败，结果可能不完整。");
         }
         return output.toString();
+    }
+
+    private static String commonDirectoryPrefix(String first, String second) {
+        int shared = 0;
+        int max = Math.min(first.length(), second.length());
+        while (shared < max && first.charAt(shared) == second.charAt(shared)) shared++;
+        int slash = Math.max(first.lastIndexOf('/', shared - 1), first.lastIndexOf('\\', shared - 1));
+        return slash < 0 ? "" : first.substring(0, slash + 1);
     }
 
     /**
