@@ -34,9 +34,17 @@ import java.util.Set;
 import java.util.concurrent.locks.ReentrantLock;
 import java.util.function.Function;
 
-/** Local-file mutation guard; non-local MountSource writes retain Solon's semantics. */
+/**
+ * 本地文件安全修改工具：为 write / edit 提供“先读后写”的版本守卫与原子落盘。
+ *
+ * <p>核心约束：覆盖或编辑已有文件前必须在本会话 read 过该文件，后端按 SHA-256 核对已读版本，
+ * 冲突时拒绝写入；写入经同目录临时文件原子替换，同路径写入由条带锁串行化。
+ * 非本地可访问的逻辑挂载不走本地守卫，委托 {@link TerminalTalent} 保持 Solon 原有语义。</p>
+ */
 public final class SafeMutationTalent extends AbsTalent {
+    /** edit 整文件修改的大小上限，超过则拒绝。 */
     private static final long MAX_EDIT_BYTES = 16L * 1024 * 1024;
+    /** 按目标路径哈希分片的写锁，避免不同路径互相阻塞。 */
     private static final ReentrantLock[] LOCKS = new ReentrantLock[64];
 
     static {
@@ -53,6 +61,14 @@ public final class SafeMutationTalent extends AbsTalent {
     private final SessionFileVersions fileVersions;
     private final ContextArtifactStore artifactStore;
 
+    /**
+     * 创建独立版本台账的修改工具（不与 read 共享已读版本，适合直接调用场景）。
+     *
+     * @param terminal 宿主终端工具
+     * @param workspace 默认工作目录
+     * @param canWrite 是否已授予 write 权限
+     * @param canEdit 是否已授予 edit 权限
+     */
     public SafeMutationTalent(TerminalTalent terminal, String workspace, boolean canWrite, boolean canEdit) {
         this(terminal, workspace, canWrite, canEdit, new SessionFileVersions());
     }
@@ -71,7 +87,16 @@ public final class SafeMutationTalent extends AbsTalent {
         this(terminal, workspace, canWrite, canEdit, fileVersions, null);
     }
 
-    /** 创建共享版本台账与大补丁归档仓储的修改工具。 */
+    /**
+     * 创建共享版本台账与大补丁归档仓储的修改工具。
+     *
+     * @param terminal 宿主终端工具
+     * @param workspace 默认工作目录
+     * @param canWrite 是否已授予 write 权限
+     * @param canEdit 是否已授予 edit 权限
+     * @param fileVersions 与 read 共享的会话版本记录
+     * @param artifactStore 大补丁归档仓储；为 null 时跳过归档
+     */
     public SafeMutationTalent(TerminalTalent terminal, String workspace, boolean canWrite, boolean canEdit,
                               SessionFileVersions fileVersions, ContextArtifactStore artifactStore) {
         this.terminal = terminal;
@@ -109,14 +134,17 @@ public final class SafeMutationTalent extends AbsTalent {
     }
 
     /**
-     * 创建或覆盖文件，后端自动使用当前会话已读版本校验覆盖前提。
+     * 创建或覆盖文件；覆盖已有文件前自动核对本会话已读版本，冲突时拒绝并说明原因。
      *
-     * @param filePath 目标路径
-     * @param content 完整文件内容
+     * <p>写入通过同目录临时文件原子替换完成，不会出现半写状态；不直接覆盖符号链接。
+     * 非本地逻辑挂载委托 {@link TerminalTalent} 处理。</p>
+     *
+     * @param filePath 目标路径（工作区相对路径或逻辑路径）
+     * @param content 完整文件内容，整体覆盖
      * @param __cwd 框架注入的工作目录
      * @param __sessionId 框架注入的会话标识
-     * @param __fileVersionBatch 框架注入的工具批次标识
-     * @return 写入结果或版本冲突说明
+     * @param __fileVersionBatch 框架注入的工具批次标识；直接调用时为 null
+     * @return 写入结果、拒绝原因或版本冲突说明
      * @throws IOException 文件操作失败
      */
     @ToolMapping(name = "write", description = "创建文件或覆盖已有文件。覆盖前须在本会话 read；后端自动核对已读版本，冲突时拒绝覆盖。使用同目录临时文件原子替换。")
@@ -148,14 +176,18 @@ public final class SafeMutationTalent extends AbsTalent {
     }
 
     /**
-     * 按文本块编辑文件，全部替换成功且会话已读版本仍匹配才落盘。
+     * 按文本块编辑文件；全部替换预检通过且本会话已读版本仍匹配才落盘，任一操作失败则整体不写入。
      *
-     * @param filePath 目标路径
-     * @param edits 编辑操作
+     * <p>{@code edits}（短片段替换）与 {@code line_edits}（按行号区间替换）二选一。
+     * 结构化 diff 通过工具结果元数据 {@code editDiff} 传给 UI，大补丁另行归档。</p>
+     *
+     * @param filePath 目标路径（工作区相对路径或逻辑路径）
+     * @param edits 短片段替换列表；与 lineEdits 二选一
+     * @param lineEdits 整行/连续多行替换列表；与 edits 二选一
      * @param __cwd 框架注入的工作目录
      * @param __sessionId 框架注入的会话标识
-     * @param __fileVersionBatch 框架注入的工具批次标识
-     * @return 编辑结果或版本冲突说明
+     * @param __fileVersionBatch 框架注入的工具批次标识；直接调用时为 null
+     * @return 成功统计与 diff 摘要、预检查失败原因或版本冲突说明
      * @throws IOException 文件操作失败
      */
     @ToolMapping(name = "edit", description = "修改已读取的文件。比较参数成本：整行或连续多行且已知行号时优先 line_edits，只传新内容；长行内的短片段替换可用 edits，避免重发整行。非本地逻辑挂载仅支持 edits。两种列表择一，后端校验已读版本并原子写入。")
@@ -171,12 +203,13 @@ public final class SafeMutationTalent extends AbsTalent {
         return result;
     }
 
-    /** Preserve the Java caller signature used before line edits were added. */
+    /** 兼容旧签名的片段编辑入口，等价于 {@code lineEdits} 为 null 的调用。 */
     public ToolResult editResult(String filePath, List<TerminalTalent.EditOp> edits,
                                  String cwd, String sessionId, String batchId) throws IOException {
         return editResult(filePath, edits, null, cwd, sessionId, batchId);
     }
 
+    /** 单条按行号区间的替换操作；首尾行均包含，行号对应 read 输出中的原文件行号。 */
     public static final class LineEditOp {
         @Param(value = "start_line", description = "read 输出中的原文件起始行号，从 1 开始，包含该行")
         public Integer startLine;
@@ -186,13 +219,26 @@ public final class SafeMutationTalent extends AbsTalent {
         public String newStr;
     }
 
-    /** 保留直接调用入口，结构化 diff 由工具结果元数据传给 UI。 */
+    /**
+     * 直接调用的片段编辑入口；结构化 diff 经工具结果元数据传给 UI。
+     *
+     * @param filePath 目标路径
+     * @param edits 编辑操作列表
+     * @param cwd 工作目录
+     * @param sessionId 会话标识
+     * @param batchId 工具批次标识；可为 null
+     * @return 编辑结果文本
+     * @throws IOException 文件操作失败
+     */
     public String edit(String filePath, List<TerminalTalent.EditOp> edits, String cwd,
                        String sessionId, String batchId) throws IOException {
         return editResult(filePath, edits, cwd, sessionId, batchId).getContent();
     }
 
-    /** 在原有版本守卫内执行全部替换，仅为成功提交的内容生成 diff。 */
+    /**
+     * 在版本守卫与条带锁内执行全部替换：先于内存完成全部编辑并预检，
+     * 内容有实际变化才原子落盘，并仅为成功提交的内容生成 diff。
+     */
     private String editBody(String filePath, List<TerminalTalent.EditOp> edits, List<LineEditOp> lineEdits, String __cwd,
                             String __sessionId, String __fileVersionBatch, Map<String, Object> metadata) throws IOException {
         boolean textMode = edits != null && !edits.isEmpty();
@@ -271,6 +317,12 @@ public final class SafeMutationTalent extends AbsTalent {
         }
     }
 
+    /**
+     * 应用按行号区间的替换：先校验数量、参数与区间不重叠，再按行号倒序替换以保持先前行号有效，
+     * 新内容换行统一为原文件风格。
+     *
+     * @throws IllegalArgumentException 任一操作非法；调用方保证此时未写入任何修改
+     */
     private String applyLineEdits(String content, List<LineEditOp> edits) {
         if (edits.size() > 64) throw new IllegalArgumentException("line_edits 一次最多 64 处；请分批修改。");
         List<LineRange> ranges = new ArrayList<>();
@@ -319,7 +371,11 @@ public final class SafeMutationTalent extends AbsTalent {
         return working;
     }
 
-    /** Collect only requested line boundaries, counting CRLF as one terminator. */
+    /**
+     * 仅采集请求的行起始偏移，CRLF 视为一个行终止符。
+     *
+     * @return 文件的物理行数；空文件为 0
+     */
     private static int lineOffsets(String content, TreeSet<Integer> requested, Map<Integer, Integer> offsets) {
         int line = 1;
         if (requested.contains(1)) offsets.put(1, 0);
@@ -341,6 +397,9 @@ public final class SafeMutationTalent extends AbsTalent {
         return content.isEmpty() ? 0 : line - (endedInBreak ? 1 : 0);
     }
 
+    /**
+     * 返回区间末尾（end 位置前一字符）所属的换行串：{@code \r\n}、{@code \n} 或 {@code \r}；无换行时返回空串。
+     */
     private static String lineEndingAt(String content, int end) {
         if (end == 0) return "";
         if (content.charAt(end - 1) == '\n') {
@@ -349,6 +408,9 @@ public final class SafeMutationTalent extends AbsTalent {
         return content.charAt(end - 1) == '\r' ? "\r" : "";
     }
 
+    /**
+     * 返回文件中出现的首个换行风格，用于新内容的换行归一化。
+     */
     private static String preferredNewline(String content) {
         int lf = content.indexOf('\n');
         int cr = content.indexOf('\r');
@@ -357,12 +419,17 @@ public final class SafeMutationTalent extends AbsTalent {
         return "\n";
     }
 
+    /** 排序与校验时保留操作的原始序号，便于按“操作 #N”报错。 */
     private static final class LineRange {
         final int number;
         final LineEditOp edit;
         LineRange(int number, LineEditOp edit) { this.number = number; this.edit = edit; }
     }
 
+    /**
+     * old_str 未唯一命中时，列出全部候选的起始行号（最多 8 处），
+     * 引导模型在 edits 中设置 old_StrStartLine。
+     */
     private static String candidateLines(String content, String oldText) {
         List<Integer> lines = new ArrayList<>();
         int total = 0;
@@ -409,12 +476,16 @@ public final class SafeMutationTalent extends AbsTalent {
         return edit(filePath, edits, cwd, sessionId, null);
     }
 
+    /**
+     * 在 cwd（缺省为 workspace）下解析目标路径，复用 Solon 的路径安全守卫（沙箱、越界与写权限检查）。
+     */
     private Path resolve(String filePath, String cwd, boolean write) throws IOException {
         Path workPath = cwd == null ? workspace : Paths.get(cwd).toAbsolutePath().normalize();
         return support.resolveSafePath(workPath, filePath, write,
                 terminal.isSandboxEnabled(), false, null);
     }
 
+    /** 判断是否为不可本地访问的逻辑挂载；此类目标不走本地文件守卫。 */
     private boolean isNonLocalVirtual(String filePath) {
         if (!filePath.startsWith("@")) return false;
         ResolvedResource resource = mounts.resolveResource(filePath);
@@ -422,10 +493,24 @@ public final class SafeMutationTalent extends AbsTalent {
                 || !resource.getLocalPath().isPresent();
     }
 
+    /**
+     * 按规范路径哈希分片取写锁，串行化同一路径的并发写。
+     *
+     * <p>分片锁避免全局单锁成为瓶颈：无关路径可并发写入，
+     * 同一路径的写入则严格排队，与临时文件替换配合保证原子性。
+     *
+     * @param target 规范化后的目标路径
+     * @return 对应分片的可重入写锁
+     */
     private static ReentrantLock lockFor(Path target) {
         return LOCKS[(target.toAbsolutePath().normalize().hashCode() & Integer.MAX_VALUE) % LOCKS.length];
     }
 
+    /**
+     * 核对目标文件与会话已读版本。
+     *
+     * @return null 表示允许写入；否则为面向模型的冲突说明
+     */
     private static String checkVersion(Path target, String expected, boolean exists) throws IOException {
         if (exists && expected == null) {
             return "版本冲突：本会话尚未读取该文件，请先 read，收到结果后再修改。";
@@ -437,6 +522,12 @@ public final class SafeMutationTalent extends AbsTalent {
         return null;
     }
 
+    /**
+     * 同目录临时文件写入 + 原子移动替换；复制原文件权限，
+     * 落盘前二次核对存在性、符号链接、版本与路径，避免写入期间目标被并发改动。
+     *
+     * @throws IOException 版本或路径在写入期间变化，或文件系统不支持原子替换
+     */
     private void atomicReplace(Path target, byte[] bytes, String expected, boolean existed,
                                String filePath, String cwd) throws IOException {
         Path parent = target.getParent();
@@ -467,6 +558,7 @@ public final class SafeMutationTalent extends AbsTalent {
         }
     }
 
+    /** 复制 POSIX 权限位与 ACL；Windows 无 POSIX 权限时仅同步 ACL。 */
     private static void copyPermissions(Path source, Path destination) throws IOException {
         try {
             Set<PosixFilePermission> permissions = Files.getPosixFilePermissions(source);
@@ -481,6 +573,10 @@ public final class SafeMutationTalent extends AbsTalent {
         }
     }
 
+    /**
+     * 计算片段替换的执行顺序：全部操作均为行定位（非 replaceAll 且提供 old_StrStartLine）时按行号倒序执行，
+     * 使先前行号在替换后仍有效；否则保持传入顺序。
+     */
     private static List<Integer> executionOrder(List<TerminalTalent.EditOp> edits) {
         List<Integer> order = new ArrayList<>();
         boolean lineScoped = true;
@@ -499,6 +595,9 @@ public final class SafeMutationTalent extends AbsTalent {
         return order;
     }
 
+    /**
+     * 追加诊断钩子的输出；诊断失败不影响已成功的写入结果，与 TerminalTalent 行为一致。
+     */
     @SuppressWarnings("unchecked")
     private String withDiagnostics(String message, Path target) {
         try {
