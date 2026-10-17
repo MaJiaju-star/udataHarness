@@ -157,7 +157,7 @@ public class SessionRepository implements AgentSessionProvider {
         owners.put(sessionId, userId);
         return sessions.computeIfAbsent(sessionId, key -> cacheAlignedCompaction
                 ? new CompactingFileAgentSession(key, sessionDir.toString())
-                : new FileAgentSession(key, sessionDir.toString()));
+                : new CompactingFileAgentSession(key, sessionDir.toString(), false));
     }
 
     /**

@@ -149,6 +149,10 @@ class ContextManagementIntegrationTest {
                     .anyMatch(row -> "context_rewrite".equals(row.get("action"))
                             && ((Number) row.get("charsBefore")).longValue() > ((Number) row.get("charsAfter")).longValue()));
             assertTrue(observations.stream().allMatch(row -> ((java.util.Map<?, ?>) row.get("usage")).get("estimatedCost") instanceof Number));
+            java.util.Map<String, Object> applied = store.observations("lifecycle-session", true, 100).stream()
+                    .filter(row -> "context_rewrite".equals(row.get("action"))).findFirst().get();
+            assertNotNull(applied.get("contextEpoch"));
+            assertEquals(applied.get("contextEpoch"), observations.get(observations.size() - 1).get("contextEpoch"));
             assertFalse(store.search("other-session", "MIDDLE_EVIDENCE", null, null, 0, 5).contains(recoveredId.get()));
         } finally { server.stop(0); }
     }

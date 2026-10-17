@@ -57,7 +57,7 @@ agent:
   tools:
     # A/B 实验：当前试用 shell-search，让 bash 负责目录与代码搜索。
     # 改为 standard 可恢复 ls/glob/grep；两种模式都保留 read/edit/write。切换后需重启后端。
-    file-profile: "${AGENT_FILE_TOOL_PROFILE:shell-search}"
+    file-profile: "${AGENT_FILE_TOOL_PROFILE:standard}"
     web:
       # 内网部署可设为 false，一次禁用 websearch、codesearch 和 webfetch。
       enabled: "${AGENT_WEB_TOOLS_ENABLED:false}"

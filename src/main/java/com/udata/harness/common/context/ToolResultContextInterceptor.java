@@ -126,6 +126,10 @@ public class ToolResultContextInterceptor implements ReActInterceptor {
     public void onToolCallEnd(ReActTrace trace, ToolExchanger exchanger,
                               ChatMessage observation, Throwable error, long durationMs) {
         ToolResult result = exchanger.getToolResult();
+        if (observation != null) {
+            String entryId = ContextMessageIds.ensure(observation);
+            if (result != null) result.metas().put(ContextMessageIds.ENTRY_ID, entryId);
+        }
         if (error != null || observation == null || trace.getSession() == null
                 || trace.getSession().isPending() || exchanger.isReturnDirect()
                 || observation.hasMetadata(AgentTrace.META_FIRST)
@@ -198,11 +202,13 @@ public class ToolResultContextInterceptor implements ReActInterceptor {
  */
     @Override
     public void onActionEnd(ReActTrace trace, Collection<ToolExchanger> toolCalls) {
+        ContextEpoch.identify(trace);
         if (trace.getSession() == null || trace.getSession().isPending()
                 || trace.getWorkingMemory() == null) return;
         AssistantMessage reason = trace.getLastReasonMessage();
         // Text-mode observations have no wire call IDs: keep their batch unchanged.
         if (reason == null || reason.getToolCalls() == null || reason.getToolCalls().isEmpty()) return;
+        String reasonEntryId = ContextMessageIds.ensure(reason);
         Set<String> batchIds = new HashSet<>();
         Map<String, ToolExchanger> exchangersByUuid = new HashMap<>();
         for (ToolExchanger exchanger : toolCalls) exchangersByUuid.put(exchanger.getCallId(), exchanger);
@@ -214,7 +220,7 @@ public class ToolResultContextInterceptor implements ReActInterceptor {
         List<ChatMessage> messages = trace.getWorkingMemory().getMessages();
         int batchStart = -1;
         for (int i = messages.size() - 1; i >= 0; i--) {
-            if (messages.get(i) == reason) {
+            if (reasonEntryId.equals(ContextMessageIds.id(messages.get(i)))) {
                 batchStart = i + 1;
                 break;
             }
@@ -259,6 +265,7 @@ public class ToolResultContextInterceptor implements ReActInterceptor {
                 if (!"token_size".equals(key)) replacementResult.metas().put(key, value);
             });
             ToolMessage replacement = ChatMessage.ofTool(replacementResult, tool.getName(), tool.getToolCallId(), false);
+            ContextMessageIds.projection(tool, replacement);
             if (tool.getMetadata() != null) {
                 tool.getMetadata().forEach((key, value) -> {
                     if (!"token_size".equals(key)) replacement.addMetadata(key, value);
@@ -277,7 +284,7 @@ public class ToolResultContextInterceptor implements ReActInterceptor {
                         ? replacements.get(((ToolMessage) message).getToolCallId()) : null;
                 projected.add(replacement == null ? message : replacement);
             }
-            trace.getWorkingMemory().replaceMessages(projected);
+            if (!applyView(trace, projected)) return;
         }
         // Non-reducible results may exceed the soft budget. Existing compression remains the safety net.
         convergeTasks(trace, batchStart, toolCalls);
@@ -360,6 +367,7 @@ public class ToolResultContextInterceptor implements ReActInterceptor {
                 if (artifact.projection.length() >= tool.getContent().length()) continue;
                 ToolMessage replacement = ChatMessage.ofTool(ToolResult.success(artifact.projection),
                         tool.getName(), tool.getToolCallId(), false);
+                ContextMessageIds.projection(tool, replacement);
                 tool.getMetadata().forEach((key, value) -> {
                     if (!"token_size".equals(key)) replacement.addMetadata(key, value);
                 });
@@ -369,11 +377,12 @@ public class ToolResultContextInterceptor implements ReActInterceptor {
             }
             if (changed) {
                 long beforeChars = messages.stream().mapToLong(message -> message.getContent() == null ? 0 : message.getContent().length()).sum();
-                trace.getWorkingMemory().replaceMessages(view);
+                ContextEpoch.replace(trace, view, true);
                 Map<String, Object> applied = new java.util.LinkedHashMap<>();
                 applied.put("timestamp", System.currentTimeMillis()); applied.put("action", "context_rewrite");
                 applied.put("reason", "task_lifecycle"); applied.put("runId", trace.getRunId());
                 applied.put("reasonId", trace.getCurrentTurnId()); applied.put("appliedCount", appliedCount);
+                applied.put("contextEpoch", ContextEpoch.current(trace));
                 applied.put("charsBefore", beforeChars);
                 applied.put("charsAfter", view.stream().mapToLong(message -> message.getContent() == null ? 0 : message.getContent().length()).sum());
                 store.recordDecision(sessionId, applied);
@@ -416,13 +425,14 @@ public class ToolResultContextInterceptor implements ReActInterceptor {
             saved += org.noear.solon.ai.agent.react.intercept.compress.CompressionUtil.countTokens(plan.tool.getContent())
                     - org.noear.solon.ai.agent.react.intercept.compress.CompressionUtil.countTokens(plan.preview);
         }
-        Map<String, Object> usage = trace.getExtraAs(ContextTelemetryInterceptor.LAST_USAGE);
+        Map<String, Object> usage = ContextEpoch.validUsage(trace);
         if (usage != null && !model.equals(usage.get("model"))) usage = null;
         Map<String, Object> decision = policy.decide(before, saved,
                 trace.getOptions().getChatModel().getConfig().getContextLength(), usage);
         decision.put("timestamp", System.currentTimeMillis()); decision.put("action", "cache_decision");
         decision.put("runId", trace.getRunId()); decision.put("reasonId", trace.getCurrentTurnId());
         decision.put("model", model); decision.put("activeTaskId", active); decision.put("candidateCount", plans.size());
+        decision.put("contextEpoch", ContextEpoch.current(trace));
         store.recordDecision(trace.getSession().getSessionId(), decision);
         return Boolean.TRUE.equals(decision.get("allow"));
     }
@@ -594,6 +604,7 @@ public class ToolResultContextInterceptor implements ReActInterceptor {
             if (projected == null) projected = new ArrayList<>(messages);
             ToolMessage next = ChatMessage.ofTool(ToolResult.error(replacement),
                     tool.getName(), tool.getToolCallId(), false);
+            ContextMessageIds.projection(tool, next);
             if (tool.getMetadata() != null) tool.getMetadata().forEach((key, value) -> {
                 if (!"token_size".equals(key)) next.addMetadata(key, value);
             });
@@ -603,8 +614,15 @@ public class ToolResultContextInterceptor implements ReActInterceptor {
             }
         }
         if (projected == null) return false;
-        trace.getWorkingMemory().replaceMessages(projected);
-        return true;
+        return applyView(trace, projected);
+    }
+
+    private boolean applyView(ReActTrace trace, List<ChatMessage> view) {
+        try { ContextEpoch.replace(trace, view, false); return true; }
+        catch (IOException e) {
+            LOG.warn("Active context persistence failed; keeping original view ({})", e.getClass().getSimpleName());
+            return false;
+        }
     }
 
     /** 结果仅由纯文本组成、且不是已有占位文本时返回 true。 */

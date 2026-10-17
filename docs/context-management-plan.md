@@ -178,3 +178,32 @@
   不据此宣称实际供应商成本下降，真实任务 A/B 与价格校准仍需后续实测。
 - 最终验证：JDK 8 Maven package（forkCount=0、MAVEN_OPTS=-Xmx256m）通过 91 项测试；
   前端 24 项单元测试、ESLint、Vite 生产构建及浏览器布局/交互检查通过，JAR 包含最新前端资源。
+
+### 第五批：稳定 ID、统一活跃视图与 ContextEpoch（2026-10-16）
+
+- `ContextMessageIds` 给新消息分配 UUID，给旧文件历史生成会话/位置/语义指纹限定的稳定 ID；
+  同文本的不同条目不会合并。工具投影保留 entry ID 和 source ID，批次边界也按 Reason entry ID 查找，
+  避免对象克隆或 wire call ID 重用导致定位错误。身份字段不进入提供方请求正文。
+- `ActiveContextView` 统一装载检查点与按 entry ID 保存的工具投影。`CompactingFileAgentSession` 的原始读取
+  保留正文，模型读取通过统一构建器；legacy 模式也使用稳定 ID 与工具投影，但不装载 cache-aligned 检查点。
+  原始文件会话仍遵循 Solon 的消息持久化范围，不新增完整工具执行事件仓库或会话树。
+- 检查点 v2 保存覆盖的有序 entry IDs、语义校验和、独立 checkpoint ID、投影和 epoch。
+  压缩覆盖位置由 `ActiveContextView.coveredThrough` 映射，禁止跳过已知原始条目；瞬态工具条目不推进原始历史下标。
+  已覆盖的投影元数据可清理，原始聊天与 artifact 原文保留。旧 v1 检查点兼容读取，失效则回退。
+  工具投影验证角色、调用 ID、错误语义和来源指纹；保存成功后才替换工作记忆。
+- `ContextEpoch` 对追加保持稳定，对历史替换、压缩、规则/工具定义、模型 ID/别名、提供方、端点及视图模式变化变代。
+  同时保存原始/可见历史基线，能识别跨运行重建或截短前缀。损坏状态、原始历史变更及保存失败不授权使用旧 Usage。
+  自定义 HTTP 回调中不透明的路由变化不在配置签名检测范围内；公共前缀核对仍不保证真实缓存命中。
+- 请求起始版本绑定到请求与 Usage，费用按原请求归属记录；只有同 epoch 的有效 Usage 能用于后续成本决策。
+  压缩与重组清除旧 Usage/前缀统计基线，摘要的正常请求前缀快照也要求 epoch 一致。
+  请求期间发生重组的响应保留审计，但不得充当新版本基线；错误或全零输入 Usage 不能建立缓存决策基线。
+- `CurrentTurnIntent` 从原始用户输入识别当前轮，避免框架自我反思消息冒充用户要求。
+  切割当前轮时，在同一次摘要调用中要求 Current Turn Intent 章节；短要求额外逐字引用，长要求结构化提炼。
+  缺失/空章节、截断和非缩小摘要均不提交。该检查是结构性保护，不声称自动验证摘要语义完整性。
+- 回归覆盖新旧消息 ID 重启稳定、相同文本不同身份、对象克隆后的覆盖定位、wire ID 重用、工具配对、
+  原文保留、投影持久化、旧检查点、失效回退、存储失败、模型/工具/端点/视图变代、跨运行前缀重建、
+  进行中请求版本归属、零 Usage、注入反思消息，以及真实 Harness 流式/非流式压缩与短要求恢复。
+- 最终验证：新增 17 项回归；JDK 8 Maven package 全量 182 项测试通过，0 failures/errors/skipped，JAR 已更新。
+  本轮未调用外部模型、修改既有 model.yml 配置或重启服务。
+  进程捕获测试依赖派生 JVM 的测试类路径，使用 forkCount=1；MAVEN_OPTS、JAVA_TOOL_OPTIONS 及测试 argLine
+  都限定 -Xmx256m -XX:ReservedCodeCacheSize=64m，覆盖测试宿主和独立 Java 输出子进程。

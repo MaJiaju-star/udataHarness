@@ -97,7 +97,8 @@ public final class CacheAlignedCompressionInterceptor extends ContextCompression
         Object key = request.getOptions().toolContext().get(ChatSession.ATTR_SESSIONID);
         RequestSnapshot snapshot = key == null ? null : RequestSnapshot.of(request);
         ChatResponse response = chain.doIntercept(request);
-        if (snapshot != null && response != null) requests.put(requestKey(key, request.getOptions().agentName()), snapshot);
+        if (snapshot != null && response != null && response.getError() == null)
+            requests.put(requestKey(key, request.getOptions().agentName()), snapshot);
         return response;
     }
 
@@ -126,6 +127,7 @@ public final class CacheAlignedCompressionInterceptor extends ContextCompression
 
     private boolean compact(ReActTrace trace, String systemPrompt, boolean force) {
         if (trace.getWorkingMemory() == null || trace.getSession() == null) return false;
+        String contextEpoch = ContextEpoch.observe(trace, systemPrompt);
         if (trace.hasStreamSink() && trace.isStreamCancelled()) return false;
         List<ChatMessage> memory = trace.getWorkingMemory().getMessages();
         if (memory.size() < 5) return false;
@@ -155,13 +157,14 @@ public final class CacheAlignedCompressionInterceptor extends ContextCompression
         if (cutoff <= 0) return false;
 
         List<ChatMessage> prefix = new ArrayList<>(memory.subList(0, cutoff));
+        CurrentTurnIntent intent = CurrentTurnIntent.prepare(trace, cutoff);
         List<ChatMessage> summaryInput = new ArrayList<>();
         boolean cacheAligned = previous != null && previous.matches(prefix,
-                trace.getOptions().getChatModel().getConfig().getNameOrModel(), systemPrompt);
+                trace.getOptions().getChatModel().getConfig().getNameOrModel(), systemPrompt, contextEpoch);
         if (cacheAligned) summaryInput.addAll(previous.leading);
         else summaryInput.add(ChatMessage.ofSystem(systemPrompt));
         summaryInput.addAll(prefix);
-        summaryInput.add(ChatMessage.ofUser(DIRECTIVE));
+        summaryInput.add(ChatMessage.ofUser(DIRECTIVE + intent.instructions()));
         AtomicBoolean verifiedPrefix = new AtomicBoolean(false);
 
         try {
@@ -196,7 +199,8 @@ public final class CacheAlignedCompressionInterceptor extends ContextCompression
                 auditFailure(trace, "empty_summary");
                 return false;
             }
-            String summary = PREAMBLE + text.trim() + "\n</compacted-summary>";
+            if (!intent.valid(text)) { auditFailure(trace, "missing_turn_intent"); return false; }
+            String summary = PREAMBLE + intent.protect(text.trim()) + "\n</compacted-summary>";
             if (CompressionUtil.countTokens(summary) >= tokens(prefix)) {
                 auditFailure(trace, "not_smaller");
                 return false;
@@ -209,17 +213,21 @@ public final class CacheAlignedCompressionInterceptor extends ContextCompression
                 List<ChatMessage> raw = session.getMessages();
                 CompactionCheckpointStore.Checkpoint old = session.checkpoints().load(raw);
                 int covered = old == null ? 0 : old.coveredMessages;
-                for (ChatMessage message : prefix) {
-                    if (covered < raw.size() && message == raw.get(covered)) covered++;
-                }
+                covered = ActiveContextView.coveredThrough(raw, covered, prefix);
                 session.checkpoints().save(raw, covered, summary,
-                        trace.getOptions().getChatModel().getConfig().getNameOrModel());
+                        trace.getOptions().getChatModel().getConfig().getNameOrModel(), memory.subList(cutoff, memory.size()));
             }
 
             List<ChatMessage> projected = new ArrayList<>();
-            projected.add(ChatMessage.ofUser(summary));
+            ChatMessage checkpointMessage = ChatMessage.ofUser(summary);
+            checkpointMessage.addMetadata(ContextMessageIds.CHECKPOINT, true);
+            if (trace.getSession() instanceof CompactingFileAgentSession) {
+                CompactingFileAgentSession session = (CompactingFileAgentSession) trace.getSession();
+                checkpointMessage.addMetadata(ContextMessageIds.ENTRY_ID, session.checkpoints().load(session.getMessages()).entryId);
+            } else ContextMessageIds.ensure(checkpointMessage);
+            projected.add(checkpointMessage);
             projected.addAll(memory.subList(cutoff, memory.size()));
-            trace.getWorkingMemory().replaceMessages(projected);
+            ContextEpoch.checkpointCommitted(trace, projected);
             if (observer != null) {
                 try {
                     observer.record(trace.getSession().getSessionId(),
@@ -309,16 +317,18 @@ public final class CacheAlignedCompressionInterceptor extends ContextCompression
         final String wireTools;
         final List<FunctionTool> tools;
         final int toolTokens;
+        final String epoch;
 
         private RequestSnapshot(String model, List<ChatMessage> leading,
                                 List<String> wireMessageHashes,
-                                String wireTools, List<FunctionTool> tools) {
+                                String wireTools, List<FunctionTool> tools, String epoch) {
             this.model = model;
             this.leading = leading;
             this.wireMessageHashes = wireMessageHashes;
             this.wireTools = wireTools;
             this.tools = tools;
             this.toolTokens = CompressionUtil.countTokens(wireTools);
+            this.epoch = epoch;
         }
 
         static RequestSnapshot of(ChatRequest request) {
@@ -335,11 +345,12 @@ public final class CacheAlignedCompressionInterceptor extends ContextCompression
             }
             return new RequestSnapshot(request.getConfig().getNameOrModel(), leading,
                     wire, body.get("tools") == null ? "" : body.get("tools").toJson(),
-                    new ArrayList<>(request.getOptions().tools()));
+                    new ArrayList<>(request.getOptions().tools()),
+                    (String) request.getOptions().toolContext().get(ContextEpoch.REQUEST_EPOCH));
         }
 
-        boolean matches(List<ChatMessage> prefix, String currentModel, String currentSystemPrompt) {
-            return model.equals(currentModel) && !leading.isEmpty()
+        boolean matches(List<ChatMessage> prefix, String currentModel, String currentSystemPrompt, String currentEpoch) {
+            return epoch != null && epoch.equals(currentEpoch) && model.equals(currentModel) && !leading.isEmpty()
                     && currentSystemPrompt.equals(leading.get(leading.size() - 1).getContent())
                     && leading.size() + prefix.size() <= wireMessageHashes.size();
         }
