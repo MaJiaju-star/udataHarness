@@ -32,6 +32,9 @@ public class SessionMetadata {
      */
     private String model;
 
+    /** Tool preset: economy, standard or super. */
+    private String capabilityMode;
+
     /**
      * 权限模式：standard 或 full。
      */
@@ -90,6 +93,14 @@ public class SessionMetadata {
 
     public void setModel(String model) {
         this.model = model;
+    }
+
+    public String getCapabilityMode() {
+        return capabilityMode;
+    }
+
+    public void setCapabilityMode(String capabilityMode) {
+        this.capabilityMode = capabilityMode;
     }
 
     public String getPermissionMode() {

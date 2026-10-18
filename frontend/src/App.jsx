@@ -604,6 +604,9 @@ function App() {
     const [globalSearch, setGlobalSearch] = useState(null);
     const [tokenUsage, setTokenUsage] = useState(emptyTokenUsage);
     const [selectedModel, setSelectedModel] = useState("");
+    const [createSessionOpen, setCreateSessionOpen] = useState(false);
+    const [newSessionMode, setNewSessionMode] = useState("standard");
+    const [newSessionModel, setNewSessionModel] = useState("");
     const [thinkingDepth, setThinkingDepth] = useState(
         () => localStorage.getItem("udataThinkingDepth") || "auto");
     const leftTab = useWorkspaceStore(state => state.leftTab);
@@ -914,15 +917,22 @@ function App() {
         notify(`已打开 ${metaData.activeWorkspace?.name || "工作区"}`);
     }
 
-    async function createSession() {
+    function openCreateSession() {
+        setNewSessionMode("standard");
+        setNewSessionModel("");
+        setCreateSessionOpen(true);
+    }
+
+    async function createSession(capabilityMode = "standard", model = "") {
         if (running || pendingPrompts.length > 0) {
             notify("请先等待或取消当前会话的待发送消息");
             return;
         }
         const created = await api("/api/sessions", {
             method: "POST",
-            body: toForm({title: "新的编码任务", model: selectedModel || meta?.defaultModel})
+            body: toForm({title: "新的编码任务", model, capabilityMode})
         });
+        setCreateSessionOpen(false);
         await loadSessions();
         await chooseSession(created);
     }
@@ -1344,6 +1354,17 @@ function App() {
         notify(permissionMode === "full" ? "已开启完整权限模式" : "已恢复标准权限模式");
     }
 
+    async function changeCapabilityMode(capabilityMode) {
+        if (!current || running || current.active || current.capabilityMode === capabilityMode) return;
+        const updated = await api("/api/sessions/capability", {
+            method: "POST", body: toForm({sessionId: current.sessionId, capabilityMode})
+        });
+        setCurrent(updated);
+        setSessions(items => items.map(item => item.sessionId === updated.sessionId ? {...item, ...updated} : item));
+        setSelectedModel(updated.model || meta?.defaultModel || "");
+        notify(`已切换为${{economy: "经济", standard: "标准", super: "超级"}[capabilityMode]}模式`);
+    }
+
     async function changeSandbox(enabled) {
         if (running || meta?.sandboxEnabled === enabled) return;
         if (!enabled && !await confirmAction(
@@ -1418,7 +1439,7 @@ function App() {
                 onOpenFile={path => openFile(path).catch(error => notify(error.message))}
                 onOpenHistory={() => setHistoryOpen(true)}
                 onOpenWorkspace={() => setWorkspacePickerOpen(true)}
-                onCreate={() => createSession().catch(error => notify(error.message))}
+                onCreate={openCreateSession}
                 onSelect={session => chooseSession(session).catch(error => notify(error.message))}
                 onRename={(event, session) => renameSession(event, session).catch(error => notify(error.message))}
                 onDelete={(event, session) => deleteSession(event, session).catch(error => notify(error.message))}
@@ -1447,7 +1468,7 @@ function App() {
                         await ensureReferenceSession.current?.();
                         useWorkspaceStore.getState().insertPromptReference(text, [text]);
                     }}
-                    onCreate={() => createSession().catch(error => notify(error.message))}
+                    onCreate={openCreateSession}
                     onRename={(event, session) => renameSession(event, session).catch(error => notify(error.message))}
                     onDelete={(event, session) => deleteSession(event, session).catch(error => notify(error.message))}
                     onAttach={attachment => setIdeaContext(items => [...items.filter(item => item.path !== attachment.path), attachment].slice(-8))}/>}
@@ -1498,11 +1519,13 @@ function App() {
                                   localStorage.setItem("udataThinkingDepth", value);
                               }}
                               onOpenFile={path => openFile(path).catch(error => notify(error.message))}
-                              onSend={enqueuePrompt} onCreate={() => createSession().catch(error => notify(error.message))}
+                              onSend={enqueuePrompt} onCreate={openCreateSession}
                               onDecide={decideHitl}
                               onSandboxChange={enabled => changeSandbox(enabled)
                                   .catch(error => notify(error.message))}
                               onPermissionMode={mode => changePermissionMode(mode)
+                                  .catch(error => notify(error.message))}
+                              onCapabilityMode={mode => changeCapabilityMode(mode)
                                   .catch(error => notify(error.message))}/>
                 </section>
             </main>
@@ -1521,6 +1544,29 @@ function App() {
                 onRegister={path => registerWorkspace(path).catch(error => notify(error.message))}
                 onClose={() => setWorkspacePickerOpen(false)}
             />}
+            {createSessionOpen && <div className="modal-backdrop">
+                <section className="capability-dialog" role="dialog" aria-modal="true" aria-labelledby="capability-dialog-title">
+                    <h2 id="capability-dialog-title">新建会话</h2>
+                    <label>能力模式
+                        <select value={newSessionMode} onChange={event => {setNewSessionMode(event.target.value); setNewSessionModel("");}}>
+                            <option value="economy">经济 · read / write / edit / bash / ls</option>
+                            <option value="standard">标准 · 增加 glob / grep</option>
+                            <option value="super">超级 · 已启用的全部工具</option>
+                        </select>
+                    </label>
+                    <label>模型
+                        <select value={newSessionModel} onChange={event => setNewSessionModel(event.target.value)}>
+                            <option value="">模式默认 · {meta?.modeModels?.[newSessionMode] || meta?.defaultModel || "默认模型"}</option>
+                            {(meta?.models || []).map(item => <option key={item.name} value={item.name}>{item.name}</option>)}
+                        </select>
+                    </label>
+                    <div className="capability-dialog-actions">
+                        <button type="button" onClick={() => setCreateSessionOpen(false)}>取消</button>
+                        <button type="button" onClick={() => createSession(newSessionMode, newSessionModel)
+                            .catch(error => notify(error.message))}>创建会话</button>
+                    </div>
+                </section>
+            </div>}
             {notice && <div className="toast"><Check size={16}/>{notice}</div>}
         </div>
     );
@@ -1694,7 +1740,7 @@ function ChatView({api, current, messages, running, stopping, onStop, models, se
                       pendingPrompts = [], onCancelPending, queuePaused, onResumeQueue,
                       tokenUsage, contextLength, provider, sandboxEnabled,
                       onModelChange, onThinkingDepthChange, onSend, onCreate, onDecide,
-                      onPermissionMode, onSandboxChange, onOpenFile}) {
+                      onPermissionMode, onCapabilityMode, onSandboxChange, onOpenFile}) {
     const [prompt, setPrompt] = useState("");
     const [auditOpen, setAuditOpen] = useState(false);
     const [contextOpen, setContextOpen] = useState(false);
@@ -2022,6 +2068,17 @@ function ChatView({api, current, messages, running, stopping, onStop, models, se
                         </button>
                     </div>}
                 </div>
+            </div>
+            <div className="capability-mode-bar">
+                <label>能力模式
+                    <select value={current.capabilityMode || "standard"} disabled={running || current.active}
+                            onChange={event => onCapabilityMode(event.target.value)}>
+                        <option value="economy">经济 · 5 个基础工具</option>
+                        <option value="standard">标准 · 增加 glob / grep</option>
+                        <option value="super">超级 · 已启用的全部工具</option>
+                    </select>
+                </label>
+                <small>控制可用工具；执行审批由权限模式单独控制</small>
             </div>
             <div className="composer-input-shell">
                 {referenceError && <div role="alert">{referenceError}</div>}

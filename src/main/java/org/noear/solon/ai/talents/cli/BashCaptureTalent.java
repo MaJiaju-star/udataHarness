@@ -3,6 +3,7 @@ package org.noear.solon.ai.talents.cli;
 import com.udata.harness.common.context.ContextArtifactStore;
 import org.noear.solon.ai.annotation.ToolMapping;
 import org.noear.solon.ai.chat.prompt.Prompt;
+import org.noear.solon.ai.chat.tool.FunctionTool;
 import org.noear.solon.ai.chat.talent.AbsTalent;
 import org.noear.solon.ai.chat.tool.ToolResult;
 import org.noear.solon.annotation.Param;
@@ -11,6 +12,8 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.Map;
+import java.util.Collection;
+import java.util.stream.Collectors;
 
 /**
  * 在原终端安全路由内流式归档命令输出，展示预算不再作为终止条件。
@@ -25,6 +28,7 @@ public final class BashCaptureTalent extends AbsTalent {
     private final int visibleChars;
     private final long maxLogBytes;
     private final Path workspace;
+    private final boolean includeVerify;
 
     public BashCaptureTalent(TerminalTalent terminal) {
         this(terminal, null, 20000, 256L * 1024 * 1024);
@@ -44,6 +48,11 @@ public final class BashCaptureTalent extends AbsTalent {
 
     public BashCaptureTalent(TerminalTalent terminal, ContextArtifactStore store, int visibleChars,
                              long maxLogBytes, String workspace) {
+        this(terminal, store, visibleChars, maxLogBytes, workspace, true);
+    }
+
+    public BashCaptureTalent(TerminalTalent terminal, ContextArtifactStore store, int visibleChars,
+                             long maxLogBytes, String workspace, boolean includeVerify) {
         if (maxLogBytes < 1 || maxLogBytes > 1024L * 1024 * 1024) {
             throw new IllegalArgumentException("bash max-log-bytes must be between 1 and 1 GiB");
         }
@@ -52,12 +61,22 @@ public final class BashCaptureTalent extends AbsTalent {
         this.visibleChars = Math.max(600, Math.min(visibleChars, 64000));
         this.maxLogBytes = maxLogBytes;
         this.workspace = workspace == null ? null : Paths.get(workspace).toAbsolutePath().normalize();
+        this.includeVerify = includeVerify;
         this.executor = store == null ? null : StreamingProcessExecutor.install(terminal);
     }
 
     @Override
     public String getInstruction(Prompt prompt) {
-        return "bash 使用当前终端方言执行命令（Windows 默认 PowerShell 7，支持多行、&&、||、>；显式切换时以实际终端为准）。PowerShell 查询状态时只选需要的属性，避免对整个对象使用 Format-List。构建验证优先用 verify(build_system=auto, task=test/build/compile)。短结果直接显示退出码和正文，长结果归档到 @tool-results，失败显示诊断。";
+        return "bash 使用当前终端方言执行命令（Windows 默认 PowerShell 7，支持多行、&&、||、>；显式切换时以实际终端为准）。PowerShell 查询状态时只选需要的属性，避免对整个对象使用 Format-List。"
+                + (includeVerify ? "构建验证优先用 verify(build_system=auto, task=test/build/compile)。" : "")
+                + "短结果直接显示退出码和正文，长结果归档到 @tool-results，失败显示诊断。";
+    }
+
+    @Override
+    public Collection<FunctionTool> getTools(Prompt prompt) {
+        Collection<FunctionTool> tools = super.getTools(prompt);
+        return includeVerify ? tools : tools.stream()
+                .filter(tool -> !"verify".equals(tool.name())).collect(Collectors.toList());
     }
 
     /**

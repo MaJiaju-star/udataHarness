@@ -141,7 +141,7 @@ class UserHarnessEngineServiceImplTest {
                 "todoReadEnabled", "todoWriteEnabled", "taskToolEnabled", "nowToolEnabled")) {
             inject(enabled, field, true);
         }
-        org.noear.solon.ai.harness.HarnessEngine enabledEngine = enabled.get("alice");
+        org.noear.solon.ai.harness.HarnessEngine enabledEngine = enabled.get("alice", "default", "super");
         org.noear.solon.ai.agent.react.ReActOptions enabledOptions = enabledEngine.getMainAgent()
                 .getConfig().getDefaultOptions();
         for (String name : Utils.asList("render_echart", "render_antv_chart",
@@ -152,46 +152,55 @@ class UserHarnessEngineServiceImplTest {
         assertTrue(enabledEngine.isBashAsyncEnabled());
         org.junit.jupiter.api.Assertions.assertTrue(enabledEngine.isSubagentEnabled());
         assertTrue(enabled.disabledOptionalTools().isEmpty());
+        java.util.Set<String> restricted = toolNames(enabled.get("alice", "default", "economy")
+                .getMainAgent().getConfig().getDefaultOptions());
+        for (String name : Utils.asList("verify", "now", "lsp", "task", "bash_start", "render_echart")) {
+            assertFalse(restricted.contains(name), name);
+        }
     }
 
     @Test
     void todoSwitchesCanExposeOnlyOneTool() throws Exception {
         UserHarnessEngineServiceImpl service = runnableService();
         inject(service, "todoReadEnabled", true);
-        org.noear.solon.ai.agent.react.ReActOptions options = service.get("alice")
+        org.noear.solon.ai.agent.react.ReActOptions options = service.get("alice", "default", "super")
                 .getMainAgent().getConfig().getDefaultOptions();
         assertTrue(toolNames(options).contains("todoread"));
         assertFalse(toolNames(options).contains("todowrite"));
 
         UserHarnessEngineServiceImpl writeOnly = runnableService();
         inject(writeOnly, "todoWriteEnabled", true);
-        org.noear.solon.ai.agent.react.ReActOptions writeOptions = writeOnly.get("alice")
+        org.noear.solon.ai.agent.react.ReActOptions writeOptions = writeOnly.get("alice", "default", "super")
                 .getMainAgent().getConfig().getDefaultOptions();
         assertTrue(toolNames(writeOptions).contains("todowrite"));
         assertFalse(toolNames(writeOptions).contains("todoread"));
     }
 
     @Test
-    void shellSearchProfileHidesSearchToolsButKeepsGuardedFileTools() throws Exception {
-        UserHarnessEngineServiceImpl standard = runnableService();
-        for (String name : Utils.asList("ls", "glob", "grep")) {
-            assertTrue(toolNames(standard.get("alice").getMainAgent().getConfig()
-                    .getDefaultOptions()).contains(name));
+    void capabilityModesExposeOnlyTheirFileTools() throws Exception {
+        UserHarnessEngineServiceImpl service = runnableService();
+        org.noear.solon.ai.harness.HarnessEngine economyEngine = service.get("alice", "default", "economy");
+        org.noear.solon.ai.harness.HarnessEngine standardEngine = service.get("alice", "default", "standard");
+        org.noear.solon.ai.agent.react.ReActOptions economyOptions = economyEngine.getMainAgent()
+                .getConfig().getDefaultOptions();
+        org.noear.solon.ai.agent.react.ReActOptions standardOptions = standardEngine.getMainAgent()
+                .getConfig().getDefaultOptions();
+        java.util.Set<String> economy = toolNames(economyOptions);
+        java.util.Set<String> standard = toolNames(standardOptions);
+        assertTrue(economyOptions.getInterceptors().stream()
+                .anyMatch(item -> item.target == economyEngine.getHitlInterceptor()));
+        assertTrue(standardOptions.getInterceptors().stream()
+                .anyMatch(item -> item.target == standardEngine.getHitlInterceptor()));
+        for (String name : Utils.asList("read", "write", "edit", "bash", "ls")) {
+            assertTrue(economy.contains(name), name);
+            assertTrue(standard.contains(name), name);
         }
-        assertTrue(standard.disabledFileTools().isEmpty());
-
-        UserHarnessEngineServiceImpl shellSearch = runnableService();
-        inject(shellSearch, "fileToolProfile", "shell-search");
-        assertEquals(Utils.asList("ls", "glob", "grep"), shellSearch.disabledFileTools());
-        java.util.Set<String> names = toolNames(shellSearch.get("alice").getMainAgent()
-                .getConfig().getDefaultOptions());
-        for (String name : Utils.asList("ls", "glob", "grep")) assertFalse(names.contains(name), name);
-        for (String name : Utils.asList("bash", "verify", "read", "edit", "write")) assertTrue(names.contains(name), name);
-
-        UserHarnessEngineServiceImpl invalid = runnableService();
-        inject(invalid, "fileToolProfile", "unknown");
-        org.junit.jupiter.api.Assertions.assertThrows(IllegalArgumentException.class,
-                () -> invalid.get("alice"));
+        for (String name : Utils.asList("glob", "grep")) {
+            assertFalse(economy.contains(name), name);
+            assertTrue(standard.contains(name), name);
+        }
+        for (String name : economy) assertTrue(Utils.asList("read", "write", "edit", "bash", "ls").contains(name), name + " in " + economy);
+        for (String name : standard) assertTrue(Utils.asList("read", "write", "edit", "bash", "ls", "glob", "grep").contains(name), name + " in " + standard);
     }
 
     @Test

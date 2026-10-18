@@ -38,6 +38,12 @@ public interface SessionService {
      */
     SessionMetadata create(String userId, String title, String model);
 
+    default SessionMetadata create(String userId, String title, String model, String capabilityMode) {
+        return create(userId, title, model);
+    }
+
+    SessionMetadata updateCapabilityMode(String userId, String sessionId, String capabilityMode);
+
     /**
      * 更新会话级 standard/full 权限；运行过程中禁止切换。
      *

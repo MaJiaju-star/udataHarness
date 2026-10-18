@@ -102,6 +102,11 @@ public class SessionRepository implements AgentSessionProvider {
      * @return 新建的会话元数据
      */
     public SessionMetadata create(String userId, String title, String model, String workspaceId) {
+        return create(userId, title, model, workspaceId, com.udata.harness.common.domain.CapabilityMode.STANDARD);
+    }
+
+    public SessionMetadata create(String userId, String title, String model, String workspaceId, String capabilityMode) {
+        capabilityMode = com.udata.harness.common.domain.CapabilityMode.require(capabilityMode);
         userId = UserWorkspaceService.requireUserId(userId);
         String sessionId = SESSION_PREFIX + UUID.randomUUID();
         long now = System.currentTimeMillis();
@@ -111,6 +116,7 @@ public class SessionRepository implements AgentSessionProvider {
         metadata.setWorkspaceId(Utils.isBlank(workspaceId) ? "default" : workspaceId);
         metadata.setTitle(normalizeTitle(title));
         metadata.setModel(model == null ? "" : model.trim());
+        metadata.setCapabilityMode(capabilityMode);
         metadata.setPermissionMode("standard");
         metadata.setCreatedAt(now);
         metadata.setUpdatedAt(now);
@@ -240,6 +246,8 @@ public class SessionRepository implements AgentSessionProvider {
         metadata.setWorkspaceId(props.getProperty("workspaceId", "default"));
         metadata.setTitle(props.getProperty("title", "New session"));
         metadata.setModel(props.getProperty("model", ""));
+        metadata.setCapabilityMode(com.udata.harness.common.domain.CapabilityMode.require(
+                props.getProperty("capabilityMode")));
         metadata.setPermissionMode(normalizePermissionMode(props.getProperty("permissionMode")));
         metadata.setCreatedAt(parseLong(props.getProperty("createdAt")));
         metadata.setUpdatedAt(parseLong(props.getProperty("updatedAt")));
@@ -270,6 +278,22 @@ public class SessionRepository implements AgentSessionProvider {
             String userId, String sessionId, String permissionMode) {
         SessionMetadata metadata = read(userId, sessionId);
         metadata.setPermissionMode(normalizePermissionMode(permissionMode));
+        metadata.setUpdatedAt(System.currentTimeMillis());
+        save(userId, metadata);
+        return metadata;
+    }
+
+    public synchronized SessionMetadata updateCapabilityMode(
+            String userId, String sessionId, String capabilityMode) {
+        return updateCapabilityMode(userId, sessionId, capabilityMode, null);
+    }
+
+    public synchronized SessionMetadata updateCapabilityMode(
+            String userId, String sessionId, String capabilityMode, String model) {
+        String normalized = com.udata.harness.common.domain.CapabilityMode.require(capabilityMode);
+        SessionMetadata metadata = read(userId, sessionId);
+        metadata.setCapabilityMode(normalized);
+        if (model != null && !model.trim().isEmpty()) metadata.setModel(model.trim());
         metadata.setUpdatedAt(System.currentTimeMillis());
         save(userId, metadata);
         return metadata;
@@ -380,6 +404,8 @@ public class SessionRepository implements AgentSessionProvider {
             Properties props = new Properties();
             props.setProperty("title", normalizeTitle(metadata.getTitle()));
             props.setProperty("model", metadata.getModel() == null ? "" : metadata.getModel());
+            props.setProperty("capabilityMode", com.udata.harness.common.domain.CapabilityMode.require(
+                    metadata.getCapabilityMode()));
             props.setProperty("workspaceId", metadata.getWorkspaceId() == null
                     ? "default" : metadata.getWorkspaceId());
             props.setProperty(

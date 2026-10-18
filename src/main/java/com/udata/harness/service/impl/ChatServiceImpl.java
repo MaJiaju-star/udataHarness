@@ -219,7 +219,7 @@ public class ChatServiceImpl implements ChatService {
             }
 
             //4. 记录挂起前的 reasonId 用于过滤恢复时的重放文本，再清除 pending 并恢复运行。
-            HarnessEngine engine = engines.get(userId, metadata.getWorkspaceId());
+            HarnessEngine engine = engines.get(userId, metadata.getWorkspaceId(), metadata.getCapabilityMode());
             ReActTrace trace = engine.getMainAgent().getTrace(session);
             String suspendedReasonId = trace == null ? null : trace.getCurrentTurnId();
             // 只有整批任务都有决策后才能清除 pending 并恢复。否则 ReAct 会重新 Reason，
@@ -324,7 +324,7 @@ public class ChatServiceImpl implements ChatService {
         // Resolve from the persisted session, including on deferred HITL continuation threads.
         SessionMetadata metadata = sessionRepository.read(userId, session.getSessionId());
         Path workspace = java.nio.file.Paths.get(workspaces.resolve(userId, metadata.getWorkspaceId()).getPath());
-        HarnessEngine engine = engines.get(userId, metadata.getWorkspaceId());
+        HarnessEngine engine = engines.get(userId, metadata.getWorkspaceId(), metadata.getCapabilityMode());
         //1. 组装本次模型调用的重试、拦截器、cwd、模型与思考档位配置。
         Flux<String> chunks = engine.prompt(prompt)
                 .session(session)

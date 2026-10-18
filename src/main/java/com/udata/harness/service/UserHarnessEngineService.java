@@ -25,6 +25,10 @@ public interface UserHarnessEngineService {
         return get(userId);
     }
 
+    default HarnessEngine get(String userId, String workspaceId, String capabilityMode) {
+        return get(userId, workspaceId);
+    }
+
     /**
      * 移除用户当前缓存的引擎，使下一次请求按最新工作区重新创建。
      *

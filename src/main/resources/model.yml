@@ -45,7 +45,7 @@ agent:
       batch-max-chars: 256000
       preview-chars: 4000
       read-visible-chars: 160000
-      # shell-search 试验中 Bash 承担搜索，放宽其可见结果以减少恢复调用。
+      # 经济模式由 Bash 承担代码搜索，放宽其可见结果以减少恢复调用。
       bash-visible-chars: 64000
       error-visible-chars: 16000
       restore-max-chars: 16000
@@ -55,9 +55,15 @@ agent:
     # 个人设置保存在 <data-dir>/users/<userId>/settings.properties，并覆盖此默认值。
     enabled: "${AGENT_SANDBOX_ENABLED:false}"
   tools:
-    # A/B 实验：当前试用 shell-search，让 bash 负责目录与代码搜索。
-    # 改为 standard 可恢复 ls/glob/grep；两种模式都保留 read/edit/write。切换后需重启后端。
-    file-profile: "${AGENT_FILE_TOOL_PROFILE:standard}"
+    # 工具集由会话能力模式控制：经济、标准、超级。
+  modes:
+    # 模型名称须与下方 models[].name 一致；未配置或名称不存在时使用默认模型。
+    economy:
+      model: "${AGENT_ECONOMY_MODEL:mimo-v2.6-flash}"
+    standard:
+      model: "${AGENT_STANDARD_MODEL:mimo-v2.6-flash}"
+    super:
+      model: "${AGENT_SUPER_MODEL:mimo-v2.6-pro}"
     web:
       # 内网部署可设为 false，一次禁用 websearch、codesearch 和 webfetch。
       enabled: "${AGENT_WEB_TOOLS_ENABLED:false}"

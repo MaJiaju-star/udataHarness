@@ -53,9 +53,9 @@ README 要求 JDK 17+、Maven 3.9+；POM 的 source/target 设为 Java 8，这�
 
 `X-User-Id` 用于用户目录路由及归属校验，允许字母、数字、点、下划线和连字符，最长 64 字符。它不是身份认证。
 
-`X-Workspace-Id` 可选择当前请求的已注册工作区；无头时使用用户默认工作区。IDEA 注册项目时可使用 `activate=false`，避免改变浏览器默认项目。引擎按 `userId:workspaceId` 缓存，切换目录无需丢弃其他工作区引擎。
+`X-Workspace-Id` 可选择当前请求的已注册工作区；无头时使用用户默认工作区。IDEA 注册项目时可使用 `activate=false`，避免改变浏览器默认项目。引擎按 `userId:workspaceId:capabilityMode` 缓存，同一工作区内不同能力模式可同时服务于不同会话；切换目录无需丢弃其他工作区引擎。
 
-会话创建时绑定工作区。后台执行及审批续跑从会话元数据恢复工作目录，不依赖请求线程或后来切换的默认目录。接口校验会话用户与请求工作区归属。
+会话创建时绑定工作区和能力模式。后台执行及审批续跑从会话元数据恢复工作目录与能力模式，不依赖请求线程或后来切换的默认目录。接口校验会话用户与请求工作区归属。
 
 共享 Skill 仓库与自定义 Agent 定义属于服务级资源。激活 Skill 时，完整包复制到当前解析工作区的 `.soloncode/skills/<name>` 并刷新用户能力；引擎从该工作区挂载包。它不是跨工作区自动共享的用户安装目录。删除共享包不会自动删除已激活副本。沙箱偏好则按用户保存，并同步到该用户的缓存引擎。
 
@@ -64,7 +64,7 @@ README 要求 JDK 17+、Maven 3.9+；POM 的 source/target 设为 Java 8，这�
 | 对象 | 关键字段或状态 | 约束 |
 |---|---|---|
 | WorkspaceMetadata | 工作区标识、目录等注册信息 | 必须属于当前用户注册表 |
-| SessionMetadata | sessionId、userId、workspaceId、title、model、permissionMode、createdAt、updatedAt | active 由运行注册表动态计算 |
+| SessionMetadata | sessionId、userId、workspaceId、title、model、capabilityMode、permissionMode、createdAt、updatedAt | active 由运行注册表动态计算；旧记录缺少 capabilityMode 时按 standard 读取 |
 | AgentSession | 消息、模型选项、工具和审批状态 | 可重新加载文件历史，不等于任意执行中断都能自动续跑 |
 | HITLTask | callUuid、toolName、args、comment | 恢复前整批任务必须给出决策，同名工具通过 callUuid 区分 |
 | ContextArtifact | 正文与元数据 | 只读历史快照，按用户、工作区和会话隔离 |
@@ -109,7 +109,7 @@ sequenceDiagram
     C->>API: POST /api/chat/stream
     API->>Chat: 用户、工作区、会话和输入
     Chat->>R: 占位、归属校验、加载会话
-    Chat->>H: 从会话解析工作目录并运行
+    Chat->>H: 从会话解析工作目录、能力模式并运行
     loop 模型与工具循环
         H->>M: 上下文与工具定义
         M-->>H: 正文或工具调用
@@ -135,15 +135,31 @@ sequenceDiagram
 
 新消息先校验参数并占用会话运行槽位，随后检查用户、工作区归属及待审批任务，保存模型与思考深度选项。执行中，事件映射层输出 session、run_start、thinking、text、tool_start、tool_end、hitl、run_pending、run_end、error 等 JSON 类型，另有工具参数增量事件。
 
-审批恢复使用原 AgentSession；整批挂起调用必须全部决策，不能仅按工具名称批准。恢复时过滤挂起前 Reason 的重放，避免重复展示正文。标准权限下 bash 和 verify 配置为询问；full 权限和会话“始终允许”记录会影响审批行为。
+审批恢复使用原 AgentSession，并选择该会话能力模式对应的引擎；整批挂起调用必须全部决策，不能仅按工具名称批准。恢复时过滤挂起前 Reason 的重放，避免重复展示正文。标准权限下 bash 和 verify（仅超级模式提供 verify）配置为询问；full 权限和会话“始终允许”记录会影响审批行为。
 
 停止操作取消 Reactor 订阅和流，统一结束路径清理占位。取消不会撤销已写入磁盘的修改，也不能保证同步压缩调用立即返回。模型重试次数和初始延时可配置，最大尝试次数包含首次请求。
 
 ## 7 工具与上下文治理
 
+### 会话能力模式
+
+能力模式是工具可见范围的会话级预设，存入 `SessionMetadata.capabilityMode`，与 `permissionMode`（`standard`/`full` 审批权限）相互独立。三档的后端值、工具集合和模型默认值如下；沙箱与 HITL 审批在三档中都保留。
+
+| 模式 | 后端值 | 默认工具 | 默认模型 |
+|---|---|---|---|
+| 经济 | `economy` | Harness `pi` 组的 `read/write/edit/bash`，加 `ls` | `agent.modes.economy.model` |
+| 标准 | `standard` | 经济档加 `glob/grep` | `agent.modes.standard.model` |
+| 超级 | `super` | Harness 完整工具组中已配置且可用的工具，加项目启用的图表工具 | `agent.modes.super.model` |
+
+经济和标准模式会过滤 `pi` 组附带的异步 Bash 工具；自定义 Bash 工具附带的 `verify` 也只在超级模式暴露。`now`、Web、LSP、Skill、Todo、子智能体、MCP 等扩展能力只可能在超级模式中出现，仍受各自的服务级开关、集成配置和运行时可用性约束。应用没有配置 Memory provider，因此即使超级模式使用 Harness 完整工具组，也会排除 `memory`。模式不会自动放行写文件或命令：权限规则、沙箱和审批继续生效。
+
+创建会话时，`POST /api/sessions` 接收可选 `capabilityMode` 和 `model`。未传模式、或读取旧会话时，使用 `standard`；非法模式直接拒绝。未指定模型时，按该档配置的模型别名选择；别名不存在时回退应用默认模型。当前 `model.yml` 预置经济和标准为 `mimo-v2.6-flash`、超级为 `mimo-v2.6-pro`，可通过环境变量覆盖。`GET /api/meta` 的 `modeModels` 返回各档实际可选的默认模型，供创建弹窗展示。显式创建模型及聊天请求的本轮模型仍可覆盖档位默认值。
+
+`POST /api/sessions/capability` 仅在会话空闲、所属工作区当前可用且没有待处理审批时切换模式；切换同时将会话默认模型设为目标档的默认值，并保留聊天历史及审批权限。前端新建会话弹窗可选择档位和模型，聊天页可在空闲时切档，历史列表展示档位；网页与 IDEA 插件共用这些会话数据和接口。引擎在创建时按模式注册工具，聊天和审批续跑均以持久化的模式取对应引擎，无需重启后端即可切换已有会话。
+
 ### 文件和终端
 
-standard 文件工具集提供 ls/glob/grep/read/edit/write。shell-search 实验配置将目录与搜索交给同步 bash，正文仍由专用工具读取和修改。两种模式需按任务完成率、总 Token、调用次数和误改率比较，不能预设成本收益。
+经济模式的目录与内容搜索可由同步 bash 完成。比较模式需按任务完成率、总 Token、调用次数和误改率衡量，不能预设成本收益。
 
 读取工具支持分页与多焦点窗口，目录和搜索提供有界结果及续页。修改工具核对已观察文件版本并原子写入；整行修改可用 line_edits，长行局部修改可用字符串片段。工作台文件 API 与 Agent 工具是不同入口，各自检查访问边界。
 
@@ -165,7 +181,7 @@ flowchart LR
 
 默认单条预算 64,000 字符、本批 256,000 字符、预览 4,000 字符，属于软限制，不能视为 Token 上限。错误、受保护、媒体及不支持的结果有保留规则。Native Tool 模式在 ActionEnd 处理本批预算，文本 Observation 模式支持单条外置，不启用批量治理。
 
-历史通过只读 `@tool-results/<id>.txt` 恢复。标准配置可用 grep 检索当前会话归档，shell-search 不提供跨归档搜索。快照不是当前磁盘，修改前须重新确认源文件版本；未变化的同范围读取可以返回短引用。
+历史通过只读 `@tool-results/<id>.txt` 恢复。标准和超级模式可用 grep 检索当前会话归档；经济模式需已知归档 ID，再用 read 查看。快照不是当前磁盘，修改前须重新确认源文件版本；未变化的同范围读取可以返回短引用。
 
 ### 全局压缩与上下文版本
 
@@ -184,8 +200,8 @@ ContextEpoch 在历史重组、模型、端点、规则或工具定义变化时�
 | 路由 | 用途 |
 |---|---|
 | GET /api/health、GET /api/meta | 连接探测与客户端元信息 |
-| /api/sessions、/api/sessions/messages | 创建、列表、删除和历史 |
-| /api/sessions/status、/title、/permission | 会话状态、标题和权限；后两项相对 sessions 前缀 |
+| /api/sessions、/api/sessions/messages | 创建（可指定能力模式和模型）、列表、删除和历史 |
+| /api/sessions/status、/title、/permission、/capability | 会话状态、标题、审批权限和能力模式；后面三项相对 sessions 前缀 |
 | POST /api/chat/stream、POST /api/chat/cancel | 提交任务和停止 |
 | POST /api/hitl/decide | 批量决策和恢复流 |
 | /api/workspaces、/api/workspaces/roots、/children、/activate | 注册、目录浏览和默认目录；后两项相对 workspaces 前缀 |
@@ -249,6 +265,7 @@ IDEA 插件变更另运行 `idea-plugin/gradlew.bat buildPlugin verifyPluginStru
 - [后端入口](../src/main/java/com/udata/harness/App.java)
 - [对话编排](../src/main/java/com/udata/harness/service/impl/ChatServiceImpl.java)
 - [引擎装配](../src/main/java/com/udata/harness/service/impl/UserHarnessEngineServiceImpl.java)
+- [能力模式取值](../src/main/java/com/udata/harness/common/domain/CapabilityMode.java)
 - [会话仓储](../src/main/java/com/udata/harness/repository/SessionRepository.java)
 - [上下文实现](../src/main/java/com/udata/harness/common/context)
 - [前端入口](../frontend/src/App.jsx)

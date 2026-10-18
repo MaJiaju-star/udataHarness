@@ -156,8 +156,18 @@ public class SessionController {
     @Mapping("/sessions")
     public Result<SessionMetadata> create(@Header("X-User-Id") String userId,
                                           @Param(value = "title", required = false) String title,
-                                          @Param(value = "model", required = false) String model) {
-        return Result.succeed(sessionService.create(userId, title, model));
+                                          @Param(value = "model", required = false) String model,
+                                          @Param(value = "capabilityMode", required = false) String capabilityMode) {
+        return Result.succeed(sessionService.create(userId, title, model, capabilityMode));
+    }
+
+    @Post
+    @Mapping("/sessions/capability")
+    public Result<SessionMetadata> updateCapabilityMode(
+            @Header("X-User-Id") String userId,
+            @Param("sessionId") String sessionId,
+            @Param("capabilityMode") String capabilityMode) {
+        return Result.succeed(sessionService.updateCapabilityMode(userId, sessionId, capabilityMode));
     }
 
     /**

@@ -27,14 +27,16 @@ SolonCode、Solon Harness 和 `D:\code\dev-agent` 实现。
 关闭 `task` 时同一 Talent 的 `multitask` 也不可用。基础文件、同步 `bash`
 和 Web 工具仍按各自原有配置工作。工具配置在引擎创建时生效，更改后需重启后端。
 
-`agent.tools.file-profile` 默认为 `standard`，提供专用 `ls/glob/grep/read/edit/write`。
-试用 `shell-search` 时，模型用同步 `bash` 做目录列举与代码搜索，
-仍使用专用 `read`、`edit`、`write` 处理文件正文及修改。
-试验配置将 Bash 可见结果提高到 64,000 字符，减少搜索结果落盘后的恢复调用。
-这是可回退的工具集实验，不代表已经证实更省 Token；在 Windows 上 Bash 工具实际运行的
-shell 可能是 PowerShell，搜索命令须按实际环境编写。`shell-search` 没有跨所有历史归档的
-`grep(path="@tool-results")`；已知 ID 的归档仍可用 `read` 查看。比较两种模式时应同时看
-总 Token、工具调用次数、任务完成率和误改率。
+创建会话时选择能力模式；旧会话默认采用标准模式。经济模式在 Harness 的 `pi`
+工具组（`read/write/edit/bash`）上增加 `ls`，只提供
+`read/write/edit/bash/ls`；标准模式再增加 `glob/grep`；超级模式提供已启用的
+全部工具（包含按配置开放的 Web、LSP、Skill、异步 Bash 和子智能体等）。
+会话空闲且没有待审批调用时可切换，审批权限与能力模式独立。
+`agent.modes.{economy,standard,super}.model` 可指定每档默认模型别名，须与
+`agent.model.models[].name` 一致；未配置或找不到时使用应用默认模型。创建会话时
+仍可单独选模型，聊天时也可按轮覆盖。模式和模型都保存在会话元数据中。
+经济模式用 `bash` 做目录与代码搜索，Windows 上请按实际终端方言编写命令。
+比较模式成本时应同时看总 Token、工具调用次数、任务完成率和误改率。
 
 ## 上下文工具结果治理
 

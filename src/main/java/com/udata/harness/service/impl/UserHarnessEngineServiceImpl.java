@@ -1,6 +1,7 @@
 package com.udata.harness.service.impl;
 
 import com.udata.harness.common.support.AntVChartTool;
+import com.udata.harness.common.domain.CapabilityMode;
 import com.udata.harness.common.support.ChartTool;
 import com.udata.harness.common.context.ContextArtifactStore;
 import com.udata.harness.common.context.CacheAlignedCompressionInterceptor;
@@ -174,10 +175,6 @@ public class UserHarnessEngineServiceImpl implements UserHarnessEngineService {
     @Inject("${agent.tools.optional.now-enabled:false}")
     private boolean nowToolEnabled;
 
-    /** standard keeps structured search tools; shell-search delegates discovery to bash. */
-    @Inject("${agent.tools.file-profile:standard}")
-    private String fileToolProfile = "standard";
-
     /**
      * 每次新请求从持久化会话中恢复的最近消息数。
      *
@@ -320,11 +317,17 @@ public class UserHarnessEngineServiceImpl implements UserHarnessEngineService {
 
     @Override
     public HarnessEngine get(String userId, String workspaceId) {
+        return get(userId, workspaceId, CapabilityMode.STANDARD);
+    }
+
+    @Override
+    public HarnessEngine get(String userId, String workspaceId, String capabilityMode) {
+        String mode = CapabilityMode.require(capabilityMode);
         String safeUserId = UserWorkspaceService.requireUserId(userId);
         com.udata.harness.common.domain.WorkspaceMetadata workspace = workspaces.resolve(safeUserId, workspaceId);
-        String key = safeUserId + ":" + workspace.getWorkspaceId();
+        String key = safeUserId + ":" + workspace.getWorkspaceId() + ":" + mode;
         return engines.computeIfAbsent(key, ignored -> build(
-                safeUserId, workspace.getWorkspaceId(), Paths.get(workspace.getPath())));
+                safeUserId, workspace.getWorkspaceId(), Paths.get(workspace.getPath()), mode));
     }
 
     /**
@@ -383,10 +386,14 @@ public class UserHarnessEngineServiceImpl implements UserHarnessEngineService {
      * @param userId 目标用户标识
      */
     public void refreshUserCapabilities(String userId) {
-        HarnessEngine engine = get(userId);
-        engine.refreshMount("@workspace-skills");
-        engine.refreshMount("@shared-agents");
-        engine.refreshMainAgent();
+        String prefix = UserWorkspaceService.requireUserId(userId) + ":";
+        engines.forEach((key, engine) -> {
+            if (key.startsWith(prefix)) {
+                engine.refreshMount("@workspace-skills");
+                engine.refreshMount("@shared-agents");
+                engine.refreshMainAgent();
+            }
+        });
     }
 
     /**
@@ -463,8 +470,9 @@ public class UserHarnessEngineServiceImpl implements UserHarnessEngineService {
             engine.removeLspServer(name);
             if ("java".equals(name)) {
                 int separator = key.indexOf(':');
+                int modeSeparator = key.lastIndexOf(':');
                 LspServerParameters bundled = BundledJavaLsp.forWorkspace(
-                        dataDir, key.substring(0, separator), key.substring(separator + 1));
+                        dataDir, key.substring(0, separator), key.substring(separator + 1, modeSeparator));
                 if (bundled != null) {
                     engine.addLspServer("java", bundled);
                 }
@@ -493,7 +501,7 @@ public class UserHarnessEngineServiceImpl implements UserHarnessEngineService {
      * @param workspaceId 已注册工作区标识
      * @return 完整初始化的用户级 HarnessEngine
      */
-    private HarnessEngine build(String userId, String workspaceId, Path workspace) {
+    private HarnessEngine build(String userId, String workspaceId, Path workspace, String capabilityMode) {
         Path skills = workspace.resolve(".soloncode").resolve("skills");
         Path agents = Paths.get(dataDir).toAbsolutePath().normalize().resolve("capabilities").resolve("agents");
         try {
@@ -516,12 +524,12 @@ public class UserHarnessEngineServiceImpl implements UserHarnessEngineService {
         HarnessEngine.Builder builder = HarnessEngine.of(workspace.toString(), harnessHome)
                 .systemPrompt(systemPrompt + (contextToolResultsEnabled
                         ? "\nLarge tool results may be saved as read-only historical snapshots at @tool-results/<id>.txt. "
-                        + (shellSearchProfile()
+                        + (CapabilityMode.ECONOMY.equals(capabilityMode)
                         ? "Use read(file_path=\"@tool-results/<id>.txt\") when the artifact ID is known; aggregate artifact search is unavailable in this profile. "
                         : "Use grep(path=\"@tool-results\") to locate archived evidence and read(file_path=\"@tool-results/<id>.txt\") to inspect it only when needed. ")
                         + "Snapshots are not current workspace files; revalidate changed sources."
                         : "")
-                        + (shellSearchProfile()
+                        + (CapabilityMode.ECONOMY.equals(capabilityMode)
                         ? "\nFile search profile: use bash for directory listing and file/content search. Prefer rg --files and rg -n when available; otherwise use commands appropriate to the actual shell. Bound command output. Use read for file contents and edit/write for mutations."
                         : ""))
                 .maxTurns(maxTurns)
@@ -529,14 +537,23 @@ public class UserHarnessEngineServiceImpl implements UserHarnessEngineService {
                 .modelRetries(modelMaxAttempts)
                 .compressionThreshold(compressionMaxMessages, compressionMaxContextRatio)
                 .sessionProvider(sessionRepository)
-                .toolsAdd(Arrays.asList(ToolName.TOOL_ALL_PUBLIC.getName(), ToolName.TOOL_HITL.getName()))
+                .toolsAdd(CapabilityMode.SUPER.equals(capabilityMode)
+                        ? Arrays.asList(ToolName.TOOL_ALL_FULL.getName(), ToolName.TOOL_HITL.getName())
+                        : CapabilityMode.ECONOMY.equals(capabilityMode)
+                        ? Arrays.asList(ToolName.TOOL_PI.getName(), "ls", ToolName.TOOL_HITL.getName())
+                        : Arrays.asList(ToolName.TOOL_PI.getName(), "ls", "glob", "grep", ToolName.TOOL_HITL.getName()))
                 .disallowedToolsAdd(disabledWebTools())
                 .disallowedToolsAdd(disabledOptionalTools())
-                .disallowedToolsAdd(disabledFileTools())
+                .disallowedToolsAdd(CapabilityMode.SUPER.equals(capabilityMode)
+                        ? Arrays.asList("memory") // No memory provider is configured by this application.
+                        : Arrays.asList("verify", "now", "skillread", "skillrefresh",
+                                "task", "multitask", "subagent", "lsp", "todoread", "todowrite",
+                                "bash_start", "bash_wait", "bash_stop", "websearch", "codesearch", "webfetch"))
+                .disallowedToolsAdd(disabledFileTools(capabilityMode))
                 .extensionAdd((engine, agentName, agentBuilder) -> {
                     // Only replace read when AgentFactory granted the built-in read to this agent.
                     agentBuilder.modelOptions(options -> {
-                        if (!nowToolEnabled) {
+                        if (!nowToolEnabled || !CapabilityMode.SUPER.equals(capabilityMode)) {
                             // AgentFactory attaches ClockTalent unconditionally, outside the
                             // disallowed-tools check; remove it before talents activate.
                             options.talents().removeIf(item ->
@@ -571,7 +588,8 @@ public class UserHarnessEngineServiceImpl implements UserHarnessEngineService {
                         }
                         if (terminalTools.contains("bash")) {
                             options.talentAdd(new BashCaptureTalent(engine.getTerminalTalent(), contextStore,
-                                    contextBashVisibleChars, bashMaxLogBytes, engine.getWorkspace()));
+                                    contextBashVisibleChars, bashMaxLogBytes, engine.getWorkspace(),
+                                    CapabilityMode.SUPER.equals(capabilityMode)));
                         }
                         if (terminalTools.contains("write") || terminalTools.contains("edit")) {
                             options.talentAdd(new SafeMutationTalent(engine.getTerminalTalent(),
@@ -580,8 +598,8 @@ public class UserHarnessEngineServiceImpl implements UserHarnessEngineService {
                         }
                     });
                     agentBuilder.defaultInterceptorAdd(-1000, fileVersions);
-                    if (renderEchartEnabled) agentBuilder.defaultToolAdd(CHART_TOOL);
-                    if (renderAntvChartEnabled) agentBuilder.defaultToolAdd(ANTV_CHART_TOOL);
+                    if (CapabilityMode.SUPER.equals(capabilityMode) && renderEchartEnabled) agentBuilder.defaultToolAdd(CHART_TOOL);
+                    if (CapabilityMode.SUPER.equals(capabilityMode) && renderAntvChartEnabled) agentBuilder.defaultToolAdd(ANTV_CHART_TOOL);
                     if (contextOptions != null) {
                         agentBuilder.defaultInterceptorAdd(1000,
                                 new ToolResultContextInterceptor(contextStore, contextOptions, null, workspace, contextCacheConfiguration));
@@ -599,8 +617,9 @@ public class UserHarnessEngineServiceImpl implements UserHarnessEngineService {
                 .permissionRuleAdd(PermissionRule.ask("bash"))
                 .permissionRuleAdd(PermissionRule.ask("verify"))
                 .hitlEnabled(true)
-                .subagentEnabled(taskToolEnabled)
-                .bashAsyncEnabled(bashStartEnabled || bashWaitEnabled || bashStopEnabled);
+                .subagentEnabled(CapabilityMode.SUPER.equals(capabilityMode) && taskToolEnabled)
+                .bashAsyncEnabled(CapabilityMode.SUPER.equals(capabilityMode)
+                        && (bashStartEnabled || bashWaitEnabled || bashStopEnabled));
 
         if ("cache-aligned".equals(compactionMode)) {
             builder.compressionInterceptor(new CacheAlignedCompressionInterceptor(
@@ -708,15 +727,10 @@ public class UserHarnessEngineServiceImpl implements UserHarnessEngineService {
         return tools;
     }
 
-    /** Opt-in A/B surface; never infer a shell-search profile from platform alone. */
-    List<String> disabledFileTools() {
-        return shellSearchProfile() ? Arrays.asList("ls", "glob", "grep") : java.util.Collections.emptyList();
-    }
-
-    private boolean shellSearchProfile() {
-        if ("standard".equalsIgnoreCase(fileToolProfile)) return false;
-        if ("shell-search".equalsIgnoreCase(fileToolProfile)) return true;
-        throw new IllegalArgumentException("agent.tools.file-profile must be standard or shell-search");
+    /** Economy omits structured content search; standard and super retain it. */
+    List<String> disabledFileTools(String capabilityMode) {
+        if (CapabilityMode.ECONOMY.equals(capabilityMode)) return Arrays.asList("glob", "grep");
+        return java.util.Collections.emptyList();
     }
 
     /**

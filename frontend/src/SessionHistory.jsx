@@ -33,7 +33,7 @@ export default function SessionHistory({sessions, current, running, onSelect, on
                         disabled={busy || running || item.active} onChange={event => setSelected(ids => event.target.checked
                             ? [...ids, item.sessionId] : ids.filter(id => id !== item.sessionId))}/>
                     <button className="session-history-title" disabled={busy || running} onClick={() => {onSelect(item); onClose();}}>
-                        {item.title}{current?.sessionId === item.sessionId && <small>当前会话</small>}{item.active && <small>运行中</small>}</button>
+                        {item.title}<small>{{economy: "经济", standard: "标准", super: "超级"}[item.capabilityMode || "standard"]}模式</small>{current?.sessionId === item.sessionId && <small>当前会话</small>}{item.active && <small>运行中</small>}</button>
                     <button disabled={busy || running || item.active} aria-label={`删除会话 ${item.title}`}
                         onClick={() => remove([item.sessionId])}>删除</button>
                 </div>)}

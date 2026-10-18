@@ -95,6 +95,20 @@ class SessionRepositoryTest {
     }
 
     @Test
+    void persistsCapabilityModeAndKeepsApprovalPolicyIndependent() {
+        SessionRepository store = new SessionRepository(tempDir);
+        SessionMetadata session = store.create("alice", "Modes", "test-model", "default", "economy");
+        assertEquals("economy", store.read("alice", session.getSessionId()).getCapabilityMode());
+        store.updatePermissionMode("alice", session.getSessionId(), "full");
+        store.updateCapabilityMode("alice", session.getSessionId(), "super");
+        SessionMetadata reopened = new SessionRepository(tempDir).read("alice", session.getSessionId());
+        assertEquals("super", reopened.getCapabilityMode());
+        assertEquals("full", reopened.getPermissionMode());
+        assertThrows(IllegalArgumentException.class,
+                () -> store.updateCapabilityMode("alice", session.getSessionId(), "unknown"));
+    }
+
+    @Test
     void usesFirstUserPromptAsTitleWithoutOverwritingItLater() {
         SessionRepository store = new SessionRepository(tempDir);
         SessionMetadata created = store.create("alice", "新的编码任务", "test-model");

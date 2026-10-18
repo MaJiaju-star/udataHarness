@@ -1,6 +1,7 @@
 package com.udata.harness.service.impl;
 
 import com.udata.harness.common.domain.SessionMetadata;
+import com.udata.harness.common.domain.CapabilityMode;
 import com.udata.harness.common.domain.WorkspaceMetadata;
 import com.udata.harness.common.support.ActiveRunRegistry;
 import com.udata.harness.repository.SessionRepository;
@@ -11,6 +12,7 @@ import com.udata.harness.service.UserWorkspaceService;
 import org.noear.solon.Utils;
 import org.noear.solon.ai.chat.ChatConfig;
 import org.noear.solon.ai.agent.AgentSession;
+import org.noear.solon.ai.agent.react.intercept.HITL;
 import org.noear.solon.ai.chat.message.ChatMessage;
 import org.noear.solon.ai.chat.message.AssistantMessage;
 import org.noear.solon.ai.chat.message.ToolMessage;
@@ -64,6 +66,15 @@ public class SessionServiceImpl implements SessionService {
     @Inject
     private UserWorkspaceService workspaces;
 
+    @Inject("${agent.modes.economy.model:}")
+    private String economyModel;
+
+    @Inject("${agent.modes.standard.model:}")
+    private String standardModel;
+
+    @Inject("${agent.modes.super.model:}")
+    private String superModel;
+
     /**
      * 返回当前用户可见的运行时元数据。
      *
@@ -83,6 +94,11 @@ public class SessionServiceImpl implements SessionService {
         data.put("activeWorkspace", workspaces.getActive(safeUserId));
         data.put("workspaces", workspaces.list(safeUserId));
         data.put("defaultModel", engine.getDefaultModel());
+        Map<String, String> modeModels = new LinkedHashMap<>();
+        modeModels.put(CapabilityMode.ECONOMY, preferredModel(engine, economyModel));
+        modeModels.put(CapabilityMode.STANDARD, preferredModel(engine, standardModel));
+        modeModels.put(CapabilityMode.SUPER, preferredModel(engine, superModel));
+        data.put("modeModels", modeModels);
         data.put("sandboxEnabled", engines.isSandboxEnabled(safeUserId));
         List<Map<String, Object>> models = new ArrayList<>();
         for (ChatConfig config : engine.getModels()) {
@@ -126,12 +142,45 @@ public class SessionServiceImpl implements SessionService {
      */
     @Override
     public SessionMetadata create(String userId, String title, String model) {
+        return create(userId, title, model, CapabilityMode.STANDARD);
+    }
+
+    @Override
+    public SessionMetadata create(String userId, String title, String model, String capabilityMode) {
+        String mode = CapabilityMode.require(capabilityMode);
         HarnessEngine engine = engines.get(userId);
         if (Utils.isBlank(model)) {
-            model = engine.getDefaultModel();
+            model = preferredModel(engine, CapabilityMode.ECONOMY.equals(mode) ? economyModel
+                    : CapabilityMode.SUPER.equals(mode) ? superModel : standardModel);
         }
         WorkspaceMetadata workspace = workspaces.getActive(userId);
-        return sessionRepository.create(userId, title, model, workspace.getWorkspaceId());
+        return sessionRepository.create(userId, title, model, workspace.getWorkspaceId(), mode);
+    }
+
+    private String preferredModel(HarnessEngine engine, String configured) {
+        if (!Utils.isBlank(configured) && engine.getModels().stream()
+                .anyMatch(item -> configured.equals(item.getNameOrModel()))) return configured;
+        return engine.getDefaultModel();
+    }
+
+    @Override
+    public SessionMetadata updateCapabilityMode(String userId, String sessionId, String capabilityMode) {
+        String mode = CapabilityMode.require(capabilityMode);
+        if (Utils.isBlank(sessionId)) throw new IllegalArgumentException("sessionId is required");
+        SessionMetadata current = sessionRepository.read(userId, sessionId);
+        if (activeRuns.isActive(sessionId)) {
+            throw new IllegalStateException("Cannot change capability mode while the session is running");
+        }
+        if (!workspaces.getActive(userId).getWorkspaceId().equals(current.getWorkspaceId())) {
+            throw new IllegalStateException("Session belongs to another workspace");
+        }
+        if (!HITL.getPendingTasks(sessionRepository.getSession(userId, sessionId)).isEmpty()) {
+            throw new IllegalStateException("Resolve pending approval before changing capability mode");
+        }
+        HarnessEngine engine = engines.get(userId, current.getWorkspaceId(), mode);
+        String preferred = preferredModel(engine, CapabilityMode.ECONOMY.equals(mode) ? economyModel
+                : CapabilityMode.SUPER.equals(mode) ? superModel : standardModel);
+        return sessionRepository.updateCapabilityMode(userId, sessionId, mode, preferred);
     }
 
     /**
