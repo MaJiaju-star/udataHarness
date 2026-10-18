@@ -16,7 +16,7 @@ SolonCode、Solon Harness 和 `D:\code\dev-agent` 实现。
 - 可选的 Harness `task`/`multitask` 与自定义 Subagent；
 - 定时 Loop 和带状态/轮次预算的 Goal。
 
-架构与安全边界见 [docs/architecture.md](docs/architecture.md)。
+架构图与安全边界见 [docs/architecture.md](docs/architecture.md)，模块职责、数据模型、执行流程与演进方向见 [系统设计文档](docs/design.md)。
 
 ## 可选工具开关
 
