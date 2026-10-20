@@ -14,3 +14,6 @@
 /idea-plugin/.intellijPlatform/
 /idea-plugin/build/
 /idea-plugin/.kotlin/
+/output/
+/scripts/
+/.tmp/

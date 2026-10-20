@@ -40,23 +40,41 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 /** One-shot compaction using the routed conversation prefix as its summary input. */
 public final class CacheAlignedCompressionInterceptor extends ContextCompressionInterceptor {
     private static final Logger LOG = LoggerFactory.getLogger(CacheAlignedCompressionInterceptor.class);
+    private static final String[] SUMMARY_HEADINGS = {
+            "## Primary Request and Intent",
+            "## Confirmed Facts and User Constraints",
+            "## Files and Code",
+            "## Errors and Failed Attempts",
+            "## Current Work and Pending Jobs",
+            "## Next Step",
+            "## Critical Context"
+    };
+    private static final Pattern SUMMARY_HEADING = Pattern.compile("^##[ \\t]+[^#].*$");
+    private static final Pattern SUMMARY_FENCE = Pattern.compile("^ {0,3}(`{3,}|~{3,})(.*)$");
     private static final String DIRECTIVE = "You are now acting as a compaction engine for this coding assistant. "
             + "Summarize the conversation ABOVE so another model can continue the same task. "
             + "Output only the following Markdown sections, in order, using brief factual bullets. "
             + "Write (none) for an empty section.\n\n"
-            + "## Primary Request and Intent\n"
-            + "## Confirmed Facts and User Constraints\n"
-            + "## Files and Code\n"
-            + "## Errors and Failed Attempts\n"
-            + "## Current Work and Pending Jobs\n"
-            + "## Next Step\n"
-            + "## Critical Context\n\n"
+            + String.join("\n", SUMMARY_HEADINGS) + "\n\n"
             + "Preserve exact paths, identifiers, numbers, commands, user corrections, and verification evidence. "
+            + "Capture the user's latest explicitly requested unfinished work and its relationship to the overall goal. "
+            + "Record user corrections faithfully: when a later instruction supersedes an earlier one, identify the "
+            + "currently effective requirement and the requirement it replaces; do not keep both as active constraints. "
             + "If there is an earlier <compacted-summary>, merge still-valid facts instead of copying it verbatim. "
+            + "Remove stale facts, invalidated assumptions, superseded instructions, and completed pending jobs. "
+            + "Keep unresolved requested work even if it is older, and retain failed attempts needed to avoid repeating them. "
+            + "Do not present unverified assumptions as confirmed facts. "
+            + "Next Step must contain exactly one concrete, executable action, naming its target and expected result, "
+            + "directly aligned with the latest unfinished user request. If no work remains, write (none); "
+            + "do not restart completed tasks or invent additional work. "
+            + "Keep every required section exactly once and in the specified order. "
+            + "Use (none) rather than omitting a section with no applicable information. "
             + "Do not call tools. Do not mention this compression request. Output the checkpoint only.";
     private static final String PREAMBLE = "This checkpoint condenses earlier conversation. Continue the task from "
             + "the messages that follow without acknowledging the checkpoint.\n\n<compacted-summary>\n";
@@ -200,6 +218,10 @@ public final class CacheAlignedCompressionInterceptor extends ContextCompression
                 return false;
             }
             if (!intent.valid(text)) { auditFailure(trace, "missing_turn_intent"); return false; }
+            if (!validSummaryStructure(text, intent.split)) {
+                auditFailure(trace, "invalid_summary_structure");
+                return false;
+            }
             String summary = PREAMBLE + intent.protect(text.trim()) + "\n</compacted-summary>";
             if (CompressionUtil.countTokens(summary) >= tokens(prefix)) {
                 auditFailure(trace, "not_smaller");
@@ -247,6 +269,55 @@ public final class CacheAlignedCompressionInterceptor extends ContextCompression
             auditFailure(trace, e instanceof IOException ? "checkpoint_io" : "summary_request");
             return false;
         }
+    }
+
+    /** Validate the checkpoint envelope, not the semantic accuracy of its contents. */
+    static boolean validSummaryStructure(String summary) {
+        return validSummaryStructure(summary, false);
+    }
+
+    static boolean validSummaryStructure(String summary, boolean requireTurnIntent) {
+        if (summary == null || summary.trim().isEmpty()) return false;
+        int nextHeading = 0;
+        boolean inSection = false;
+        boolean hasContent = false;
+        boolean hasTurnIntent = false;
+        char fenceCharacter = 0;
+        int fenceLength = 0;
+        for (String line : summary.split("\\r?\\n", -1)) {
+            Matcher fence = SUMMARY_FENCE.matcher(line);
+            if (fence.matches()) {
+                String marker = fence.group(1);
+                if (fenceCharacter == 0) {
+                    if (!inSection) return false;
+                    fenceCharacter = marker.charAt(0);
+                    fenceLength = marker.length();
+                } else if (marker.charAt(0) == fenceCharacter && marker.length() >= fenceLength
+                        && fence.group(2).trim().isEmpty()) {
+                    fenceCharacter = 0;
+                }
+                continue;
+            }
+            if (fenceCharacter == 0 && SUMMARY_HEADING.matcher(line).matches()) {
+                if (inSection && !hasContent) return false;
+                String heading = line.trim();
+                if ("## Current Turn Intent".equals(heading)) {
+                    if (!inSection || hasTurnIntent) return false;
+                    hasTurnIntent = true;
+                } else {
+                    if (nextHeading >= SUMMARY_HEADINGS.length
+                            || !SUMMARY_HEADINGS[nextHeading].equals(heading)) return false;
+                    nextHeading++;
+                }
+                inSection = true;
+                hasContent = false;
+            } else if (!line.trim().isEmpty()) {
+                if (!inSection) return false;
+                hasContent = true;
+            }
+        }
+        return fenceCharacter == 0 && nextHeading == SUMMARY_HEADINGS.length && hasContent
+                && (!requireTurnIntent || hasTurnIntent);
     }
 
     private void auditFailure(ReActTrace trace, String code) {

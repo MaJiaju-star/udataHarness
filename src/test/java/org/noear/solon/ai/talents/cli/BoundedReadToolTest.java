@@ -31,7 +31,7 @@ class BoundedReadToolTest {
     }
 
     @Test
-    void unchangedRangeReturnsOnlyRecoverableReferenceAndChangeReadsAgain() throws IOException {
+    void unchangedRangeReturnsBodyAndKeepsRecoverableSnapshot() throws IOException {
         ContextArtifactStore store = new ContextArtifactStore(workspace.resolve("artifacts"));
         BoundedReadTool reader = new BoundedReadTool(
                 new TerminalTalent(new MountManager(workspace.toString())), workspace.toString(), store);
@@ -44,11 +44,8 @@ class BoundedReadToolTest {
         assertTrue(first.contains("3500 | class line3500"));
         assertTrue(first.contains("[文件读取完毕]"));
         String second = reader.read("source.java", 1, 4000, null, "session-a");
-        assertTrue(second.startsWith("<read-unchanged>"));
-        assertTrue(second.length() < 600);
-        assertTrue(second.contains("@tool-results/"));
-        String id = second.substring(second.indexOf("@tool-results/") + 14,
-                second.indexOf(".txt", second.indexOf("@tool-results/")));
+        assertEquals(first, second);
+        String id = snapshotId(reader, "source.java", 1, 4000, "session-a");
         assertTrue(store.restore("session-a", id, 0, first.length()).endsWith(first));
 
         assertTrue(reader.read("source.java", 2, 10, null, "session-a").contains("2 | class line2"));
@@ -96,7 +93,8 @@ class BoundedReadToolTest {
         Files.write(workspace.resolve("source.java"), source.toString().getBytes(StandardCharsets.UTF_8));
         String original = reader.read("source.java", 100, 1, null, "s");
         String reference = reader.read("source.java", 100, 1, null, "s");
-        String path = "@tool-results/" + referenceId(reference) + ".txt";
+        assertEquals(original, reference);
+        String path = "@tool-results/" + snapshotId(reader, "source.java", 100, 1, "s") + ".txt";
         String restored = reader.read(path, 1, 4000, null, "s");
 
         assertEquals(original, snapshotBody(restored));
@@ -212,7 +210,7 @@ class BoundedReadToolTest {
     }
 
     @Test
-    void unchangedPartialReadKeepsNextOffsetInShortReference() throws IOException {
+    void unchangedPartialReadKeepsBodyAndNextOffset() throws IOException {
         ContextArtifactStore store = new ContextArtifactStore(workspace.resolve("artifacts"));
         BoundedReadTool reader = new BoundedReadTool(
                 new TerminalTalent(new MountManager(workspace.toString())), workspace.toString(), store);
@@ -221,7 +219,7 @@ class BoundedReadToolTest {
         Files.write(workspace.resolve("partial.java"), content.toString().getBytes(StandardCharsets.UTF_8));
         assertTrue(reader.read("partial.java", 1, 4000, null, "session-a").contains("offset=4001"));
         assertTrue(reader.read("partial.java", 1, 4000, null, "session-a")
-                .contains("继续当前文件请用 offset=4001"));
+                .contains("offset=4001"));
     }
 
     @Test
@@ -258,8 +256,7 @@ class BoundedReadToolTest {
         assertTrue(result.contains("未展示窗口间的行"));
         String repeat = reader.readResult("methods.java", null, null, null, null,
                 null, java.util.Arrays.asList(47, 200, 40), 5, null, "s").getContent();
-        assertTrue(repeat.startsWith("<read-unchanged>"));
-        assertTrue(repeat.contains("focus_lines=[40, 47, 200]"));
+        assertEquals(result, repeat);
         assertTrue(reader.getTools(org.noear.solon.ai.chat.prompt.Prompt.of("test")).stream()
                 .anyMatch(tool -> "read".equals(tool.name()) && tool.inputSchema().contains("focus_lines")));
         org.noear.solon.ai.chat.tool.FunctionTool modelTool = reader.getTools(
@@ -300,11 +297,10 @@ class BoundedReadToolTest {
 
         assertTrue(reader.read("alias.txt", null, null, null, "session-a").contains("original body"));
         String reference = reader.read("./alias.txt", 1, BoundedReadTool.DEFAULT_LINES, null, "session-a");
-        assertTrue(reference.startsWith("<read-unchanged>"));
-        assertTrue(reference.contains("未发生变更，请参考本会话上次 read"));
-        assertFalse(reference.contains("original body"));
-        assertEquals(referenceId(reference), referenceId(
-                reader.read("@workspace/alias.txt", 1, BoundedReadTool.DEFAULT_LINES, null, "session-a")));
+        assertTrue(reference.contains("original body"));
+        assertFalse(reference.contains("read-unchanged"));
+        assertEquals(snapshotId(reader, "alias.txt", 1, BoundedReadTool.DEFAULT_LINES, "session-a"),
+                snapshotId(reader, "@workspace/alias.txt", 1, BoundedReadTool.DEFAULT_LINES, "session-a"));
         assertFalse(reader.read("alias.txt", 1, 1, null, "session-a").startsWith("<read-unchanged>"));
     }
 
@@ -315,7 +311,7 @@ class BoundedReadToolTest {
         Files.write(source, "first\nold\n".getBytes(StandardCharsets.UTF_8));
         FileTime modified = Files.getLastModifiedTime(source);
         reader.read("version.txt", 1, 1, null, "session-a");
-        assertTrue(reader.read("version.txt", 1, 1, null, "session-a").startsWith("<read-unchanged>"));
+        assertTrue(reader.read("version.txt", 1, 1, null, "session-a").contains("1 | first"));
 
         Files.write(source, "first\nnew\n".getBytes(StandardCharsets.UTF_8));
         Files.setLastModifiedTime(source, modified);
@@ -327,7 +323,7 @@ class BoundedReadToolTest {
                 "version.txt", 1, 1, null, null, null, "session-a");
         assertEquals(FileVersion.sha256(source), reference.metas().get("sourceHash"));
         assertFalse(reference.getContent().contains("SHA-256"));
-        assertTrue(reader.read("version.txt", 1, 1, null, "session-a").startsWith("<read-unchanged>"));
+        assertTrue(reader.read("version.txt", 1, 1, null, "session-a").contains("1 | first"));
         assertTrue(reader.read("version.txt", 2, 1, null, "session-a").contains("2 | new"));
     }
 
@@ -337,14 +333,15 @@ class BoundedReadToolTest {
         BoundedReadTool reader = cachedTool(store);
         Files.write(workspace.resolve("repair.txt"), "recoverable\n".getBytes(StandardCharsets.UTF_8));
         String first = reader.read("repair.txt", 1, 1, null, "session-a");
-        String oldId = referenceId(reader.read("repair.txt", 1, 1, null, "session-a"));
+        String oldId = snapshotId(reader, "repair.txt", 1, 1, "session-a");
         Files.delete(store.bodyPath("session-a", oldId));
 
         assertEquals(first, reader.read("repair.txt", 1, 1, null, "session-a"));
         String reference = reader.read("repair.txt", 1, 1, null, "session-a");
-        assertTrue(reference.startsWith("<read-unchanged>"));
-        assertFalse(oldId.equals(referenceId(reference)));
-        assertTrue(store.restore("session-a", referenceId(reference), 0, first.length()).endsWith(first));
+        assertEquals(first, reference);
+        String newId = snapshotId(reader, "repair.txt", 1, 1, "session-a");
+        assertFalse(oldId.equals(newId));
+        assertTrue(store.restore("session-a", newId, 0, first.length()).endsWith(first));
     }
 
     @Test
@@ -352,7 +349,7 @@ class BoundedReadToolTest {
         BoundedReadTool reader = cachedTool(new ContextArtifactStore(workspace.resolve("artifacts")));
         Path source = Files.createFile(workspace.resolve("empty.txt"));
         assertTrue(reader.read("empty.txt", null, null, null, "session-a").contains("文件内容为空"));
-        assertTrue(reader.read("empty.txt", null, null, null, "session-a").startsWith("<read-unchanged>"));
+        assertTrue(reader.read("empty.txt", null, null, null, "session-a").contains("文件内容为空"));
         Files.write(source, "now populated\n".getBytes(StandardCharsets.UTF_8));
         assertTrue(reader.read("empty.txt", null, null, null, "session-a").contains("1 | now populated"));
     }
@@ -387,15 +384,10 @@ class BoundedReadToolTest {
                 workspace.toString(), store);
     }
 
-    /**
-     * 从工具引用中取出可恢复的快照 ID。
-     *
-     * @param reference 未变化读取的工具结果
-     * @return 快照 ID
-     */
-    private static String referenceId(String reference) {
-        int start = reference.indexOf("@tool-results/") + "@tool-results/".length();
-        return reference.substring(start, reference.indexOf(".txt", start));
+    private static String snapshotId(BoundedReadTool reader, String path, int offset, int limit,
+                                     String sessionId) throws IOException {
+        return (String) reader.readResult(path, offset, limit, null, null, null, sessionId)
+                .metas().get("readSnapshotId");
     }
 
     @Test

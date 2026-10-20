@@ -126,6 +126,56 @@ class ToolResultContextInterceptorTest {
         assertEquals(text, differentRange.getResult());
     }
 
+    /** Real read tool must not hide body after compaction, nor build reference chains. */
+    @Test
+    void realReadReturnsBodyAfterOriginalLeavesActiveContext() throws IOException {
+        java.nio.file.Path file = directory.resolve("a.java");
+        String source = repeat("class Example {}\n", 40);
+        java.nio.file.Files.write(file, source.getBytes(java.nio.charset.StandardCharsets.UTF_8));
+        ContextArtifactStore store = new ContextArtifactStore(directory.resolve("artifacts"));
+        org.noear.solon.ai.talents.cli.BoundedReadTool reader =
+                new org.noear.solon.ai.talents.cli.BoundedReadTool(
+                        new org.noear.solon.ai.talents.cli.TerminalTalent(
+                                new org.noear.solon.ai.talents.mount.MountManager(directory.toString())),
+                        directory.toString(), store);
+        Trace trace = new Trace();
+        Map<String, Object> args = Collections.<String, Object>singletonMap("file_path", "a.java");
+        ToolResult first = reader.readResult("a.java", null, null, null, null, null, "session-test");
+        String original = first.getContent();
+        String snapshot = (String) first.metas().get("readSnapshotId");
+        trace.memory.addMessage(assistant(call("original", "read", args)),
+                ChatMessage.ofTool(first, "read", "original", false));
+        ToolResultContextInterceptor interceptor = new ToolResultContextInterceptor(store,
+                new ContextManagementOptions(10000, 20000, 20, 4000, 6000));
+        ToolExchanger repeated = new ToolExchanger("repeat", "read", args);
+        repeated.setToolResult(reader.readResult("a.java", null, null, null, null, null, "session-test"));
+        interceptor.onToolCallEnd(trace, repeated, observation(repeated), null, 1);
+        assertTrue(repeated.getResult().contains("type=\"reference\""));
+        assertFalse(repeated.getResult().contains("若该消息之后不可见"));
+
+        // Compaction removed the original body. Only a summary and prior reference remain.
+        trace.memory.clear();
+        trace.memory.addMessage(ChatMessage.ofUser("Summary: inspect a.java"),
+                assistant(call("repeat", "read", args)), observation(repeated));
+        ToolExchanger restored = new ToolExchanger("restored", "read", args);
+        restored.setToolResult(reader.readResult("a.java", null, null, null, null, null, "session-test"));
+        interceptor.onToolCallEnd(trace, restored, observation(restored), null, 1);
+        assertEquals(original, restored.getResult());
+        assertFalse(restored.getResult().contains("read-unchanged"));
+        assertTrue(reader.read("@tool-results/" + snapshot + ".txt", null, null, 0, 16000, null, "session-test")
+                .endsWith(original));
+
+        // An excerpt is not evidence that the complete original body is still visible.
+        trace.memory.clear();
+        trace.memory.addMessage(assistant(call("excerpt", "read", args)),
+                ChatMessage.ofTool(ToolResult.success("<read-projection type=\"excerpt\">preview</read-projection>"),
+                        "read", "excerpt", false));
+        ToolExchanger afterExcerpt = new ToolExchanger("after-excerpt", "read", args);
+        afterExcerpt.setToolResult(reader.readResult("a.java", null, null, null, null, null, "session-test"));
+        interceptor.onToolCallEnd(trace, afterExcerpt, observation(afterExcerpt), null, 1);
+        assertEquals(original, afterExcerpt.getResult());
+    }
+
     /** 超出 read 预算的结果被投影为带恢复说明的显式摘录，全文可从 artifact 还原。 */
     @Test
     void oversizedReadIsAnExplicitRecoverableExcerpt() throws Exception {

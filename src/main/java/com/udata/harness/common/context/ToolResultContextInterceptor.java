@@ -166,7 +166,6 @@ public class ToolResultContextInterceptor implements ReActInterceptor {
             }
         }
         if ("read".equals(exchanger.getToolName())) {
-            if (content.startsWith("<read-unchanged>")) return;
             ReadToolProjection plan = ReadToolProjection.choose(trace, exchanger, content, options.readVisibleChars);
             if (plan != null) {
                 String projection = projectRead(trace, wireId, content, plan, exchanger.getArgs(),

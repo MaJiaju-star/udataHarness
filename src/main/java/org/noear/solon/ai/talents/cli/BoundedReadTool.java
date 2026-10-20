@@ -27,8 +27,6 @@ import java.util.Map;
 import java.util.TreeSet;
 import java.util.UUID;
 import java.util.function.Consumer;
-import java.util.regex.Matcher;
-import java.util.regex.Pattern;
 
 /**
  * Bounded replacement for the Solon 4.1.1 read tool. It deliberately reuses the
@@ -44,7 +42,7 @@ import java.util.regex.Pattern;
  * </ul>
  *
  * <p>分页由调用方通过 {@code offset} 参数驱动。仅为相同会话、相同范围、
- * 内容哈希未变化的重复读取保留有界的快照索引；不同会话不可复用。</p>
+ * 内容哈希未变化的重复读取保留有界的快照索引；不同会话不可复用；索引仅复用归档件，不替代读取正文。</p>
  *
  * @see #read(String, Integer, Integer, String)
  * @see #readWindow(Path, String, int, int, long)
@@ -67,7 +65,6 @@ public final class BoundedReadTool extends AbsTalent {
     static final int SNAPSHOT_CHAR_LIMIT = 16_000;
     static final long MAX_VERSIONED_BYTES = 16L * 1024 * 1024;
     private static final int MAX_INDEX_ENTRIES = 512;
-    private static final Pattern NEXT_OFFSET = Pattern.compile("若需继续，请使用 offset=(\\d+)");
 
     private final TerminalTalent terminal;
     private final TerminalSupport support;
@@ -306,22 +303,13 @@ public final class BoundedReadTool extends AbsTalent {
                 || __sessionId.isEmpty() ? null
                 : __sessionId + '\0' + target.toRealPath() + '\0'
                 + (multiFocus ? "focus:" + anchors + ":" + radius : start + "\0" + count);
+        CachedRead cached = null;
         if (cacheKey != null) {
-            CachedRead cached;
             synchronized (snapshots) { cached = snapshots.get(cacheKey); }
-            if (cached != null && beforeVersion.equals(cached.version)) {
-                try {
-                    artifactStore.load(__sessionId, cached.artifactId);
-                    fileVersions.remember(__sessionId, target, beforeVersion);
-                    metadata.put("sourceHash", beforeVersion);
-                    return multiFocus ? unchangedMulti(filePath, anchors, radius, cached)
-                            : unchanged(filePath, start, count, cached);
-                } catch (IOException ignored) {
-                    synchronized (snapshots) { snapshots.remove(cacheKey); }
-                }
-            }
         }
-        //2. 文件变化或快照不可恢复时读取最新正文，并检查读取期间的变化。
+        // The tool cannot know which old messages remain model-visible. Always return
+        // current body here; only the context interceptor may replace it with a reference.
+        //2. 每次读取最新正文，并检查读取期间的变化。
         String output = fileSize == 0 ? "(文件内容为空)"
                 : multiFocus ? readFocusWindows(target, filePath, windows, anchors, radius, fileSize)
                 : readWindow(target, filePath, start, count, fileSize);
@@ -341,16 +329,24 @@ public final class BoundedReadTool extends AbsTalent {
         if (beforeVersion != null) metadata.put("sourceHash", beforeVersion);
         fileVersions.remember(__sessionId, target, beforeVersion);
         warmup(target);
-        //3. 只有成功落盘的正文才能成为后续引用；新快照允许修复丢失的旧快照。
+        //3. 保留可恢复的历史快照；已存在的同版本快照无需重复归档。
         if (cacheKey != null) {
             try {
+                if (cached != null && beforeVersion.equals(cached.version)) {
+                    try {
+                        artifactStore.load(__sessionId, cached.artifactId);
+                        metadata.put("readSnapshotId", cached.artifactId);
+                        return output;
+                    } catch (IOException ignored) {
+                        synchronized (snapshots) { snapshots.remove(cacheKey); }
+                    }
+                }
                 String invocation = "read-cache:v2:" + UUID.randomUUID();
                 ContextArtifactStore.Artifact artifact = artifactStore.save(
                         __sessionId, invocation, "read", output, "unchanged_read_reference", 0);
-                Matcher next = NEXT_OFFSET.matcher(output);
-                int nextOffset = !multiFocus && next.find() ? Integer.parseInt(next.group(1)) : 0;
+                metadata.put("readSnapshotId", artifact.id);
                 synchronized (snapshots) {
-                    snapshots.put(cacheKey, new CachedRead(beforeVersion, artifact.id, nextOffset));
+                    snapshots.put(cacheKey, new CachedRead(beforeVersion, artifact.id));
                     if (snapshots.size() > MAX_INDEX_ENTRIES) {
                         snapshots.remove(snapshots.keySet().iterator().next());
                     }
@@ -385,31 +381,6 @@ public final class BoundedReadTool extends AbsTalent {
             }
         }
         return lines + (sawByte && !endedInBreak ? 1 : 0);
-    }
-
-    /**
-     * 返回上次成功读取的引用，不重发文件正文。
-     *
-     * @param path 当前请求中的文件路径
-     * @param offset 归一化后的起始行
-     * @param limit 归一化后的行数上限
-     * @param cached 已确认可恢复的读取快照
-     * @return 简短引用与原续页提示
-     */
-    private static String unchanged(String path, int offset, int limit, CachedRead cached) {
-        return "<read-unchanged>\n文件 " + path + " 的 offset=" + offset + ", limit=" + limit
-                + " 未发生变更，请参考本会话上次 read 的结果。\n"
-                + "若上次正文已不在上下文中，可用 read(file_path=\"@tool-results/"
-                + cached.artifactId + ".txt\") 读取完整历史快照。"
-                + (cached.nextOffset > 0 ? "\n原读取未完；继续当前文件请用 offset=" + cached.nextOffset + "。" : "")
-                + "\n</read-unchanged>";
-    }
-
-    private static String unchangedMulti(String path, List<Integer> anchors, int radius, CachedRead cached) {
-        return "<read-unchanged>\n文件 " + path + " 的 focus_lines=" + anchors
-                + ", context_lines=" + radius + " 未发生变更，请参考本会话上次 read 的结果。\n"
-                + "若上次正文已不在上下文中，可用 read(file_path=\"@tool-results/"
-                + cached.artifactId + ".txt\") 读取完整历史快照。\n</read-unchanged>";
     }
 
     private static List<FocusWindow> focusWindows(List<Integer> anchors, int radius) {
@@ -486,12 +457,10 @@ public final class BoundedReadTool extends AbsTalent {
     private static final class CachedRead {
         final String version;
         final String artifactId;
-        final int nextOffset;
 
-        CachedRead(String version, String artifactId, int nextOffset) {
+        CachedRead(String version, String artifactId) {
             this.version = version;
             this.artifactId = artifactId;
-            this.nextOffset = nextOffset;
         }
     }
 

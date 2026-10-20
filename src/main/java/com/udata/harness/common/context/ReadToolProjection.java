@@ -93,9 +93,8 @@ final class ReadToolProjection {
                         + "-" + last(rangeWindow.lines);
                 String body = "<read-projection type=\"reference\">\n"
                         + "文件 " + display(path) + range + " 的本次读取与当前上下文中 tool_call_id="
-                        + display(previous.callId) + " 的完整结果相同；请直接复用该结果。\n"
-                        + "若该消息之后不可见，可用 read(file_path=\"@tool-results/" + ID
-                        + ".txt\") 读取本次完整快照。\n"
+                        + display(previous.callId) + " 的完整结果相同，请直接复用。\n"
+                        + "历史快照：@tool-results/" + ID + ".txt\n"
                         + "</read-projection>";
                 if (body.length() <= budget && body.length() < content.length()) {
                     return new ReadToolProjection("reference", body);

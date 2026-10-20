@@ -24,10 +24,20 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class CacheAlignedCompressionInterceptorTest {
     @TempDir Path temporary;
+    private static final String COMPLETE_SUMMARY = "## Primary Request and Intent\n- Finish the requested task.\n"
+            + "## Confirmed Facts and User Constraints\n- Preserve the public API.\n"
+            + "## Files and Code\n(none)\n"
+            + "## Errors and Failed Attempts\n(none)\n"
+            + "## Current Work and Pending Jobs\n- Verification is pending.\n"
+            + "## Next Step\n- Verify expired tokens.\n"
+            + "## Critical Context\n(none)";
+
+    private enum SummaryFixture { COMPLETE, MISSING_INTENT, MISSING_SECTION, QUOTED_INTENT }
 
     @Test
     void replaysThePreviousRequestPrefixAndAppendsOneSummaryInstruction() throws Throwable {
@@ -41,24 +51,93 @@ class CacheAlignedCompressionInterceptorTest {
 
     @Test
     void clonedHistoryStillHasTheCorrectDurableCoverageBoundary() throws Throwable {
-        verifyPrefixAndRestart(false, false, true, false);
+        verifyPrefixAndRestart(false, false, true, SummaryFixture.COMPLETE);
     }
 
     @Test
     void splitTurnRetainsShortUserConstraintsVerbatimAcrossRestart() throws Throwable {
-        verifyPrefixAndRestart(false, true, false, false);
+        verifyPrefixAndRestart(false, true, false, SummaryFixture.COMPLETE);
     }
 
     @Test
     void missingCurrentTurnIntentDoesNotCommitACompactionCheckpoint() throws Throwable {
-        verifyPrefixAndRestart(false, false, false, true);
+        verifyPrefixAndRestart(false, false, false, SummaryFixture.MISSING_INTENT);
+    }
+
+    @Test
+    void missingRequiredSectionRetainsRawHistoryAndDoesNotCommitCheckpoint() throws Throwable {
+        verifyPrefixAndRestart(false, false, false, SummaryFixture.MISSING_SECTION);
+    }
+
+    @Test
+    void quotedCurrentTurnHeadingDoesNotSatisfyMandatoryIntentProtection() throws Throwable {
+        assertFalse(CacheAlignedCompressionInterceptor.validSummaryStructure(COMPLETE_SUMMARY, true));
+        assertTrue(CacheAlignedCompressionInterceptor.validSummaryStructure(COMPLETE_SUMMARY
+                + "\n## Current Turn Intent\n- Verify expired tokens.", true));
+        verifyPrefixAndRestart(false, false, false, SummaryFixture.QUOTED_INTENT);
+    }
+
+    @Test
+    void acceptsCompleteSectionsWithExplicitEmptyValuesAndWindowsLineEndings() {
+        assertTrue(CacheAlignedCompressionInterceptor.validSummaryStructure(COMPLETE_SUMMARY));
+        assertTrue(CacheAlignedCompressionInterceptor.validSummaryStructure(COMPLETE_SUMMARY.replace("\n", "\r\n")));
+        assertTrue(CacheAlignedCompressionInterceptor.validSummaryStructure(COMPLETE_SUMMARY
+                + "\n## Current Turn Intent\n- Finish the same task."));
+    }
+
+    @Test
+    void rejectsMissingSectionsIncludingTheFirstAndLast() {
+        String[] sections = COMPLETE_SUMMARY.split("(?m)(?=^## )");
+        for (String removed : sections) {
+            assertFalse(CacheAlignedCompressionInterceptor.validSummaryStructure(COMPLETE_SUMMARY.replace(removed, "")),
+                    "Must reject an omitted section: " + removed);
+        }
+        assertFalse(CacheAlignedCompressionInterceptor.validSummaryStructure(null));
+        assertFalse(CacheAlignedCompressionInterceptor.validSummaryStructure(""));
+    }
+
+    @Test
+    void rejectsReorderedDuplicateAndUnknownSections() {
+        String[] sections = COMPLETE_SUMMARY.split("(?m)(?=^## )");
+        assertFalse(CacheAlignedCompressionInterceptor.validSummaryStructure(COMPLETE_SUMMARY
+                .replace(sections[0] + sections[1], sections[1] + sections[0])));
+        assertFalse(CacheAlignedCompressionInterceptor.validSummaryStructure(COMPLETE_SUMMARY + "\n" + sections[6]));
+        assertFalse(CacheAlignedCompressionInterceptor.validSummaryStructure(COMPLETE_SUMMARY + "\n## Extra\n- Other work."));
+        assertFalse(CacheAlignedCompressionInterceptor.validSummaryStructure(COMPLETE_SUMMARY
+                + "\n## Current Turn Intent\n- Task\n## Current Turn Intent\n- Task"));
+    }
+
+    @Test
+    void rejectsBlankSectionBodiesRatherThanTreatingTheNextHeadingAsContent() {
+        assertFalse(CacheAlignedCompressionInterceptor.validSummaryStructure(COMPLETE_SUMMARY
+                .replace("## Files and Code\n(none)", "## Files and Code\n \t")));
+        assertFalse(CacheAlignedCompressionInterceptor.validSummaryStructure(COMPLETE_SUMMARY
+                .replace("## Critical Context\n(none)", "## Critical Context\n")));
+    }
+
+    @Test
+    void distinguishesRealSectionsFromHeadingsQuotedInCode() {
+        assertFalse(CacheAlignedCompressionInterceptor.validSummaryStructure("```markdown\n" + COMPLETE_SUMMARY + "\n```"));
+        assertFalse(CacheAlignedCompressionInterceptor.validSummaryStructure(COMPLETE_SUMMARY
+                .replace("## Files and Code\n(none)", "```markdown\n## Files and Code\n(none)\n```")));
+        assertTrue(CacheAlignedCompressionInterceptor.validSummaryStructure(COMPLETE_SUMMARY
+                .replace("## Files and Code\n(none)", "## Files and Code\n```md\n## Example heading in a file\n```")));
+        assertFalse(CacheAlignedCompressionInterceptor.validSummaryStructure(COMPLETE_SUMMARY + "\n~~~\nunfinished"));
     }
 
     private void verifyPrefixAndRestart(boolean streaming) throws Throwable {
-        verifyPrefixAndRestart(streaming, false, false, false);
+        verifyPrefixAndRestart(streaming, false, false, SummaryFixture.COMPLETE);
     }
 
-    private void verifyPrefixAndRestart(boolean streaming, boolean shortIntent, boolean cloneHistory, boolean missingIntent) throws Throwable {
+    private void verifyPrefixAndRestart(boolean streaming, boolean shortIntent, boolean cloneHistory, SummaryFixture fixture) throws Throwable {
+        boolean rejectedSummary = fixture != SummaryFixture.COMPLETE;
+        String failureCode = fixture == SummaryFixture.MISSING_INTENT ? "missing_turn_intent" : "invalid_summary_structure";
+        String fixtureSummary = COMPLETE_SUMMARY
+                + (fixture == SummaryFixture.MISSING_INTENT ? "" : "\n## Current Turn Intent\n- Preserve user constraints and early findings for the retained tool work.");
+        if (fixture == SummaryFixture.MISSING_SECTION) fixtureSummary = fixtureSummary.replace("## Files and Code\n(none)\n", "");
+        if (fixture == SummaryFixture.QUOTED_INTENT) fixtureSummary = COMPLETE_SUMMARY
+                + "\n```markdown\n## Current Turn Intent\n- This is only a quoted heading.\n```";
+        final String summaryContent = fixtureSummary;
         HttpServer server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
         List<String> requests = Collections.synchronizedList(new ArrayList<>());
         AtomicInteger ordinary = new AtomicInteger();
@@ -73,8 +152,7 @@ class CacheAlignedCompressionInterceptorTest {
                 boolean summary = body.contains("acting as a compaction engine");
                 int turn = summary ? -1 : ordinary.getAndIncrement();
                 String message = summary
-                        ? "{\"role\":\"assistant\",\"content\":" + ONode.serialize(missingIntent ? "## Facts\n- Keep the task."
-                            : "## Primary Request and Intent\n- Keep the task.\n## Current Turn Intent\n- Preserve user constraints and early findings for the retained tool work.") + "}"
+                        ? "{\"role\":\"assistant\",\"content\":" + ONode.serialize(summaryContent) + "}"
                         : turn < toolTurns
                         ? "{\"role\":\"assistant\",\"content\":null,\"tool_calls\":[{\"id\":\"call-" + turn
                             + "\",\"type\":\"function\",\"function\":{\"name\":\"grep\",\"arguments\":\"{\\\"pattern\\\":\\\"x\\\"}\"}}]}"
@@ -116,7 +194,7 @@ class CacheAlignedCompressionInterceptorTest {
                     .compressionInterceptor(new CacheAlignedCompressionInterceptor(10, 0.8, 0.01, 64,
                             new CacheAlignedCompressionInterceptor.CompactionObserver() {
                                 @Override public void record(String sessionId, String model, long before, long after, boolean aligned, org.noear.solon.ai.AiUsage usage) { verifiedPrefix.set(aligned); }
-                                @Override public void failed(String sessionId, String model, String code) { if ("missing_turn_intent".equals(code)) rejected.incrementAndGet(); }
+                                @Override public void failed(String sessionId, String model, String code) { if (failureCode.equals(code)) rejected.incrementAndGet(); }
                             }))
                     .modelAdd(config).defaultModel("stub").modelRetries(1).maxTurns(6)
                     .extensionAdd((owner, name, builder) -> {
@@ -146,7 +224,7 @@ class CacheAlignedCompressionInterceptorTest {
             }
             assertTrue(summaryIndex > 1, "Expected a summary after two ordinary reasoning calls");
             assertTrue(requests.stream().noneMatch(request -> request.contains("\"udata_entry_id\"")));
-            if (missingIntent) {
+            if (rejectedSummary) {
                 assertTrue(rejected.get() > 0);
                 org.junit.jupiter.api.Assertions.assertNull(session.checkpoints().load(session.getMessages()));
                 assertTrue(requests.stream().allMatch(request -> ONode.ofJson(request).get("messages").getArray().stream()
@@ -165,6 +243,12 @@ class CacheAlignedCompressionInterceptorTest {
                 assertEquals(previousMessages.get(i).toJson(), summaryMessages.get(i).toJson());
             }
             assertEquals("user", summaryMessages.get(summaryMessages.size() - 1).get("role").getString());
+            String directive = summaryMessages.get(summaryMessages.size() - 1).get("content").getString();
+            assertTrue(directive.contains("latest explicitly requested unfinished work"));
+            assertTrue(directive.contains("currently effective requirement"));
+            assertTrue(directive.contains("Remove stale facts"));
+            assertTrue(directive.contains("exactly one concrete, executable action"));
+            assertTrue(directive.contains("Keep every required section exactly once"));
             assertTrue(verifiedPrefix.get(), "Expected final provider JSON to retain the previous prefix");
             assertTrue(requests.get(summaryIndex + 1).contains("<compacted-summary>"));
             CompactingFileAgentSession reopened = new CompactingFileAgentSession("cache-test", sessionDirectory);
