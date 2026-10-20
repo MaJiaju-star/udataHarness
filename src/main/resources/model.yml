@@ -31,7 +31,7 @@ agent:
       # 必须按实际模型别名配置单价及计费口径。未配置时费用显示未知，容量压力之外保留旧前缀。
       # models:
       #   your-model-alias:
-      #     accounting: inclusive # promptTokens 是否包含缓存读写；不包含时填写 exclusive
+      #     accounting: inclusive # 当前 SDK Usage 已包含缓存读写，无须按供应商重复加缓存
       #     currency: USD
       #     input-per-million: <普通输入单价>
       #     cache-read-per-million: <缓存读取单价>

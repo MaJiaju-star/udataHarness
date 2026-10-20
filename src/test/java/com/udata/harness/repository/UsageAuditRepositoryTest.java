@@ -40,9 +40,19 @@ class UsageAuditRepositoryTest {
         reopened.record("alice", "web-session", "ws", "model-a", pending);
 
         assertEquals(1, reopened.list("alice", null).size());
+        pending.remove("usage"); // Main-only run completion carries timing, not mixed totals.
         pending.put("type", "run_end");
         reopened.record("alice", "web-session", "ws", "model-a", pending);
         reopened.record("alice", "web-session", "ws", "model-a", pending);
+        assertEquals(2, reopened.list("alice", null).size());
+        assertTrue(!reopened.list("alice", null).get(1).containsKey("usage"));
+        Map<String, Object> child = new LinkedHashMap<>(event);
+        child.put("type", "subagent_event");
+        child.put("runId", "child");
+        reopened.record("alice", "web-session", "ws", "model-a", child);
+        child.put("type", "text_replay");
+        child.put("parentRunId", "run-1");
+        reopened.record("alice", "web-session", "ws", "model-a", child);
         assertEquals(2, reopened.list("alice", null).size());
         assertEquals(2, reopened.list("alice", "web-session").size());
         assertEquals("model-a", reopened.list("alice", null).get(0).get("selectedModel"));

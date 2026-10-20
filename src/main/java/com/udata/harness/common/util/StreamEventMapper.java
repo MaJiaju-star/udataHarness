@@ -298,7 +298,8 @@ public final class StreamEventMapper {
     }
 
     /**
-     * 将智能体整轮汇总指标写入结束事件，并计算包含工具耗时的平均输出速度。
+     * 仅传递运行耗时。框架 Metrics 含子代理用量，不能作为主 Agent 的 Token 汇总。
+     * 主 Agent 用量由独立 model_call 明细累计，避免结束时混入子代理消耗。
      *
      * @param event 目标事件字段映射
      * @param metrics 运行指标；为空时不做写入
@@ -307,20 +308,8 @@ public final class StreamEventMapper {
         if (metrics == null) {
             return;
         }
-        Map<String, Object> data = new LinkedHashMap<>();
-        data.put("promptTokens", metrics.getPromptTokens());
-        data.put("thinkTokens", metrics.getThinkTokens());
-        data.put("completionTokens", metrics.getCompletionTokens());
-        data.put("totalTokens", metrics.getTotalTokens());
-        data.put("cacheCreationInputTokens", metrics.getCacheCreationInputTokens());
-        data.put("cacheReadInputTokens", metrics.getCacheReadInputTokens());
         event.put("usageScope", "run");
-        event.put("usage", data);
         event.put("durationMs", metrics.getTotalDuration());
-        if (metrics.getTotalDuration() > 0L) {
-            double tokensPerSecond = metrics.getCompletionTokens() * 1000D / metrics.getTotalDuration();
-            event.put("tokensPerSecond", Math.round(tokensPerSecond * 10D) / 10D);
-        }
     }
 
     /**

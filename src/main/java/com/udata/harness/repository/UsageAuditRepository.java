@@ -33,8 +33,11 @@ public class UsageAuditRepository {
         String safeUserId = UserWorkspaceService.requireUserId(userId);
         String scope = String.valueOf(event.get("usageScope"));
         String type = String.valueOf(event.get("type"));
-        if (!(event.get("usage") instanceof Map)
-                || !("model_call".equals(scope) || "run".equals(scope))) return;
+        // Only main-Agent calls count. Keep run completion/timing without its
+        // framework aggregate, which includes child-Agent usage.
+        if ("subagent_event".equals(type) || event.get("parentRunId") != null) return;
+        if (!("model_call".equals(scope) || "run".equals(scope))) return;
+        if ("model_call".equals(scope) && !(event.get("usage") instanceof Map)) return;
         if ("run".equals(scope) && !("run_end".equals(type) || "error".equals(type))) return;
         String runId = String.valueOf(event.get("runId"));
         String reasonId = String.valueOf(event.get("reasonId"));
@@ -57,7 +60,7 @@ public class UsageAuditRepository {
         record.put("reasonId", "model_call".equals(scope) ? reasonId : null);
         record.put("scope", scope);
         record.put("status", "run".equals(scope) ? type : null);
-        record.put("usage", event.get("usage"));
+        if ("model_call".equals(scope)) record.put("usage", event.get("usage"));
         if ("run".equals(scope)) record.put("durationMs", event.get("durationMs"));
         try {
             Files.createDirectories(path.getParent());

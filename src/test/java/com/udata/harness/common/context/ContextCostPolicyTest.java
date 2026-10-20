@@ -22,6 +22,17 @@ class ContextCostPolicyTest {
     }
 
     @Test
+    void sdkUsageAlreadyIncludesCachesRegardlessOfLegacyAccountingConfiguration() {
+        org.noear.solon.ai.AiUsage usage = new org.noear.solon.ai.AiUsage(
+                1000, 20, 100, 1100, 100, 600, null);
+        ContextCostPolicy.Prices exclusive = new ContextCostPolicy.Prices(10, 1, 12, 20, "exclusive", "USD");
+        Map<String, Object> normalized = ContextUsage.normalize(usage, exclusive);
+        assertEquals(1000L, normalized.get("inputTokens"));
+        assertEquals(.6D, (Double) normalized.get("cacheHitRate"), 1e-12);
+        assertEquals(ContextUsage.normalize(usage, inclusive).get("estimatedCost"), normalized.get("estimatedCost"));
+    }
+
+    @Test
     void missingCacheFieldsAreUnknownButExplicitZeroIsKnown() {
         Map<String, Object> unconfigured = ContextUsage.normalize(1000, 100, 0, 0, null, ContextCostPolicy.Prices.from(new Props()));
         assertEquals(1000L, unconfigured.get("promptTokens"));

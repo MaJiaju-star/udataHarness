@@ -18,6 +18,7 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assertions.assertSame;
+import static org.junit.jupiter.api.Assertions.assertEquals;
 
 class BoundedGrepToolTest {
     @TempDir Path workspace;
@@ -87,6 +88,72 @@ class BoundedGrepToolTest {
         assertTrue(tool().grep("[", ".", null, null, null, null, null, null, null).contains("无效正则"));
         assertTrue(tool().grep("[tag]", ".", null, null, null, null, null, true, null)
                 .contains("plain.txt:1: [tag]"));
+    }
+
+    @Test
+    void summaryAndContentShowLateLiteralMatchInsteadOfUnrelatedLinePrefix() throws IOException {
+        Files.write(workspace.resolve("late.java"),
+                (repeat('x', 1500) + "before TARGET.value after" + repeat('y', 1500) + "\n")
+                        .getBytes(StandardCharsets.UTF_8));
+        for (String mode : new String[]{"summary", "content"}) {
+            String result = tool().grep("TARGET.value", ".", "*.java", mode, null,
+                    null, null, true, null);
+            assertTrue(result.contains("late.java:1:"));
+            assertTrue(result.contains("before TARGET.value after"));
+            assertTrue(result.contains("前文已省略"));
+            assertTrue(result.contains("后文已省略"));
+            assertFalse(result.contains(repeat('x', 1000)));
+            assertTrue(result.length() < 1600);
+        }
+    }
+
+    @Test
+    void regexSnippetShowsActualMatchAndReportsOversizedMatchAsPartial() throws IOException {
+        Files.write(workspace.resolve("regex.txt"),
+                (repeat('x', 1200) + "ERROR[503]" + "\nBEGIN" + repeat('z', 2000) + "END\n")
+                        .getBytes(StandardCharsets.UTF_8));
+        String exact = tool().grep("ERROR\\[\\d+\\]$", ".", "*.txt", "content", null,
+                null, null, false, null);
+        assertTrue(exact.contains("regex.txt:1:"));
+        assertTrue(exact.contains("ERROR[503]"));
+        for (String mode : new String[]{"summary", "content"}) {
+            String partial = tool().grep("BEGINz+END", ".", "*.txt", mode, null,
+                    null, null, false, null);
+            assertTrue(partial.contains("regex.txt:2: BEGIN"));
+            assertTrue(partial.contains("END"));
+            assertTrue(partial.contains("匹配过长，中间已省略"));
+            assertTrue(partial.contains("字符范围=0..2008)"));
+            assertTrue(partial.length() < 1600);
+        }
+    }
+
+    @Test
+    void whitespaceAndZeroWidthMatchesRemainVisible() throws IOException {
+        Files.write(workspace.resolve("spaces.txt"), "   \n".getBytes(StandardCharsets.UTF_8));
+        String whitespace = tool().grep("^ +$", ".", "*.txt", "content", null,
+                null, null, false, null);
+        assertTrue(whitespace.contains("spaces.txt:1:    \n"));
+        Files.write(workspace.resolve("tail.txt"),
+                (repeat('x', 1500) + "tail\n").getBytes(StandardCharsets.UTF_8));
+        String zero = tool().grep("(?<=tail)$", ".", "tail.txt", "content", null,
+                null, null, false, null);
+        assertTrue(zero.contains("tail [零宽命中，UTF-16 字符偏移=1504]"));
+    }
+
+    @Test
+    void snippetsPreserveShortLinesAndDoNotSplitEmojiAtWindowEdges() {
+        assertEquals("  中文 TARGET  ", BoundedGrepTool.matchedSnippet("  中文 TARGET  ", 5, 11, 180));
+        String text = repeat('x', 121) + "😀" + repeat('x', 27) + "TARGET" + repeat('y', 300);
+        String result = BoundedGrepTool.matchedSnippet(text, 150, 156, 63);
+        assertTrue(result.contains("TARGET"));
+        for (int i = 0; i < result.length(); i++) {
+            char value = result.charAt(i);
+            if (Character.isHighSurrogate(value)) {
+                assertTrue(i + 1 < result.length() && Character.isLowSurrogate(result.charAt(++i)));
+            } else {
+                assertFalse(Character.isLowSurrogate(value));
+            }
+        }
     }
 
     @Test

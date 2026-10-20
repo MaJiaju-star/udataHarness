@@ -25,6 +25,7 @@ import java.util.Deque;
 import java.util.Iterator;
 import java.util.List;
 import java.util.PriorityQueue;
+import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import java.util.regex.PatternSyntaxException;
 
@@ -241,8 +242,8 @@ public final class BoundedGrepTool extends AbsTalent {
                             remember(before, new ContextLine(number, contextText), context);
                             continue;
                         }
-                        boolean hit = matcher.matcher(line.text).find();
-                        if (!hit) {
+                        Matcher match = matcher.matcher(line.text);
+                        if (!match.find()) {
                             remember(before, new ContextLine(number, contextText), context);
                             continue;
                         }
@@ -250,7 +251,7 @@ public final class BoundedGrepTool extends AbsTalent {
                         if ("summary".equals(mode)) {
                             if (samples.size() < SUMMARY_SAMPLES) {
                                 samples.add(display + ":" + number + ": "
-                                        + snippet(line.text, SUMMARY_SNIPPET_CHARS));
+                                        + matchedSnippet(line.text, match.start(), match.end(), SUMMARY_SNIPPET_CHARS));
                             }
                             continue;
                         }
@@ -259,7 +260,8 @@ public final class BoundedGrepTool extends AbsTalent {
                             String key = keyPath + "#" + String.format("%010d", number);
                             if (after == null || key.compareTo(after) > 0) {
                                 Entry entry = new Entry(key,
-                                        display + ":" + number + ": " + snippet(line.text, MAX_SNIPPET_CHARS), number);
+                                        display + ":" + number + ": "
+                                                + matchedSnippet(line.text, match.start(), match.end(), MAX_SNIPPET_CHARS), number);
                                 for (ContextLine earlier : before) {
                                     entry.before.add("  " + (earlier.number - number) + " | " + earlier.text);
                                 }
@@ -423,6 +425,47 @@ public final class BoundedGrepTool extends AbsTalent {
     static String snippet(String text, int max) {
         String trimmed = text.trim();
         return trimmed.length() > max ? trimmed.substring(0, max) + "…(片段已截断)" : trimmed;
+    }
+
+    /**
+     * 展示首个实际匹配及其附近正文，不以行首代替命中依据。
+     * max 限制原文字符数；省略与位置说明另计，与普通 snippet 的截断标记保持一致。
+     * 超预算匹配仅展示其头尾并明确标记；零宽匹配报告 UTF-16 字符位置。
+     */
+    static String matchedSnippet(String text, int matchStart, int matchEnd, int max) {
+        String position = matchStart == matchEnd
+                ? " [零宽命中，UTF-16 字符偏移=" + matchStart + "]" : "";
+        if (text.length() <= max) return text + position;
+        if (matchEnd - matchStart > max) {
+            int headEnd = safeEnd(text, matchStart + max / 2);
+            int tailStart = safeStart(text, matchEnd - (max - max / 2));
+            return (matchStart > 0 ? "…" : "") + text.substring(matchStart, headEnd)
+                    + "…(匹配过长，中间已省略)…" + text.substring(tailStart, matchEnd)
+                    + (matchEnd < text.length() ? "…" : "")
+                    + " [匹配 UTF-16 字符范围=" + matchStart + ".." + matchEnd + ")";
+        }
+        int padding = (max - (matchEnd - matchStart)) / 2;
+        int start = Math.max(0, matchStart - padding);
+        start = Math.min(start, Math.max(0, text.length() - max));
+        // Moving a boundary inward avoids cutting surrogate pairs. The match itself
+        // remains included; if it starts on a low surrogate, include its leading half.
+        if (start > 0 && Character.isLowSurrogate(text.charAt(start))
+                && Character.isHighSurrogate(text.charAt(start - 1))) {
+            start += start < matchStart ? 1 : -1;
+        }
+        int end = safeEnd(text, Math.min(text.length(), Math.max(start + max, matchEnd)));
+        return (start > 0 ? "…(前文已省略)" : "") + text.substring(start, end)
+                + (end < text.length() ? "…(后文已省略)" : "") + position;
+    }
+
+    private static int safeEnd(String text, int end) {
+        return end > 0 && end < text.length() && Character.isHighSurrogate(text.charAt(end - 1))
+                && Character.isLowSurrogate(text.charAt(end)) ? end - 1 : end;
+    }
+
+    private static int safeStart(String text, int start) {
+        return start > 0 && start < text.length() && Character.isLowSurrogate(text.charAt(start))
+                && Character.isHighSurrogate(text.charAt(start - 1)) ? start + 1 : start;
     }
 
     /**

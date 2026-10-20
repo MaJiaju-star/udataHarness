@@ -13,23 +13,24 @@ export const emptyTokenUsage = () => ({
 
 const number = value => Number(value || 0);
 
+// AiUsage.promptTokens is normalized to include cache reads/writes for all providers.
+export function cacheHitRate(usage) {
+    const input = number(usage.promptTokens);
+    return input > 0 ? Math.min(100, Math.max(0, number(usage.cacheReadInputTokens) * 100 / input)) : null;
+}
+
 export function accumulateTokenUsage(current, event) {
-    if (!event?.usage || (event.type === "subagent_event" && event.usageScope === "run")) return current;
-    const usage = event.usage;
+    if (!event || event.type === "subagent_event" || event.parentRunId) return current;
     if (event.usageScope === "run") {
+        const durationMs = number(event.durationMs);
         return {
             ...current,
-            promptTokens: number(usage.promptTokens),
-            thinkTokens: number(usage.thinkTokens),
-            completionTokens: number(usage.completionTokens),
-            totalTokens: number(usage.totalTokens),
-            cacheCreationInputTokens: number(usage.cacheCreationInputTokens),
-            cacheReadInputTokens: number(usage.cacheReadInputTokens),
-            durationMs: number(event.durationMs),
-            tokensPerSecond: number(event.tokensPerSecond)
+            durationMs,
+            tokensPerSecond: durationMs > 0 ? Math.round(current.completionTokens * 10000 / durationMs) / 10 : 0
         };
     }
-    if (event.usageScope !== "model_call") return current;
+    if (event.usageScope !== "model_call" || !event.usage) return current;
+    const usage = event.usage;
     const callId = event.runId && event.reasonId ? `${event.runId}:${event.reasonId}` : null;
     if (callId && current.seenCalls[callId]) return current;
     return {
@@ -47,8 +48,10 @@ export function accumulateTokenUsage(current, event) {
 
 export function summarizeAudit(records) {
     const runs = new Map();
+    const seenCalls = new Set();
     for (const record of records || []) {
-        const runId = record.parentRunId || record.runId;
+        if (record.parentRunId || record.scope === "compaction") continue;
+        const runId = record.runId;
         if (!runId) continue;
         const row = runs.get(runId) || {
             runId, sessionId: record.sessionId, selectedModel: record.selectedModel,
@@ -58,12 +61,14 @@ export function summarizeAudit(records) {
         };
         row.timestamp = Math.max(row.timestamp, Number(record.timestamp || 0));
         if (record.scope === "model_call") {
+            const id = record.id || (record.reasonId ? `${runId}:${record.reasonId}` : null);
+            if (id && seenCalls.has(id)) continue;
+            if (id) seenCalls.add(id);
             row.modelCallCount += 1;
             for (const key of Object.keys(row.usage)) {
                 row.usage[key] += number(record.usage?.[key]);
             }
         } else if (record.scope === "run" && !record.parentRunId) {
-            row.finalUsage = record.usage;
             row.durationMs = number(record.durationMs);
             row.status = record.status || "run_end";
         }
@@ -71,7 +76,6 @@ export function summarizeAudit(records) {
     }
     return [...runs.values()].map(row => ({
         ...row,
-        usage: row.finalUsage ? {...row.usage, ...row.finalUsage} : row.usage,
-        source: row.finalUsage ? "run" : "model_call"
+        source: "model_call"
     })).sort((a, b) => b.timestamp - a.timestamp);
 }

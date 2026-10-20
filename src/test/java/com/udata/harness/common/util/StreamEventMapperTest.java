@@ -215,7 +215,7 @@ class StreamEventMapperTest {
     }
 
     @Test
-    void mapsModelUsageAndRunThroughput() {
+    void mapsModelUsageButOnlyTimingFromMixedRunMetrics() {
         AiUsage usage = new AiUsage(100, 20, 40, 160, 8, 60, null);
         ChatResponse response = (ChatResponse) Proxy.newProxyInstance(
                 ChatResponse.class.getClassLoader(),
@@ -246,10 +246,10 @@ class StreamEventMapperTest {
                 runResponse.getTrace(), runResponse)));
 
         assertEquals(2000, runEvent.get("durationMs").getInt());
-        assertEquals(20, runEvent.get("usage").get("thinkTokens").getInt());
-        assertEquals(20D, runEvent.get("tokensPerSecond").getDouble());
-        assertEquals(5, runEvent.get("usage").get("cacheCreationInputTokens").getInt());
-        assertEquals(60, runEvent.get("usage").get("cacheReadInputTokens").getInt());
+        // Framework metrics may include child Agents; never publish them as main usage.
+        assertEquals("run", runEvent.get("usageScope").getString());
+        assertFalse(runEvent.hasKey("usage"));
+        assertFalse(runEvent.hasKey("tokensPerSecond"));
     }
 
     private ChatResponse streamingResponse() {

@@ -38,6 +38,11 @@ SolonCode、Solon Harness 和 `D:\code\dev-agent` 实现。
 经济模式用 `bash` 做目录与代码搜索，Windows 上请按实际终端方言编写命令。
 比较模式成本时应同时看总 Token、工具调用次数、任务完成率和误改率。
 
+聊天框“本轮 Token”和审计台账仅累计主 Agent 已返回 Usage 的模型调用，按运行与推理 ID 去重。
+子代理自身的模型调用、压缩摘要调用不计入该汇总；运行结束只更新耗时，不使用含子代理的框架总量覆盖明细。
+主 Agent 后续请求中携带的工具或子代理返回内容仍属于该次主调用的输入。
+SDK 的输入 Token 已包含缓存读写，缓存命中率为缓存读取量除以全部输入，不重复加计缓存或思考 Token。
+
 ## 上下文工具结果治理
 
 设计与分期计划见 [docs/context-management-plan.md](docs/context-management-plan.md)。首批已在
@@ -121,7 +126,7 @@ SolonCode、Solon Harness 和 `D:\code\dev-agent` 实现。
 
 | 配置项 | 含义 |
 |---|---|
-| `accounting` | `inclusive` 表示 promptTokens 包含缓存读写；`exclusive` 表示普通输入与缓存读写分别报告 |
+| `accounting` | 建议配置 `inclusive`；当前 SDK Usage 已包含缓存读写，`exclusive` 仅用于未归一化的原始计数入口 |
 | `currency` | 三位币种代码；不同币种分别汇总 |
 | `input-per-million` | 每百万普通输入 Token 单价 |
 | `cache-read-per-million` | 每百万缓存读取 Token 单价 |

@@ -11,7 +11,7 @@ import SessionHistory from "./SessionHistory.jsx";
 import ContextPanel from "./ContextPanel.jsx";
 import ReferenceInput from "./ReferenceInput.jsx";
 import {usePageDialog} from "./usePageDialog.jsx";
-import {accumulateTokenUsage, emptyTokenUsage, summarizeAudit} from "./tokenUsage.js";
+import {accumulateTokenUsage, emptyTokenUsage, summarizeAudit, cacheHitRate} from "./tokenUsage.js";
 import {formatIdeaReference, readManualIdeaReference, withAutoReference, insertReferenceText, insertReferenceAtSelection, createReferenceReceiver} from "./ideaReferences.js";
 import {
     Activity, ArrowDown, ArrowLeft, Bot, Box, BrainCircuit, Check, ChevronDown, ChevronRight, Circle, CircleStop, Code2,
@@ -63,15 +63,6 @@ const formatTokens = value => new Intl.NumberFormat("zh-CN", {
     maximumFractionDigits: 1
 }).format(Number(value || 0));
 
-function cacheHitRate(usage, provider) {
-    const cached = Number(usage.cacheReadInputTokens || 0);
-    const prompt = Number(usage.promptTokens || 0);
-    const created = Number(usage.cacheCreationInputTokens || 0);
-    const separateCacheAccounting = String(provider || "").toLowerCase().includes("anthropic");
-    const eligible = separateCacheAccounting ? prompt + cached + created : prompt;
-    if (eligible <= 0) return null;
-    return Math.min(100, Math.max(0, cached * 100 / eligible));
-}
 const formatTime = value => value
     ? new Date(value).toLocaleString("zh-CN", {month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit"})
     : "—";
@@ -2225,15 +2216,14 @@ function Feature({icon: Icon, title, text}) {
     return <div className="feature-card"><Icon size={19}/><div><b>{title}</b><span>{text}</span></div></div>;
 }
 
-function TokenMeter({usage, contextLength, provider, running, onOpenAudit, onOpenContext}) {
+function TokenMeter({usage, contextLength, running, onOpenAudit, onOpenContext}) {
     const cacheTokens = usage.cacheReadInputTokens + usage.cacheCreationInputTokens;
-    const hitRate = cacheHitRate(usage, provider);
+    const hitRate = cacheHitRate(usage);
     const hitRateText = hitRate == null ? "—" : `${hitRate.toFixed(1)}%`;
-    const hitRateFormula = String(provider || "").toLowerCase().includes("anthropic")
-        ? "缓存读取 ÷（输入 + 缓存读取 + 缓存创建）"
-        : "缓存读取 ÷ 输入";
+    const hitRateFormula = "缓存读取 ÷ 全部输入（已包含缓存读写）";
     const speed = usage.tokensPerSecond > 0 ? `${usage.tokensPerSecond.toFixed(1)} tok/s` : "— tok/s";
     const details = [
+        "仅统计主 Agent 模型调用，不含子代理与压缩",
         `输入 ${formatTokens(usage.promptTokens)}`,
         `思考 ${formatTokens(usage.thinkTokens)}`,
         `输出 ${formatTokens(usage.completionTokens)}`,
@@ -2283,7 +2273,7 @@ function UsageAuditDialog({api, currentSessionId, onClose}) {
     return <div className="modal-backdrop token-audit-backdrop" onClick={onClose}>
         <section className="token-audit-dialog" role="dialog" aria-modal="true" aria-label="Token 审计台账"
                  onClick={event => event.stopPropagation()}>
-            <header><div><h2>Token 审计台账</h2><p>按用户持久保存；完整轮次以最终汇总为准，中断轮次按已记录调用统计。</p></div>
+            <header><div><h2>Token 审计台账</h2><p>按用户持久保存；仅累计主 Agent 已记录的模型调用，不含子代理与压缩。</p></div>
                 <button type="button" className="icon-button" aria-label="关闭" onClick={onClose}><X size={18}/></button></header>
             <div className="token-audit-controls">
                 <label><input type="checkbox" checked={sessionOnly} disabled={!currentSessionId}
