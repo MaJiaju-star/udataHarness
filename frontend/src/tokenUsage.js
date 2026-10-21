@@ -24,7 +24,8 @@ export function cacheHitRate(usage) {
     return input > 0 ? Math.min(100, Math.max(0, number(usage.cacheReadInputTokens) * 100 / input)) : null;
 }
 
-export function firstTokenLatencyText(value) {
+export function firstTokenLatencyText(value, pending = false) {
+    if (value == null && pending) return "等待中…";
     if (value == null || !Number.isFinite(value) || value < 0) return "—";
     return value < 1000 ? `${Math.round(value)} ms` : `${(value / 1000).toFixed(2)} s`;
 }
@@ -42,7 +43,12 @@ function trackFirstToken(current, event) {
         return {...current, firstTokenStartedAt: event.timestamp, firstTokenRunId: event.runId,
             firstTokenReasonId: event.reasonId, firstTokenPending: true};
     }
-    if (!current.firstTokenPending || event.runId !== current.firstTokenRunId) return current;
+    if (!current.firstTokenPending) return current;
+    if (["error", "done", "run_end", "run_pending"].includes(event.type)
+            && (!event.runId || event.runId === current.firstTokenRunId)) {
+        return {...current, firstTokenPending: false};
+    }
+    if (event.runId !== current.firstTokenRunId) return current;
     if (event.usageScope === "run" || (event.usageScope === "model_call"
             && event.reasonId === current.firstTokenReasonId)) {
         return {...current, firstTokenPending: false};

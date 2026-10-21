@@ -115,3 +115,34 @@ test("audit sums main call details, ignoring mixed legacy totals, children, and 
     assert.equal(runs[1].status, "run_end");
     assert.equal(runs[1].source, "model_call");
 });
+
+test("first-token waiting display follows main request evidence and terminal events", () => {
+    assert.equal(firstTokenLatencyText(null, true), "等待中…");
+    assert.equal(firstTokenLatencyText(0, true), "0 ms");
+    assert.equal(firstTokenLatencyText(null, false), "—");
+    for (const type of ["error", "done", "run_end", "run_pending"]) {
+        const pending = accumulateTokenUsage(emptyTokenUsage(), start);
+        const ended = accumulateTokenUsage(pending, {type, runId: "main"});
+        assert.equal(ended.firstTokenPending, false);
+        assert.equal(ended.firstTokenLatencyMs, null);
+        const later = accumulateTokenUsage(ended, {type: "text", runId: "main", content: "late", timestamp: 2000});
+        assert.equal(later.firstTokenLatencyMs, null);
+    }
+});
+
+test("plain text and thinking and tool streams without usage capture latency once and preserve cache accounting", () => {
+    for (const type of ["text", "thinking", "tool_args_delta"]) {
+        let state = accumulateTokenUsage(emptyTokenUsage(), start);
+        assert.equal(state.firstTokenPending, true);
+        state = accumulateTokenUsage(state, {type, content: "first", runId: "main", reasonId: "r1", timestamp: 1850});
+        assert.equal(state.firstTokenLatencyMs, 850);
+        assert.equal(state.firstTokenPending, false);
+        state = accumulateTokenUsage(state, {...call, reasonId: "r1"});
+        state = accumulateTokenUsage(state, {...start, reasonId: "r2", timestamp: 4000});
+        state = accumulateTokenUsage(state, {type: "text", content: "later", runId: "main", reasonId: "r2", timestamp: 5000});
+        assert.equal(state.firstTokenLatencyMs, 850);
+        assert.equal(cacheHitRate(state), 80);
+        assert.equal(state.totalTokens, 1200);
+        assert.equal(emptyTokenUsage().firstTokenLatencyMs, null);
+    }
+});

@@ -2578,7 +2578,6 @@ html[data-mode="dark"] .permission-mode-switch { background: var(--surface-2); c
 @media (max-width: 1100px) {
     .compact-composer .compact-config .desktop-thinking { display: none; }
     .composer-popover .mobile-thinking { display: flex; }
-    .compact-composer .compact-metrics .wide-cache-metric { display: none; }
 }
 @media (max-width: 600px) {
     .compact-composer.composer-wrap { padding: 8px 10px 10px; }
@@ -2597,7 +2596,6 @@ html[data-mode="dark"] .permission-mode-switch { background: var(--surface-2); c
 @container (max-width: 540px) {
     .compact-composer .compact-config .desktop-thinking { display: none; }
     .compact-composer .compact-config select { max-width: 120px; }
-    .compact-composer .compact-metrics .wide-cache-metric { display: none; }
     .compact-composer .composer-footer { flex-wrap: wrap; }
 }
 @media (max-width: 600px) {

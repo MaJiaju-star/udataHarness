@@ -637,7 +637,7 @@ function App() {
     }, []);
 
     const trackTokenUsage = useCallback(event => {
-        if (!event?.usage) return;
+        if (!event) return;
         setTokenUsage(currentUsage => accumulateTokenUsage(currentUsage, event));
     }, []);
 
@@ -1216,6 +1216,7 @@ function App() {
         } finally {
             // Keep a paused approval clock; otherwise freeze on completion, disconnect or abort.
             conversationTimer.end(body.sessionId);
+            setTokenUsage(value => value.firstTokenPending ? {...value, firstTokenPending: false} : value);
         }
     }
 
@@ -2239,10 +2240,10 @@ function TokenMeter({usage, elapsed, contextLength, running, onOpenAudit, onOpen
     const hitRateText = hitRate == null ? "—" : `${hitRate.toFixed(1)}%`;
     const hitRateFormula = "缓存读取 ÷ 全部输入（已包含缓存读写）";
     const speed = usage.tokensPerSecond > 0 ? `${usage.tokensPerSecond.toFixed(1)} tok/s` : "— tok/s";
-    const firstToken = firstTokenLatencyText(usage.firstTokenLatencyMs);
+    const firstToken = firstTokenLatencyText(usage.firstTokenLatencyMs, usage.firstTokenPending && running);
     const elapsedText = conversationElapsedText(elapsed?.elapsedMs);
     const elapsedHint = "本页发起的本轮对话耗时，由前端计时；包含请求与传输、模型及工具执行，排队和人工审批等待不计时。刷新后无法恢复；后台定时任务请查看执行记录。";
-    const firstTokenDescription = "本轮主 Agent 首次推理开始至首个文本、思考或工具参数流片段的服务端耗时；不含此前压缩、子代理与浏览器传输耗时。无流式片段时显示 —";
+    const firstTokenDescription = "本轮主 Agent 首次模型推理开始至首个非空文本、思考或工具参数流片段的服务端耗时；不含此前压缩、子代理执行及浏览器传输时间。后续模型调用不覆盖首次结果；无流式片段或提前结束时显示 —";
     const details = [
         "仅统计主 Agent 模型调用，不含子代理与压缩",
         `输入 ${formatTokens(usage.promptTokens)}`,
@@ -2253,17 +2254,16 @@ function TokenMeter({usage, elapsed, contextLength, running, onOpenAudit, onOpen
         `缓存命中率 ${hitRateText}`,
         `命中率口径 ${hitRateFormula}`,
         `整轮平均输出速度 ${speed}（输出 token ÷ 活跃执行耗时，含工具执行，不含审批挂起等待）`,
-        `首 Token ${firstToken}（${firstTokenDescription}）`,
+        `首 Token 延迟 ${firstToken}（${firstTokenDescription}）`,
         `模型上下文 ${formatTokens(contextLength)}`
     ].join(" · ");
     return <div className={`composer-token-meter compact-metrics ${running ? "running" : ""}`}>
         <b>本轮 {formatTokens(usage.totalTokens)} Token</b>
-        <span className="first-token-metric" title={firstTokenDescription}>首 Token {firstToken}</span>
+        <span className="first-token-metric" title={firstTokenDescription}>首 Token 延迟 {firstToken}</span>
         <span className="conversation-elapsed" aria-live="off" title={elapsedHint}>耗时 {elapsedText}{elapsed?.status === "paused" ? " · 待审批" : ""}</span>
-        <span className="wide-cache-metric" title={hitRateFormula}>缓存命中 {hitRateText}</span>
+        <span className="wide-cache-metric" title={hitRateFormula}>缓存命中率 {hitRateText}</span>
         <ComposerPopover label="用量详情" className="metric-details-button" trigger={<>详情<ChevronDown size={12}/></>}>
             {close => <>
-                <p>仅统计主 Agent，不含子代理与压缩。</p>
                 <dl className="usage-detail-grid">
                     {[['输入', formatTokens(usage.promptTokens)], ['输出', formatTokens(usage.completionTokens)], ['思考', formatTokens(usage.thinkTokens)],
                         ['缓存读 / 写', `${formatTokens(usage.cacheReadInputTokens)} / ${formatTokens(usage.cacheCreationInputTokens)}`],
