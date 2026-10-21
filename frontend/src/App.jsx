@@ -12,6 +12,7 @@ import ContextPanel from "./ContextPanel.jsx";
 import ToolCallHeader from "./ToolCallHeader.jsx";
 import ModelSettings from "./ModelSettings.jsx";
 import ScheduledTasks from "./ScheduledTasks.jsx";
+import ComposerPopover from "./ComposerPopover.jsx";
 import useConversationTimer from "./useConversationTimer.js";
 import {conversationElapsedText} from "./conversationTimer.js";
 import {findToolStreamIndex} from "./toolStream.js";
@@ -24,7 +25,7 @@ import {
     ClipboardPaste, Copy, Download, File, FileCode2, FilePlus2, Files, Folder, FolderOpen,
     Eye, Film, GitCompareArrows, HardDrive, Image as ImageIcon, Link2, ListTodo, Menu, MessageSquare,
     MoreHorizontal, Network, PanelLeftClose, PanelLeftOpen, PanelRightClose, Pencil, Plus, RefreshCw,
-    Save, Scissors, Search, Send, Settings2, ShieldCheck, ShieldOff, Sparkles, SquareTerminal, Trash2,
+    Save, Scissors, Search, Send, Settings2, ShieldCheck, Sparkles, SquareTerminal, Trash2,
     Upload, UserRound, X, Zap
 } from "lucide-react";
 
@@ -1773,6 +1774,15 @@ function ChatView({api, current, messages, running, stopping, onStop, models, se
     const [activeCompletion, setActiveCompletion] = useState(0);
     const [showScrollToBottom, setShowScrollToBottom] = useState(false);
     const textareaRef = useRef(null);
+    useEffect(() => {
+        const input = textareaRef.current;
+        if (!(input instanceof HTMLTextAreaElement)) return;
+        const resize = () => { input.style.height = "0px"; input.style.height = `${Math.min(156, Math.max(68, input.scrollHeight))}px`; };
+        resize();
+        const observer = new ResizeObserver(resize);
+        observer.observe(input.parentElement);
+        return () => observer.disconnect();
+    }, [prompt]);
     const promptSelectionRef = useRef(null);
     const lastInsertionRef = useRef(null);
     const rememberPromptSelection = event => {
@@ -2039,13 +2049,13 @@ function ChatView({api, current, messages, running, stopping, onStop, models, se
             <ArrowDown size={14}/><span>{running ? "AI 正在回复" : "回到底部"}</span>
         </button>}
         </div>
-        <div className="composer-wrap">
-            {pendingPrompts.length > 0 && <section className="prompt-queue" aria-label="待发送消息">
-                <div className="prompt-queue-heading" role="status" aria-live="polite">
+        <div className="composer-wrap compact-composer">
+            {pendingPrompts.length > 0 && <details className="prompt-queue" aria-label="待发送消息">
+                <summary className="prompt-queue-heading">
                     <b>待发送 · {pendingPrompts.length}</b>
                     <span>{queuePaused ? "发送已暂停" : messages.some(message => message.hitl) ? "等待处理工具审批" : running ? "当前回复结束后依次发送" : "即将发送"}</span>
-                    {queuePaused && <button type="button" className="prompt-queue-resume" onClick={onResumeQueue}>继续发送</button>}
-                </div>
+                    </summary>
+                {queuePaused && <button type="button" className="prompt-queue-resume" onClick={onResumeQueue}>继续发送</button>}
                 <ol className="prompt-queue-list">
                     {pendingPrompts.map(item => <li key={item.id}>
                         <span title={item.text}>{item.text}</span>
@@ -2055,52 +2065,7 @@ function ChatView({api, current, messages, running, stopping, onStop, models, se
                         </button>
                     </li>)}
                 </ol>
-            </section>}
-            <div className={`permission-mode-bar ${current.permissionMode === "full" ? "full" : ""}`}>
-                <div className="permission-mode-copy">
-                    {current.permissionMode === "full" ? <Zap size={15}/> : <ShieldCheck size={15}/>}
-                    <span>
-                        <b>{current.permissionMode === "full" ? "完整权限" : "标准权限"}</b>
-                        <small>{current.permissionMode === "full"
-                            ? "当前会话的工具调用自动执行，无需审批"
-                            : "敏感工具执行前会询问你的许可"}</small>
-                    </span>
-                </div>
-                <div className="permission-mode-controls">
-                    <button className={`sandbox-toggle ${sandboxEnabled ? "active" : "off"}`}
-                            type="button" role="switch" aria-checked={sandboxEnabled}
-                            disabled={running} onClick={() => onSandboxChange(!sandboxEnabled)}
-                            title="控制当前用户工作区的文件与终端沙箱">
-                        {sandboxEnabled ? <ShieldCheck size={13}/> : <ShieldOff size={13}/>}沙箱
-                        <b>{sandboxEnabled ? "开" : "关"}</b>
-                    </button>
-                    {isIdea ? <select className="idea-permission-select" aria-label="权限模式" value={current.permissionMode === "full" ? "full" : "standard"}
-                        disabled={running} title="标准权限会询问敏感操作；完整权限自动执行工具调用"
-                        onChange={event => onPermissionMode(event.target.value)}>
-                        <option value="standard">标准权限</option><option value="full">完整权限</option>
-                    </select> : <div className="permission-mode-switch" role="group" aria-label="权限模式">
-                        <button className={current.permissionMode !== "full" ? "active" : ""}
-                                disabled={running} onClick={() => onPermissionMode("standard")}>
-                            标准
-                        </button>
-                        <button className={current.permissionMode === "full" ? "active" : ""}
-                                disabled={running} onClick={() => onPermissionMode("full")}>
-                            完整权限
-                        </button>
-                    </div>}
-                </div>
-            </div>
-            <div className="capability-mode-bar">
-                <label>能力模式
-                    <select value={current.capabilityMode || "standard"} disabled={running || current.active}
-                            onChange={event => onCapabilityMode(event.target.value)}>
-                        <option value="economy">经济 · 5 个基础工具</option>
-                        <option value="standard">标准 · 增加 glob / grep</option>
-                        <option value="super">超级 · 已启用的全部工具</option>
-                    </select>
-                </label>
-                <small>控制可用工具；执行审批由权限模式单独控制</small>
-            </div>
+            </details>}
             <div className="composer-input-shell">
                 {referenceError && <div role="alert">{referenceError}</div>}
                 {isIdea && ideaContext.length > 0 && <div className="idea-context-list">
@@ -2146,34 +2111,11 @@ function ChatView({api, current, messages, running, stopping, onStop, models, se
                         </div>}
                     </div>
                 </div>}
-                {current?.sessionId && <ScheduledTasks key={current.sessionId} api={api} sessionId={current.sessionId}
-                    prompt={prompt} models={models} onViewConversation={() => scrollToBottom("smooth")}/>}
                 <div className={`composer-box ${running ? "running" : ""}`}>
-                    <div className="composer-config-bar">
-                        <label>
-                            <Bot size={13}/><span>模型</span>
-                            <select value={selectedModel} disabled={running || !models.length}
-                                    onChange={event => onModelChange(event.target.value)}>
-                                {!models.length && <option value="">请先配置模型</option>}
-                                {models.map(item => <option key={item.name} value={item.name}>
-                                    {item.label || item.name}
-                                </option>)}
-                            </select>
-                        </label>
-                        <label>
-                            <BrainCircuit size={13}/><span>思考</span>
-                            <select value={thinkingDepth} disabled={running}
-                                    onChange={event => onThinkingDepthChange(event.target.value)}>
-                                {thinkingDepthOptions.map(item => <option key={item.value} value={item.value}>
-                                    {item.label}
-                                </option>)}
-                            </select>
-                        </label>
-                    </div>
                     {fileReference && <div className="context-reference" title={fileReference}>
                         <FileCode2 size={14}/><code>{fileReference}</code>
                     </div>}
-                    <ComposerInput ref={textareaRef} value={prompt}
+                    <ComposerInput ref={textareaRef} value={prompt} rows={2}
                               placeholder="输入任务，使用 / Skill、@ 文件或目录、# SubAgent…"
                               onSelect={rememberPromptSelection}
                               onBlur={event => {
@@ -2213,19 +2155,48 @@ function ChatView({api, current, messages, running, stopping, onStop, models, se
                                   }
                               }}/>
                     <div className="composer-footer">
-                        {running && <button className="composer-stop-button" type="button" disabled={stopping} onClick={onStop}>
-                            <CircleStop size={14}/>{stopping ? "正在停止…" : "停止"}
-                        </button>}
+                    <div className="composer-config-bar compact-config">
+                        <label>
+                            <Bot size={13}/><span>模型</span>
+                            <select aria-label="对话模型" value={selectedModel} disabled={running || !models.length}
+                                    onChange={event => onModelChange(event.target.value)}>
+                                {!models.length && <option value="">请先配置模型</option>}
+                                {models.map(item => <option key={item.name} value={item.name}>
+                                    {item.label || item.name}
+                                </option>)}
+                            </select>
+                        </label>
+                        <label className="desktop-thinking">
+                            <BrainCircuit size={13}/><span>思考</span>
+                            <select aria-label="思考深度" value={thinkingDepth} disabled={running}
+                                    onChange={event => onThinkingDepthChange(event.target.value)}>
+                                {thinkingDepthOptions.map(item => <option key={item.value} value={item.value}>
+                                    {item.label}
+                                </option>)}
+                            </select>
+                        </label>
+                    </div>
                         <div className="composer-tools">
-                            <button className={`reference-toggle ${referenceEnabled ? "active" : ""}`}
-                                    type="button"
-                                    aria-pressed={referenceEnabled}
-                                    title={referenceEnabled ? "关闭自动引用" : "开启自动引用"}
-                                    onClick={toggleReference}>
-                                <Link2 size={13}/>{isIdea ? "自动引用" : "引用"}
-                            </button>
-                            <span><Activity size={14}/>{running ? "正在执行任务" : "/ Skill · @ 文件/目录 · # SubAgent"}</span>
+                            <button className={`reference-toggle ${referenceEnabled ? "active" : ""}`} type="button"
+                                aria-label="自动引用" aria-pressed={referenceEnabled} title={referenceEnabled ? "关闭自动引用" : "开启自动引用"} onClick={toggleReference}><Link2 size={15}/></button>
+                            <ComposerPopover label="对话设置" className={`composer-settings-button ${current.permissionMode === "full" || !sandboxEnabled ? "caution" : ""}`}
+                                trigger={<><Settings2 size={15}/><span className="composer-safety-status">{current.permissionMode === "full" ? "自动执行" : "需审批"} · 沙箱{sandboxEnabled ? "开" : "关"}</span></>}>
+                                <label>能力模式<select value={current.capabilityMode || "standard"} disabled={running || current.active} onChange={event => onCapabilityMode(event.target.value)}>
+                                    <option value="economy">经济 · 5 个基础工具</option><option value="standard">标准 · 增加 glob / grep</option><option value="super">超级 · 已启用的全部工具</option>
+                                </select></label>
+                                <label>权限模式<select value={current.permissionMode === "full" ? "full" : "standard"} disabled={running} onChange={event => onPermissionMode(event.target.value)}>
+                                    <option value="standard">标准 · 敏感操作需审批</option><option value="full">完整权限 · 工具自动执行</option>
+                                </select></label>
+                                <label className="composer-sandbox-label">工作区沙箱<button type="button" role="switch" aria-label="工作区沙箱" aria-checked={sandboxEnabled} disabled={running}
+                                    className={sandboxEnabled ? "enabled" : "caution"} onClick={() => onSandboxChange(!sandboxEnabled)}>{sandboxEnabled ? "已开启" : "已关闭"}</button></label>
+                                <label className="mobile-thinking">思考深度<select aria-label="思考深度" value={thinkingDepth} disabled={running} onChange={event => onThinkingDepthChange(event.target.value)}>
+                                    {thinkingDepthOptions.map(item => <option key={item.value} value={item.value}>{item.label}</option>)}
+                                </select></label>
+                                <p>能力模式控制可用工具；权限模式控制执行审批。{running ? "执行期间暂不可修改。" : "设置对当前会话生效，沙箱对当前用户工作区生效。"}</p>
+                            </ComposerPopover>
+                            {current?.sessionId && <ScheduledTasks key={current.sessionId} api={api} sessionId={current.sessionId} prompt={prompt} models={models} onViewConversation={() => scrollToBottom("smooth")}/>}
                         </div>
+                        {running && <button className="composer-stop-button" type="button" disabled={stopping} onClick={onStop} aria-label="停止生成"><CircleStop size={16}/><span>{stopping ? "停止中" : "停止"}</span></button>}
                         <button className="send-button" onClick={submit} disabled={!prompt.trim() || !models.length}
                                 aria-label={running || pendingPrompts.length > 0 ? "加入待发送队列" : "发送消息"}
                                 title={running || pendingPrompts.length > 0 ? "加入待发送队列" : "发送消息"}>
@@ -2272,19 +2243,23 @@ function TokenMeter({usage, elapsed, contextLength, running, onOpenAudit, onOpen
         `首 Token ${firstToken}（${firstTokenDescription}）`,
         `模型上下文 ${formatTokens(contextLength)}`
     ].join(" · ");
-    return <div className={`composer-token-meter ${running ? "running" : ""}`} role="status" title={details}>
-        <Activity size={15}/>
-        <b>本轮 {formatTokens(usage.totalTokens)} tokens</b>
-        <span>输入 {formatTokens(usage.promptTokens)}</span>
-        <span>输出 {formatTokens(usage.completionTokens)}</span>
-        <span>缓存 {formatTokens(cacheTokens)}</span>
-        <span>命中 {hitRateText}</span>
-        <span title="输出 token ÷ 活跃执行耗时，含工具执行，不含审批挂起等待">整轮 {speed}</span>
-        <span title={firstTokenDescription}>首 Token {firstToken}</span>
+    return <div className={`composer-token-meter compact-metrics ${running ? "running" : ""}`}>
+        <b>本轮 {formatTokens(usage.totalTokens)} Token</b>
+        <span className="first-token-metric" title={firstTokenDescription}>首 Token {firstToken}</span>
         <span className="conversation-elapsed" aria-live="off" title={elapsedHint}>耗时 {elapsedText}{elapsed?.status === "paused" ? " · 待审批" : ""}</span>
-        <i>上下文 {formatTokens(contextLength)}</i>
-        <button type="button" className="token-audit-button" onClick={onOpenAudit}>审计台账</button>
-        <button type="button" className="token-audit-button" disabled={!onOpenContext} onClick={onOpenContext}>上下文观察</button>
+        <span className="wide-cache-metric" title={hitRateFormula}>缓存命中 {hitRateText}</span>
+        <ComposerPopover label="用量详情" className="metric-details-button" trigger={<>详情<ChevronDown size={12}/></>}>
+            {close => <>
+                <p>仅统计主 Agent，不含子代理与压缩。</p>
+                <dl className="usage-detail-grid">
+                    {[['输入', formatTokens(usage.promptTokens)], ['输出', formatTokens(usage.completionTokens)], ['思考', formatTokens(usage.thinkTokens)],
+                        ['缓存读 / 写', `${formatTokens(usage.cacheReadInputTokens)} / ${formatTokens(usage.cacheCreationInputTokens)}`],
+                        ['缓存总量', formatTokens(cacheTokens)], ['缓存命中率', hitRateText], ['整轮平均速度', speed], ['当前上下文', formatTokens(contextLength)]].map(([name, value]) => <div key={name}><dt>{name}</dt><dd>{value}</dd></div>)}
+                </dl>
+                <p title={details}>命中率：{hitRateFormula}。整轮速度含工具执行，不含审批等待。</p>
+                <footer><button type="button" onClick={() => { close(); onOpenAudit(); }}>审计台账</button><button type="button" disabled={!onOpenContext} onClick={() => { close(); onOpenContext(); }}>上下文观察</button></footer>
+            </>}
+        </ComposerPopover>
     </div>;
 }
 

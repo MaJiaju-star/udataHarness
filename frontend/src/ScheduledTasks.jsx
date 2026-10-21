@@ -48,16 +48,9 @@ export default function ScheduledTasks({api, sessionId, prompt = "", models = []
     const view = () => { setOpen(false); onViewConversation?.(); };
     const field = (key, value) => setForm(old => ({...old, [key]: value}));
     return <div className="scheduled-tasks">
-        <div className="schedule-toolbar">
-            <button type="button" className="schedule-launch" onClick={() => { setOpen(true); setForm(null); }}>
-                <Clock3 size={14}/>定时任务{data.tasks.length > 0 && <span>{data.tasks.length}</span>}
-            </button>
-            <small>绑定本对话 · 由后台执行</small>
-        </div>
-        {data.tasks.length > 0 && <div className="schedule-strip">{data.tasks.slice(0, 3).map(task => <button type="button" className="schedule-mini" key={task.id}
-            onClick={() => { setOpen(true); setForm(null); }}>
-            <Clock3 size={14}/><span><b>{task.name}</b><small>{task.activeRunId ? statuses[task.lastStatus] : task.pendingAt ? "等待会话空闲" : task.enabled ? `下次 ${stamp(task.nextRunAt, task.timezone)}` : task.kind === "once" && task.lastStatus === "succeeded" ? "已完成" : "已暂停"}</small></span>
-        </button>)}</div>}
+        <button type="button" className="schedule-launch" aria-label={`定时任务${data.tasks.length ? `，${data.tasks.length} 个计划` : ""}`} title="定时任务" onClick={() => { setOpen(true); setForm(null); }}>
+            <Clock3 size={15}/>{data.tasks.length > 0 && <span>{data.tasks.length}</span>}
+        </button>
         {open && createPortal(<ScheduleDialog onClose={() => setOpen(false)} busy={busy} contentKey={form ? form.id || "new" : "list"}>
             <header><div><span className="eyebrow">CONVERSATION AUTOMATIONS</span><h2 id="schedule-dialog-title">对话定时任务</h2><p>到点发送执行指令，沿用本对话的上下文、工作区和工具权限。</p></div>
                 <button type="button" aria-label="关闭定时任务" onClick={() => setOpen(false)}><X size={19}/></button></header>
