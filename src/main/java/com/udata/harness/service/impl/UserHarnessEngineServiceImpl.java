@@ -595,6 +595,8 @@ public class UserHarnessEngineServiceImpl implements UserHarnessEngineService {
                                 "bash_start", "bash_wait", "bash_stop", "websearch", "codesearch", "webfetch"))
                 .disallowedToolsAdd(disabledFileTools(capabilityMode))
                 .extensionAdd((engine, agentName, agentBuilder) -> {
+                    agentBuilder.defaultInterceptorAdd(Integer.MIN_VALUE,
+                            new com.udata.harness.common.support.GatewaySessionHeaderInterceptor());
                     // Only replace read when AgentFactory granted the built-in read to this agent.
                     agentBuilder.modelOptions(options -> {
                         if (!nowToolEnabled || !CapabilityMode.SUPER.equals(capabilityMode)) {

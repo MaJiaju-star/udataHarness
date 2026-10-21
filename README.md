@@ -209,6 +209,12 @@ $env:AGENT_PROVIDER='openai'
 已指定模型的会话保留选择；删除或停用后须重新选择，不自动改用其他服务。
 模型测试会发送一次简短真实请求，可能产生用量；测试失败不会保存配置，错误信息不回显服务端原始敏感正文。
 
+所有 Agent 模型 HTTP 请求自动携带 `session-id: <根对话 ID>`，用于网关缓存路由及审计。
+同一对话的多轮提问、工具循环、重试、压缩以及 `task` / `multitask` 子代理保持相同值；
+新建对话使用新 ID，重启后继续已有对话仍使用原 ID。后台连接测试每次使用独立的 `test-<UUID>`。
+请求头由后端执行上下文动态设置，不写入提示词，不改变主 Agent 的 Token 统计口径，也不保证一定命中缓存。
+子代理根 ID 的传递使用本项目对 Solon AI 4.1.1 `TaskTalent` 的局部适配；升级 SDK 时需保留该传递逻辑。
+
 API Key 直接以明文保存在个人 `models.json` 中，接口不回传已保存的密钥；留空保留，勾选清除可移除。
 无需主密钥文件或额外环境变量，迁移时复制数据目录即可。旧版加密配置保留模型信息，
 后台会提示重新填写 API Key；保存前该模型不参与调用，原密文文件不会被删除。
@@ -229,7 +235,16 @@ mvn package -DskipTests
 java -jar target/udata-harness.jar
 ```
 
-Windows 启动时默认要求 PowerShell 7（`pwsh.exe` 在服务进程的 `PATH` 中）；
+Windows 可双击项目根目录的 `启动.bat`，自动查找同目录或 `target` 下的 `udata-harness.jar`。
+分发时将 `启动.bat` 与 `udata-harness.jar` 放在同一目录即可。
+脚本依次使用同目录 `runtime/bin/java.exe`、`JAVA_HOME/bin/java.exe`、`PATH` 中的 Java，
+在脚本所在目录运行，启动失败时保留窗口显示错误。脚本最多等待 120 秒，检测到页面可访问后自动用默认浏览器打开
+`http://127.0.0.1:8080/`；探测直连本机、不使用系统代理，诊断记录保存在脚本旁的 `browser-start.log`。超时可手动打开。若使用其他端口，可设置 `UDATA_HARNESS_URL` 为对应网址
+（该变量仅影响浏览器打开地址，不修改服务端口）。
+运行期间保持窗口开启，按 `Ctrl+C` 停止。脚本默认设置 `SOLON_AI_CLI_SHELL=powershell`，
+使用 Windows PowerShell；如果启动前已设置该环境变量，则保留原值。
+
+直接使用 `java -jar` 在 Windows 启动时默认要求 PowerShell 7（`pwsh.exe` 在服务进程的 `PATH` 中）；
 Harness 会在创建终端前探测版本并选用 `pwsh`。找不到可用的 PowerShell 7 时启动会给出明确错误，
 不会静默使用 PowerShell 5.1。需要改用其他终端时，可在启动前设置
 `SOLON_AI_CLI_SHELL=powershell` 或 `SOLON_AI_CLI_SHELL=cmd`；

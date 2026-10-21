@@ -110,8 +110,10 @@ class ModelConfigurationServiceTest {
     @Test void testConnectionUsesDraftAndRetainedKeyWithoutSavingIt() throws Exception {
         com.sun.net.httpserver.HttpServer server = com.sun.net.httpserver.HttpServer.create(new java.net.InetSocketAddress("127.0.0.1", 0), 0);
         List<String> auth = new ArrayList<>();
+        List<String> gatewaySessions = new ArrayList<>();
         server.createContext("/v1/chat/completions", exchange -> {
             auth.add(exchange.getRequestHeaders().getFirst("Authorization"));
+            gatewaySessions.add(exchange.getRequestHeaders().getFirst("session-id"));
             byte[] response = ("{\"id\":\"test\",\"object\":\"chat.completion\",\"choices\":[{\"index\":0,\"message\":{\"role\":\"assistant\",\"content\":\"OK\"},\"finish_reason\":\"stop\"}]}").getBytes(StandardCharsets.UTF_8);
             exchange.getResponseHeaders().set("Content-Type", "application/json");
             exchange.sendResponseHeaders(200, response.length); exchange.getResponseBody().write(response); exchange.close();
@@ -124,6 +126,9 @@ class ModelConfigurationServiceTest {
             input.put("id", id); input.put("apiKey", "");
             assertEquals(true, service.testConnection("alice", input).get("success"));
             assertEquals("Bearer fake-test-key", auth.get(0));
+            assertTrue(gatewaySessions.get(0).matches("test-[a-f0-9-]{36}"));
+            assertEquals(true, service.testConnection("alice", input).get("success"));
+            assertNotEquals(gatewaySessions.get(0), gatewaySessions.get(1));
             assertEquals(revision, service.revision("alice"));
         } finally { server.stop(0); }
     }

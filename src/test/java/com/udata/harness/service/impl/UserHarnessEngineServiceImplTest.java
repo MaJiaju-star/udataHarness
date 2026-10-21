@@ -45,6 +45,8 @@ class UserHarnessEngineServiceImplTest {
         inject(service, "model", "deepseek-v4-flash");
 
         assertNotNull(service.get("alice"));
+        assertTrue(service.get("alice").getMainAgent().getConfig().getDefaultOptions().getInterceptors().stream()
+                .anyMatch(item -> item.target instanceof com.udata.harness.common.support.GatewaySessionHeaderInterceptor));
         org.junit.jupiter.api.Assertions.assertNull(service.get("alice").getMainAgent().getConfig().getDefaultOptions().getTool("context_restore"));
         org.junit.jupiter.api.Assertions.assertNull(service.get("alice").getMainAgent().getConfig().getDefaultOptions().getTool("context_search"));
         org.junit.jupiter.api.Assertions.assertNull(service.get("alice").getMainAgent().getConfig().getDefaultOptions().getTool("context_task_update"));

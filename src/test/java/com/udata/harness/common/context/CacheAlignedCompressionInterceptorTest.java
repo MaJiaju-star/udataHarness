@@ -144,10 +144,12 @@ class CacheAlignedCompressionInterceptorTest {
         AtomicBoolean verifiedPrefix = new AtomicBoolean();
         AtomicInteger clones = new AtomicInteger();
         AtomicInteger rejected = new AtomicInteger();
+        List<String> gatewaySessions = Collections.synchronizedList(new ArrayList<>());
         int toolTurns = shortIntent ? 3 : 2;
         server.createContext("/v1/chat/completions", exchange -> {
             try {
                 String body = read(exchange.getRequestBody());
+                gatewaySessions.add(exchange.getRequestHeaders().getFirst("session-id"));
                 requests.add(body);
                 boolean summary = body.contains("acting as a compaction engine");
                 int turn = summary ? -1 : ordinary.getAndIncrement();
@@ -198,6 +200,8 @@ class CacheAlignedCompressionInterceptorTest {
                             }))
                     .modelAdd(config).defaultModel("stub").modelRetries(1).maxTurns(6)
                     .extensionAdd((owner, name, builder) -> {
+                        builder.defaultInterceptorAdd(Integer.MIN_VALUE,
+                                new com.udata.harness.common.support.GatewaySessionHeaderInterceptor());
                         builder.defaultToolAdd(new SearchFixture(shortIntent ? 260 : 20));
                         if (cloneHistory) builder.defaultInterceptorAdd(-10000, new org.noear.solon.ai.agent.react.ReActInterceptor() {
                             @Override public void onReasonStart(org.noear.solon.ai.agent.react.ReActTrace trace, StringBuilder prompt) {
@@ -223,6 +227,8 @@ class CacheAlignedCompressionInterceptorTest {
                 if (requests.get(i).contains("acting as a compaction engine")) summaryIndex = i;
             }
             assertTrue(summaryIndex > 1, "Expected a summary after two ordinary reasoning calls");
+            assertEquals(requests.size(), gatewaySessions.size());
+            assertTrue(gatewaySessions.stream().allMatch("cache-test"::equals), "Compression and reasoning must keep the same routing ID");
             assertTrue(requests.stream().noneMatch(request -> request.contains("\"udata_entry_id\"")));
             if (rejectedSummary) {
                 assertTrue(rejected.get() > 0);

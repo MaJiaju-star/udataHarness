@@ -1,0 +1,334 @@
+/*
+ * Copyright 2017-2026 noear.org and authors
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ * https://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+package org.noear.solon.ai.harness.agent;
+
+import com.udata.harness.common.support.GatewaySessionHeaderInterceptor;
+
+import org.noear.snack4.ONode;
+import org.noear.solon.Utils;
+import org.noear.solon.ai.agent.AgentEvent;
+import org.noear.solon.ai.agent.AgentSession;
+import org.noear.solon.ai.agent.react.ReActAgent;
+import org.noear.solon.ai.agent.react.ReActTrace;
+import org.noear.solon.ai.agent.react.RunEndEvent;
+import org.noear.solon.ai.agent.session.InMemoryAgentSession;
+import org.noear.solon.ai.annotation.ToolMapping;
+import org.noear.solon.ai.chat.ChatSession;
+import org.noear.solon.ai.chat.prompt.Prompt;
+import org.noear.solon.ai.chat.talent.AbsTalent;
+import org.noear.solon.ai.harness.HarnessEngine;
+import org.noear.solon.annotation.Body;
+import org.noear.solon.annotation.Param;
+import org.noear.solon.core.util.Assert;
+import org.noear.solon.core.util.RunUtil;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import reactor.core.publisher.FluxSink;
+
+import java.util.ArrayList;
+import java.util.List;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.atomic.AtomicReference;
+
+/**
+ * 子代理才能
+ *
+ * 将子代理能力暴露为可调用的工具（Claude Code Subagent 类似实现）
+ *
+ * @author bai
+ * @since 3.9.5
+ */
+public class TaskTalent extends AbsTalent {
+    private static final Logger LOG = LoggerFactory.getLogger(TaskTalent.class);
+
+    public static final String TOOL_TASK = "task";
+    public static final String TOOL_MULTITASK = "multitask";
+
+    private final HarnessEngine engine;
+
+    public TaskTalent(HarnessEngine engine) {
+        this.engine = engine;
+    }
+
+    @Override
+    public String description() {
+        return "多任务调度专家：将复杂任务拆解并委派给专项子代理（如 explore, plan, bash 等），支持并行处理以提高效率。";
+    }
+
+    @Override
+    public String getInstruction(Prompt prompt) {
+        StringBuilder sb = new StringBuilder();
+
+        sb.append("## 当前可用的子代理\n");
+        sb.append("<available_agents>\n");
+        for (AgentDefinition agentDefinition : engine.getAgentManager().getAgents()) {
+            sb.append(String.format("  - \"%s\": %s\n", agentDefinition.getName(), agentDefinition.getDescription()));
+        }
+        sb.append("</available_agents>\n\n");
+
+        int maxTasks = engine.getMultitaskMaxTasks();
+        sb.append("## 任务分配策略：\n");
+        sb.append("1. **优先并行**: 当任务可以被拆分为互不干扰的独立单元（例如：不同的模块开发、多路搜索）时，**必须**使用 `multitask` 以节省时间。单次建议 2-" + maxTasks + " 个单元。\n");
+        sb.append("2. **原子性**: 每个子任务应具备明确的边界。\n");
+        sb.append("3. **上下文感知**: 必须在 prompt 中提供任务所需的全部背景，子代理无法看到主会话的完整历史。\n");
+        sb.append("4. **分批执行**: 如需处理超过 " + maxTasks + " 个任务，请分批调用 `multitask`（每批最多 " + maxTasks + " 个），避免 API 限流与结果过长。\n");
+
+        return sb.toString();
+    }
+
+    @ToolMapping(name = TOOL_TASK, description =
+            "委派单一任务给专项子代理。适用于需要深度思考、多步操作或特定领域知识（如文件操作、代码分析）的场景。不支持并行调用（并行请用 multitask）。")
+    public String task(@Body SingleTaskOp taskSpec, String __cwd, String __sessionId) {
+        if (Assert.isEmpty(__sessionId)) {
+            throw new IllegalStateException("__sessionId is required");
+        }
+
+        AgentSession __parentSession = engine.getSession(__sessionId);
+        ReActTrace __parentTrace = ReActTrace.getCurrent(__parentSession.getContext());
+
+        MultiTaskOp taskOp = new MultiTaskOp();
+        taskOp.agent_name = taskSpec.agent_name;
+        taskOp.description = taskSpec.description;
+        taskOp.prompt = taskSpec.prompt;
+
+        return taskDo(__parentTrace, __cwd, __sessionId, __parentSession, taskOp, 1, false, Utils.uuid());
+    }
+
+    @ToolMapping(name = TOOL_MULTITASK, description =
+            "并行执行多个互不依赖的子任务。要求任务之间必须没有资源竞争（例如：不同的模块开发、多路搜索）。")
+    public String multitask(@Param(name = "tasks", description = "任务列表") List<MultiTaskOp> tasks, String __cwd, String __sessionId) {
+        if (Assert.isEmpty(tasks)) {
+            return "WARNING: 任务列表为空";
+        }
+
+        if (Assert.isEmpty(__sessionId)) {
+            throw new IllegalStateException("__sessionId is required");
+        }
+
+
+        AgentSession __parentSession = engine.getSession(__sessionId);
+        ReActTrace __parentTrace = ReActTrace.getCurrent(__parentSession.getContext());
+
+        if (__parentTrace == null) {
+            if (LOG.isWarnEnabled()) {
+                LOG.warn("任务接收[{}, __parentTrace=null]：{}", __sessionId, ONode.serialize(tasks));
+            }
+        } else {
+            if (LOG.isDebugEnabled()) {
+                LOG.debug("任务接收[{}]：{}", __sessionId, ONode.serialize(tasks));
+            }
+        }
+
+
+        List<CompletableFuture<String>> futures = new ArrayList<>();
+
+        for (MultiTaskOp task : tasks) {
+            CompletableFuture<String> future = CompletableFuture.supplyAsync(() ->
+                    taskDo(__parentTrace, __cwd, __sessionId, __parentSession, task, tasks.size(), true, Utils.uuid()), RunUtil.io());
+            futures.add(future);
+        }
+
+        String result = CompletableFuture.allOf(futures.toArray(new CompletableFuture[0]))
+                .thenApply(v -> {
+                    StringBuilder compositeResult = new StringBuilder();
+                    compositeResult.append("<multitask_results>\n");
+                    for (CompletableFuture<String> f : futures) {
+                        compositeResult.append(f.join()).append("\n");
+                    }
+                    compositeResult.append("</multitask_results>");
+                    return compositeResult.toString();
+                })
+                .exceptionally(ex -> "ERROR: Multitask aggregate failed: " + ex.getMessage())
+                .join();
+
+        if (LOG.isDebugEnabled()) {
+            LOG.debug("任务完成[{}]：{} 个全部完成", __sessionId, tasks.size());
+        }
+
+        return result;
+    }
+
+    private String taskDo(ReActTrace __parentTrace, String __cwd, String __sessionId, AgentSession __parentSession, MultiTaskOp task, int count, boolean isMultitask, String taskId) {
+        AgentDefinition agentDefinition = engine.getAgentManager().getAgent(task.agent_name);
+        if (agentDefinition == null) {
+            return "ERROR: 未知的子代理类型 '" + task.agent_name + "'。";
+        }
+
+        if (LOG.isDebugEnabled()) {
+            LOG.debug("任务开始[{}/{} - {}]: {}", task.index, count, task.agent_name, ONode.serialize(task));
+        }
+
+        String modelSelected = __parentSession.getContext().getAs(HarnessEngine.CTX_MODEL_SELECTED);
+
+        ReActAgent agent = engine.getAgentBuilder(agentDefinition, modelSelected).build();
+        final AgentSession session = InMemoryAgentSession.of(agent.name());
+        // Local Solon 4.1.1 adaptation: route child requests by the root conversation.
+        GatewaySessionHeaderInterceptor.inherit(__parentSession, session);
+
+        String result = null;
+        Prompt originalPrompt = Prompt.of(task.prompt);
+        originalPrompt.attrs().computeIfAbsent(ChatSession.ATTR_SESSIONID,
+                k -> session.getSessionId());
+
+        try {
+            AtomicReference<Throwable> errRef = new AtomicReference<>();
+
+            if (__parentTrace == null || __parentTrace.getOptions() == null || __parentTrace.getOptions().getStreamSink() == null) {
+                // 同步模式
+                RunEndEvent agentEnd = (RunEndEvent) agent.prompt(originalPrompt)
+                        .session(session)
+                        .options(o -> {
+                            o.toolContextPut(HarnessEngine.ATTR_CWD, __cwd);
+                            o.toolContextPut(ChatSession.ATTR_SESSIONID, __sessionId);
+                        })
+                        .stream()
+                        .doOnError(err -> {
+                            errRef.set(err);
+                        })
+                        .blockLast();
+
+                if (errRef.get() != null) {
+                    throw errRef.get();
+                }
+
+                if (agentEnd == null) {
+                    throw new IllegalStateException("子代理未正常完成：未收到未收到正常响应");
+                }
+
+                if (__parentTrace != null) {
+                    __parentTrace.getMetrics().addMetrics(agentEnd.getMetrics());
+                }
+
+                result = agentEnd.getText();
+            } else {
+                // 流式模式
+                final FluxSink<AgentEvent> sink = __parentTrace.getOptions().getStreamSink();
+
+                RunEndEvent agentEnd = (RunEndEvent) agent.prompt(originalPrompt)
+                        .session(session)
+                        .options(o -> {
+                            o.toolContextPut(HarnessEngine.ATTR_CWD, __cwd);
+                            o.toolContextPut(ChatSession.ATTR_SESSIONID, __sessionId);
+                        })
+                        .stream()
+                        .takeUntil(r -> sink.isCancelled())
+                        .doOnNext(chunk -> {
+                            // 父流已取消时停止向主会话灌 chunk，避免取消后仍重复输出
+                            if (sink.isCancelled()) {
+                                return;
+                            }
+                            // multitask 并发时串行化 sink.next，避免非线程安全的 FluxSink 丢事件/乱序
+                            emitTaskChunk(sink, new TaskWrapEvent(__parentTrace, taskId, task, isMultitask, chunk));
+                        })
+                        .doOnError(err -> {
+                            errRef.set(err);
+                        })
+                        .blockLast();
+
+                if (errRef.get() != null) {
+                    throw errRef.get();
+                }
+
+                if (agentEnd == null) {
+                    if (sink.isCancelled()) {
+                        throw new IllegalStateException("主代理已暂停");
+                    }
+                    throw new IllegalStateException("子代理未正常完成：未收到正常响应");
+                }
+
+                __parentTrace.getMetrics().addMetrics(agentEnd.getMetrics());
+                result = agentEnd.getText();
+            }
+
+
+            if (LOG.isDebugEnabled()) {
+                LOG.debug("任务成功[{}/{} - {}]: {}", task.index, count, task.agent_name, task.description);
+            }
+
+            return formatTaskResp(task, true, result, isMultitask);
+        } catch (Throwable e) {
+            LOG.error("任务失败[{}/{} - {}]: {}", task.index, count, task.agent_name, e.getMessage(), e);
+
+            result = String.format("ERROR: 任务执行失败: %s", e.getMessage());
+
+            return formatTaskResp(task, false, result, isMultitask);
+        }
+    }
+
+    /**
+     * 向父会话 sink 推送子代理 chunk。
+     * multitask 并发时对同一 sink 加锁，保证 next 串行。
+     */
+    private void emitTaskChunk(FluxSink<AgentEvent> sink, TaskWrapEvent wrapChuck) {
+        synchronized (sink) {
+            if (!sink.isCancelled()) {
+                sink.next(wrapChuck);
+            }
+        }
+    }
+
+    private String formatTaskResp(MultiTaskOp task, boolean successful, String result, boolean isMultitask) {
+        StringBuilder buf = new StringBuilder();
+
+        buf.append("<task_result>");
+        if (isMultitask) {
+            buf.append("<index>").append(task.index).append("</index>");
+        }
+        buf.append("<description>").append(task.description).append("</description>");
+        buf.append("<agent_name>").append(task.agent_name).append("</agent_name>");
+        buf.append("<result_status>").append(successful ? "success" : "failure").append("</result_status>");
+        buf.append("<result_content><![CDATA[").append(result != null ? result : "").append("]]></result_content>");
+        buf.append("</task_result>");
+
+        return buf.toString();
+    }
+
+    public static class SingleTaskOp {
+        @Param(name = "agent_name", description = "子代理名称")
+        public String agent_name;
+        @Param(name = "prompt", description = "发给子代理的详细指令。由于子代理是无状态的（上下文隔离），必须在此提供任务所需的所有背景信息、具体要求及预期输出格式。")
+        public String prompt;
+        @Param(name = "description", description = "任务内容的极简摘要（如：'重构用户认证逻辑'）。该描述将作为标签出现在执行日志和结果摘要中，用于快速识别任务意图。")
+        public String description;
+
+        @Override
+        public String toString() {
+            return "SingleTaskOp{" +
+                    "agent_name='" + agent_name + '\'' +
+                    ", description='" + description + '\'' +
+                    '}';
+        }
+    }
+
+    /**
+     * 任务定义
+     */
+    public static class MultiTaskOp extends SingleTaskOp {
+        @Param(name = "index",
+                description = "任务唯一序号，每个任务分配唯一的递增整数（从1开始），以便匹配返回结果",
+                defaultValue = "1")
+        public int index = 1;
+
+        @Override
+        public String toString() {
+            return "MultiTaskOp{" +
+                    "index='" + index + '\'' +
+                    "agent_name='" + agent_name + '\'' +
+                    ", description='" + description + '\'' +
+                    '}';
+        }
+    }
+}

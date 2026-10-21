@@ -220,10 +220,14 @@ public class ModelConfigurationService {
             if (!string(input.get("apiKey")).isEmpty()) selected.setApiKey(string(input.get("apiKey")));
         }
         long started = System.nanoTime();
+        final String testSessionId = "test-" + UUID.randomUUID();
         Map<String, Object> result = new LinkedHashMap<>();
         try {
             org.noear.solon.ai.chat.ChatResponse response = ChatModel.of(selected).timeout(Duration.ofSeconds(20)).build()
-                    .prompt("Reply only OK.").options(options -> options.optionSet("max_tokens", 32)).call();
+                    .prompt("Reply only OK.").options(options -> {
+                        options.optionSet("max_tokens", 32);
+                        options.httpCustomizeAdd(http -> com.udata.harness.common.support.GatewaySessionHeaderInterceptor.apply(http, testSessionId));
+                    }).call();
             if (response == null || response.getError() != null) throw new IllegalStateException("Invalid response");
             result.put("success", true); result.put("message", "连接成功，模型已返回响应");
         } catch (Exception e) {
