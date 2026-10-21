@@ -11,6 +11,14 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class ActiveRunRegistryTest {
     @Test
+    void staleScheduledOwnerCannotCancelALaterInteractiveRun() {
+        ActiveRunRegistry registry = new ActiveRunRegistry();
+        assertTrue(registry.begin("session", "old-schedule")); registry.end("session");
+        assertTrue(registry.begin("session"));
+        assertFalse(registry.cancelOwned("session", "old-schedule"));
+        assertTrue(registry.isActive("session")); assertFalse(registry.wasStopped("session"));
+    }
+    @Test
     void stopCancelsUpstreamCompletesSseAndReleasesSession() {
         ActiveRunRegistry registry = new ActiveRunRegistry();
         AtomicBoolean upstreamCancelled = new AtomicBoolean();

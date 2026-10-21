@@ -20,6 +20,10 @@ public interface ChatService {
      */
     Flux<String> chat(String userId, ChatRequest request);
 
+    default Flux<String> chatScheduled(String userId, ChatRequest request, String executionId) {
+        return chat(userId, request);
+    }
+
     /**
      * 将用户决策应用到待审批工具，并从 Harness 暂停点继续运行。
      *

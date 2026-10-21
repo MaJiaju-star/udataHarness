@@ -26,6 +26,8 @@ public class ActiveRunRegistry {
      */
     private final ConcurrentHashMap<String, Subscription> subscriptions = new ConcurrentHashMap<>();
     private static class Cancellation {
+        final String owner;
+        Cancellation(String owner) { this.owner = owner; }
         final Sinks.Empty<Void> signal = Sinks.empty();
         volatile boolean stopped;
     }
@@ -38,9 +40,30 @@ public class ActiveRunRegistry {
      * @return 之前未在运行时返回 true
      */
     public synchronized boolean begin(String sessionId) {
+        return begin(sessionId, null);
+    }
+
+    public synchronized boolean begin(String sessionId, String owner) {
         if (!active.add(sessionId)) return false;
-        cancellations.put(sessionId, new Cancellation());
+        cancellations.put(sessionId, new Cancellation(owner));
         return true;
+    }
+
+    /** A background job may only cancel the run it owns, never a later interactive run. */
+    public boolean cancelOwned(String sessionId, String owner) {
+        Cancellation current; Subscription subscription;
+        synchronized (this) {
+            current = cancellations.get(sessionId);
+            if (current == null || owner == null || !owner.equals(current.owner)) return false;
+            current.stopped = true; subscription = subscriptions.get(sessionId);
+        }
+        current.signal.tryEmitEmpty();
+        if (subscription != null) subscription.cancel();
+        return true;
+    }
+
+    public boolean wasStopped(String sessionId) {
+        Cancellation current = cancellations.get(sessionId); return current != null && current.stopped;
     }
 
     public <T> Flux<T> cancellable(String sessionId, Flux<T> source) {

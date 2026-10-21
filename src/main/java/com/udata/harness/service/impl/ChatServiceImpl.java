@@ -99,6 +99,8 @@ public class ChatServiceImpl implements ChatService {
     @Inject
     private ActiveRunRegistry activeRuns;
 
+    @Inject private com.udata.harness.common.support.ScheduledRunEvents scheduledRunEvents;
+
     /**
      * 用户工作区服务，用于校验会话工作区并解析工作目录。
      */
@@ -128,6 +130,16 @@ public class ChatServiceImpl implements ChatService {
      * @return 逐事件发射的 SSE JSON 字符串流；校验失败时返回单条 error 事件
      */
     public Flux<String> chat(String userId, ChatRequest request) {
+        return chatInternal(userId, request, null);
+    }
+
+    @Override
+    public Flux<String> chatScheduled(String userId, ChatRequest request, String executionId) {
+        if (isBlank(executionId)) throw new IllegalArgumentException("executionId is required");
+        return chatInternal(userId, request, executionId);
+    }
+
+    private Flux<String> chatInternal(String userId, ChatRequest request, String executionId) {
         //1. 校验请求参数，并把 userId 归一化为可安全用于目录名与归属比较的形式。
         validate(request);
         userId = UserWorkspaceService.requireUserId(userId);
@@ -139,7 +151,7 @@ public class ChatServiceImpl implements ChatService {
             // Apply saved model changes before this new run occupies the active registry.
             engines.get(userId, before.getWorkspaceId(), before.getCapabilityMode());
         } catch (RuntimeException e) { return Flux.just(StreamEventMapper.error(e.getMessage())); }
-        if (!activeRuns.begin(sessionId)) {
+        if (!activeRuns.begin(sessionId, executionId)) {
             return Flux.just(StreamEventMapper.error("This session is already running"));
         }
 
@@ -164,8 +176,12 @@ public class ChatServiceImpl implements ChatService {
         //3. 解析本轮模型与思考深度并持久化到会话快照，再交出执行。
         String selectedModel = isBlank(request.getModel()) ? metadata.getModel() : request.getModel().trim();
         String thinkingDepth = normalizeThinkingDepth(request.getThinkingDepth());
-        rememberRunOptions(session, selectedModel, thinkingDepth);
-        return run(
+        try {
+            rememberRunOptions(session, selectedModel, thinkingDepth);
+            session.getContext().put(com.udata.harness.common.support.ScheduledRunEvents.SESSION_KEY,
+                    executionId == null ? "" : executionId);
+            if (executionId != null) session.updateSnapshot();
+            return run(
                 userId,
                 session,
                 promptWithContext,
@@ -173,6 +189,11 @@ public class ChatServiceImpl implements ChatService {
                 thinkingDepth,
                 isFullPermission(metadata),
                 null);
+        } catch (RuntimeException e) {
+            activeRuns.end(sessionId);
+            session.getContext().put(com.udata.harness.common.support.ScheduledRunEvents.SESSION_KEY, "");
+            return Flux.just(StreamEventMapper.error(e.getMessage()));
+        }
     }
 
     /**
@@ -197,7 +218,8 @@ public class ChatServiceImpl implements ChatService {
             AgentSession session = sessionRepository.getSession(userId, request.getSessionId());
             SessionMetadata metadata = sessionRepository.read(userId, request.getSessionId());
             requireActiveWorkspace(userId, metadata);
-            if (!activeRuns.begin(request.getSessionId())) {
+            if (!activeRuns.begin(request.getSessionId(), session.getContext().getAs(
+                    com.udata.harness.common.support.ScheduledRunEvents.SESSION_KEY))) {
                 return Flux.just(StreamEventMapper.error("This session is already running"));
             }
             lockedSessionId = request.getSessionId();
@@ -274,6 +296,7 @@ public class ChatServiceImpl implements ChatService {
             String suspendedReasonId) {
         //1. 确保持有活动运行占位；已有占位说明本会话正在运行，直接拒绝。
         String sessionId = session.getSessionId();
+        final String executionId = session.getContext().getAs(com.udata.harness.common.support.ScheduledRunEvents.SESSION_KEY);
         if (!activeRuns.isActive(sessionId) && !activeRuns.begin(sessionId)) {
             return Flux.just(StreamEventMapper.error("This session is already running"));
         }
@@ -296,7 +319,19 @@ public class ChatServiceImpl implements ChatService {
                 .doOnSubscribe(subscription -> activeRuns.bind(sessionId, subscription))
                 .transform(source -> activeRuns.cancellable(sessionId, source))
                 .doOnComplete(() -> sessionRepository.touch(userId, sessionId))
-                .doFinally(signal -> activeRuns.end(sessionId));
+                .doOnNext(event -> { if (scheduledRunEvents != null) scheduledRunEvents.event(executionId, event); })
+                .doFinally(signal -> {
+                    boolean stopped = activeRuns.wasStopped(sessionId);
+                    boolean pending = session.isPending() || !HITL.getPendingTasks(session).isEmpty();
+                    try {
+                        if (executionId != null && !executionId.isEmpty() && !pending) {
+                            session.getContext().put(com.udata.harness.common.support.ScheduledRunEvents.SESSION_KEY, ""); session.updateSnapshot();
+                        }
+                    } finally {
+                        if (scheduledRunEvents != null) scheduledRunEvents.ended(executionId, stopped ? "CANCEL" : signal.name(), pending);
+                        activeRuns.end(sessionId);
+                    }
+                });
     }
 
     /**

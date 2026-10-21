@@ -11,6 +11,7 @@ import SessionHistory from "./SessionHistory.jsx";
 import ContextPanel from "./ContextPanel.jsx";
 import ToolCallHeader from "./ToolCallHeader.jsx";
 import ModelSettings from "./ModelSettings.jsx";
+import ScheduledTasks from "./ScheduledTasks.jsx";
 import {findToolStreamIndex} from "./toolStream.js";
 import ReferenceInput from "./ReferenceInput.jsx";
 import {usePageDialog} from "./usePageDialog.jsx";
@@ -2133,6 +2134,8 @@ function ChatView({api, current, messages, running, stopping, onStop, models, se
                         </div>}
                     </div>
                 </div>}
+                {current?.sessionId && <ScheduledTasks key={current.sessionId} api={api} sessionId={current.sessionId}
+                    prompt={prompt} models={models} onViewConversation={() => scrollToBottom("smooth")}/>}
                 <div className={`composer-box ${running ? "running" : ""}`}>
                     <div className="composer-config-bar">
                         <label>
