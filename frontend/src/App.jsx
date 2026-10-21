@@ -12,6 +12,8 @@ import ContextPanel from "./ContextPanel.jsx";
 import ToolCallHeader from "./ToolCallHeader.jsx";
 import ModelSettings from "./ModelSettings.jsx";
 import ScheduledTasks from "./ScheduledTasks.jsx";
+import useConversationTimer from "./useConversationTimer.js";
+import {conversationElapsedText} from "./conversationTimer.js";
 import {findToolStreamIndex} from "./toolStream.js";
 import ReferenceInput from "./ReferenceInput.jsx";
 import {usePageDialog} from "./usePageDialog.jsx";
@@ -598,6 +600,7 @@ function App() {
     const [workspacePickerOpen, setWorkspacePickerOpen] = useState(false);
     const [globalSearch, setGlobalSearch] = useState(null);
     const [tokenUsage, setTokenUsage] = useState(emptyTokenUsage);
+    const conversationTimer = useConversationTimer(userId, current?.sessionId);
     const [selectedModel, setSelectedModel] = useState("");
     const [createSessionOpen, setCreateSessionOpen] = useState(false);
     const [newSessionMode, setNewSessionMode] = useState("standard");
@@ -1188,21 +1191,29 @@ function App() {
     }, []);
 
     async function stream(path, body, messageId, controller) {
-        const response = await fetch(path, {
-            method: "POST",
-            headers: {"Content-Type": "application/json", "X-User-Id": userId,
-                ...(workspaceIdRef.current ? {"X-Workspace-Id": workspaceIdRef.current} : {})},
-            body: JSON.stringify(body),
-            signal: controller.signal
-        });
-        if (!response.ok || !response.body) throw new Error(await response.text() || "流式连接不可用");
-        let failed = false;
-        await readEventStream(response.body, event => {
-            if (event.type === "error") failed = true;
-            trackTokenUsage(event);
-            mutateAssistant(messageId, event);
-        });
-        return failed;
+        if (path === "/api/chat/stream") conversationTimer.begin(body.sessionId);
+        else if (path === "/api/hitl/decide") conversationTimer.resume(body.sessionId);
+        try {
+            const response = await fetch(path, {
+                method: "POST",
+                headers: {"Content-Type": "application/json", "X-User-Id": userId,
+                    ...(workspaceIdRef.current ? {"X-Workspace-Id": workspaceIdRef.current} : {})},
+                body: JSON.stringify(body),
+                signal: controller.signal
+            });
+            if (!response.ok || !response.body) throw new Error(await response.text() || "流式连接不可用");
+            let failed = false;
+            await readEventStream(response.body, event => {
+                conversationTimer.event(body.sessionId, event);
+                if (event.type === "error") failed = true;
+                trackTokenUsage(event);
+                mutateAssistant(messageId, event);
+            });
+            return failed;
+        } finally {
+            // Keep a paused approval clock; otherwise freeze on completion, disconnect or abort.
+            conversationTimer.end(body.sessionId);
+        }
     }
 
     async function sendPrompt(item) {
@@ -1517,6 +1528,7 @@ function App() {
                               models={meta?.models || []} selectedModel={selectedModel}
                               thinkingDepth={thinkingDepth}
                               tokenUsage={tokenUsage}
+                              conversationElapsed={conversationTimer.view}
                               contextLength={activeModel?.contextLength || 1000000}
                               provider={activeModel?.provider}
                               sandboxEnabled={meta?.sandboxEnabled !== false}
@@ -1747,7 +1759,7 @@ function activeFileReference(path, selection) {
 
 function ChatView({api, current, messages, running, stopping, onStop, models, selectedModel, thinkingDepth, ideaContext = [], onRemoveContext,
                       pendingPrompts = [], onCancelPending, queuePaused, onResumeQueue,
-                      tokenUsage, contextLength, provider, sandboxEnabled,
+                      tokenUsage, conversationElapsed, contextLength, provider, sandboxEnabled,
                       onModelChange, onThinkingDepthChange, onSend, onCreate, onDecide,
                       onPermissionMode, onCapabilityMode, onSandboxChange, onOpenFile}) {
     const [prompt, setPrompt] = useState("");
@@ -2222,7 +2234,7 @@ function ChatView({api, current, messages, running, stopping, onStop, models, se
                     </div>
                 </div>
             </div>
-            <TokenMeter usage={tokenUsage} contextLength={contextLength}
+            <TokenMeter usage={tokenUsage} elapsed={conversationElapsed} contextLength={contextLength}
                         provider={provider} running={running} onOpenAudit={() => setAuditOpen(true)}
                         onOpenContext={current?.sessionId ? () => setContextOpen(true) : null}/>
             {contextOpen && current?.sessionId && <ContextPanel key={current.sessionId} api={api}
@@ -2237,13 +2249,15 @@ function Feature({icon: Icon, title, text}) {
     return <div className="feature-card"><Icon size={19}/><div><b>{title}</b><span>{text}</span></div></div>;
 }
 
-function TokenMeter({usage, contextLength, running, onOpenAudit, onOpenContext}) {
+function TokenMeter({usage, elapsed, contextLength, running, onOpenAudit, onOpenContext}) {
     const cacheTokens = usage.cacheReadInputTokens + usage.cacheCreationInputTokens;
     const hitRate = cacheHitRate(usage);
     const hitRateText = hitRate == null ? "—" : `${hitRate.toFixed(1)}%`;
     const hitRateFormula = "缓存读取 ÷ 全部输入（已包含缓存读写）";
     const speed = usage.tokensPerSecond > 0 ? `${usage.tokensPerSecond.toFixed(1)} tok/s` : "— tok/s";
     const firstToken = firstTokenLatencyText(usage.firstTokenLatencyMs);
+    const elapsedText = conversationElapsedText(elapsed?.elapsedMs);
+    const elapsedHint = "本页发起的本轮对话耗时，由前端计时；包含请求与传输、模型及工具执行，排队和人工审批等待不计时。刷新后无法恢复；后台定时任务请查看执行记录。";
     const firstTokenDescription = "本轮主 Agent 首次推理开始至首个文本、思考或工具参数流片段的服务端耗时；不含此前压缩、子代理与浏览器传输耗时。无流式片段时显示 —";
     const details = [
         "仅统计主 Agent 模型调用，不含子代理与压缩",
@@ -2267,6 +2281,7 @@ function TokenMeter({usage, contextLength, running, onOpenAudit, onOpenContext})
         <span>命中 {hitRateText}</span>
         <span title="输出 token ÷ 活跃执行耗时，含工具执行，不含审批挂起等待">整轮 {speed}</span>
         <span title={firstTokenDescription}>首 Token {firstToken}</span>
+        <span className="conversation-elapsed" aria-live="off" title={elapsedHint}>耗时 {elapsedText}{elapsed?.status === "paused" ? " · 待审批" : ""}</span>
         <i>上下文 {formatTokens(contextLength)}</i>
         <button type="button" className="token-audit-button" onClick={onOpenAudit}>审计台账</button>
         <button type="button" className="token-audit-button" disabled={!onOpenContext} onClick={onOpenContext}>上下文观察</button>
