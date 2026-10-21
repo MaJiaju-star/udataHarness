@@ -2637,3 +2637,20 @@ html[data-mode="dark"] .permission-mode-switch { background: var(--surface-2); c
 .chat-layout { min-width: 0; grid-template-columns: minmax(0, 1fr); }
 .tool-group-heading { min-width: 0; }
 .workspace-shell { grid-template-columns: minmax(0, 1fr); }
+
+/* Compact standalone thinking/tool cards; expanded content keeps a readable width. */
+.thinking-card, .tool-call { width: min(100%, 380px); max-width: 380px; margin-block: 6px; border-radius: 10px; }
+.thinking-card.is-open, .tool-call.is-open { width: min(100%, 640px); max-width: 640px; }
+.thinking-card > button, .tool-call > .tool-heading { padding: 8px 10px; gap: 8px; }
+.thinking-icon, .tool-heading .tool-icon { flex: 0 0 24px; width: 24px; height: 24px; border-radius: 6px; }
+.thinking-title b { font-size: 11px; line-height: 16px; }
+.thinking-title small { font-size: 11px; line-height: 15px; }
+.thinking-card > button > svg { flex-shrink: 0; width: 14px; height: 14px; }
+.thinking-status { padding: 3px 5px; }
+.thinking-content { gap: 8px; margin: 0 10px 10px 20px; }
+.thinking-card:not(.is-open) .thinking-content { margin-block: 0; }
+.tool-call .tool-heading-title { flex-wrap: nowrap; gap: 6px; }
+.tool-call .tool-heading-target { flex-basis: auto; font-size: 11px; line-height: 18px; }
+.tool-call .tool-heading-detail { margin-top: 2px; line-height: 15px; }
+.tool-group-list > .tool-call, .tool-group-list > .tool-call.is-open { width: 100%; max-width: none; }
+.tool-group-list .tool-call > .tool-heading { padding-inline: 0; }

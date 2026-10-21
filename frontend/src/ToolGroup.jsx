@@ -1,13 +1,16 @@
-import {useId, useState} from "react";
+import {useEffect, useId, useState} from "react";
 import {ChevronDown, ChevronRight, Wrench} from "lucide-react";
 import {summarizeToolGroup} from "./toolGroups.js";
 
 export default function ToolGroup({tools, renderTool}) {
-    const [open, setOpen] = useState(false);
-    const id = useId();
-    if (tools.length === 1) return renderTool(tools[0], false);
     const {counts, categories, current, failures, targets} = summarizeToolGroup(tools);
     const pending = counts.running + counts.generating;
+    const active = pending + counts.waiting > 0;
+    const [open, setOpen] = useState(active);
+    const id = useId();
+    // Follow lifecycle transitions, not every stream delta, so manual toggles remain usable.
+    useEffect(() => { setOpen(active); }, [active]);
+    if (tools.length === 1) return renderTool(tools[0], false);
     const status = [pending && `执行中 ${pending}`, counts.waiting && `等待 ${counts.waiting}`,
         counts.error && `失败 ${counts.error}`, counts.success && `已完成 ${counts.success}`].filter(Boolean).join(" / ");
     return <section className={`tool-group ${open ? "is-open" : ""} ${counts.error ? "has-error" : ""}`} aria-label={`工具组，${tools.length} 项`}>

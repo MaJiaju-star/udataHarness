@@ -2488,7 +2488,7 @@ function Thinking({content, active = false}) {
         setOpen(active);
     }, [active]);
     const preview = content.replace(/\s+/g, " ").trim().slice(0, 88);
-    return <div className={`thinking-card ${active ? "active" : ""}`}>
+    return <div className={`thinking-card ${open ? "is-open" : ""} ${active ? "active" : ""}`}>
         <button onClick={() => setOpen(value => !value)} aria-expanded={open}>
             <span className="thinking-icon"><BrainCircuit size={16}/></span>
             <span className="thinking-title">
@@ -2588,7 +2588,7 @@ function ToolCall({tool, grouped = false}) {
         : tool.argsText || "";
     const showDetails = Boolean(details || tool.output || tool.editDiff);
     return <>
-        <div className={`tool-call ${tool.generating ? "generating" : ""} ${tool.error ? "error" : ""}`}>
+        <div className={`tool-call ${open ? "is-open" : ""} ${tool.generating ? "generating" : ""} ${tool.error ? "error" : ""}`}>
             <ToolCallHeader tool={tool} open={open} onToggle={() => setOpen(value => !value)}/>
             {open && showDetails && <pre className={tool.generating ? "streaming-args" : ""}>
                 {details}{tool.output ? `\n\n${tool.output}` : ""}
