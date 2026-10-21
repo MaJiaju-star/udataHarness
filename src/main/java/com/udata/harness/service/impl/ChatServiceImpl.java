@@ -100,6 +100,7 @@ public class ChatServiceImpl implements ChatService {
     private ActiveRunRegistry activeRuns;
 
     @Inject private com.udata.harness.common.support.ScheduledRunEvents scheduledRunEvents;
+    @Inject private com.udata.harness.notification.NotificationService notifications;
 
     /**
      * 用户工作区服务，用于校验会话工作区并解析工作目录。
@@ -181,6 +182,12 @@ public class ChatServiceImpl implements ChatService {
             session.getContext().put(com.udata.harness.common.support.ScheduledRunEvents.SESSION_KEY,
                     executionId == null ? "" : executionId);
             if (executionId != null) session.updateSnapshot();
+            if (notifications != null) {
+                try {
+                    SessionMetadata notificationMetadata = sessionRepository.read(userId, sessionId);
+                    notifications.begin(session, notificationMetadata, workspaces.resolve(userId, notificationMetadata.getWorkspaceId()).getName(), executionId);
+                } catch (RuntimeException notificationError) { org.slf4j.LoggerFactory.getLogger(getClass()).warn("Cannot initialize conversation notification for {}", sessionId); }
+            }
             return run(
                 userId,
                 session,
@@ -192,6 +199,7 @@ public class ChatServiceImpl implements ChatService {
         } catch (RuntimeException e) {
             activeRuns.end(sessionId);
             session.getContext().put(com.udata.harness.common.support.ScheduledRunEvents.SESSION_KEY, "");
+            if (notifications != null) notifications.ended(userId, session, "ON_ERROR", false, false);
             return Flux.just(StreamEventMapper.error(e.getMessage()));
         }
     }
@@ -301,6 +309,8 @@ public class ChatServiceImpl implements ChatService {
             return Flux.just(StreamEventMapper.error("This session is already running"));
         }
 
+        if (prompt == null && notifications != null) notifications.resume(session);
+
         //2. 组装事件流：session 事件固定首位，随后执行分段；订阅时绑定取消句柄，
         //   完成时刷新时间戳，任何终止信号都统一释放活动状态。
         // session 事件固定在首位。完整权限的自动审批续跑也属于同一个外层流，
@@ -319,11 +329,18 @@ public class ChatServiceImpl implements ChatService {
                 .doOnSubscribe(subscription -> activeRuns.bind(sessionId, subscription))
                 .transform(source -> activeRuns.cancellable(sessionId, source))
                 .doOnComplete(() -> sessionRepository.touch(userId, sessionId))
-                .doOnNext(event -> { if (scheduledRunEvents != null) scheduledRunEvents.event(executionId, event); })
+                .doOnNext(event -> {
+                    if (scheduledRunEvents != null) scheduledRunEvents.event(executionId, event);
+                    if (notifications != null && event.contains("error")) {
+                        Map<String, Object> notificationEvent = ONode.ofJson(event).toBean(Map.class);
+                        if ("error".equals(notificationEvent.get("type"))) notifications.observe(session, notificationEvent);
+                    }
+                })
                 .doFinally(signal -> {
                     boolean stopped = activeRuns.wasStopped(sessionId);
                     boolean pending = session.isPending() || !HITL.getPendingTasks(session).isEmpty();
                     try {
+                        if (notifications != null) notifications.ended(userId, session, signal.name(), stopped, pending);
                         if (executionId != null && !executionId.isEmpty() && !pending) {
                             session.getContext().put(com.udata.harness.common.support.ScheduledRunEvents.SESSION_KEY, ""); session.updateSnapshot();
                         }
@@ -391,6 +408,7 @@ public class ChatServiceImpl implements ChatService {
                 .doOnNext(chunk -> trackFileActivity(workspace, session, chunk))
                 .map(chunk -> {
                     Map<String, Object> event = StreamEventMapper.mapData(chunk);
+                    if (notifications != null) notifications.observe(session, event);
                     usageAuditRepository.record(userId, session.getSessionId(),
                             metadata.getWorkspaceId(), selectedModel, event);
                     return ONode.serialize(event);

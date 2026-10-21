@@ -361,3 +361,16 @@ Windows 运行 `run.bat`，Linux 运行 `sh run.sh`。启动脚本使用机器�
 已有的 `<agent.data-dir>/integrations/lsp/<name>.json` 会覆盖同名内置配置；
 如果它保存的是旧机器上的路径，请在管理后台删除该条配置以恢复内置版本。
 普通 `java -jar` 启动不启用自动发现，仍可按上文手动配置 LSP。
+
+
+## HTTP 通知
+
+后台管理 → 通知配置可以按用户保存多条 HTTP 回调，覆盖该用户的全部工作区，手动对话和定时任务共用配置，保存后无需重启。配置包含 URL、请求方式（POST / GET / PUT / DELETE）、请求头、JSON / 纯文本请求体、连接与读取超时，以及成功 / 失败 / 手动停止触发条件。接收人或群 ID 可以直接作为请求体的固定字段。
+
+动态变量：`${workspace.id}`、`${workspace.name}`、`${session.id}`、`${session.title}`、`${execution.id}`、`${execution.status}`、`${execution.source}`、`${execution.duration}`、`${execution.durationMs}`、`${result.summary}`、`${result.error}`、`${startedAt}`、`${finishedAt}`。状态为 `succeeded / failed / cancelled`，来源为 `chat / scheduled / test`，时间使用 UTC ISO 格式；执行耗时不包含审批等待。JSON 变量写在字符串值内，框架先解析再替换和序列化，自动处理换行、引号，并保留完整数值变量的类型。URL 路径和查询参数中的变量会编码；不支持动态域名、端口或执行模板脚本。
+
+审批挂起、工具结束和子代理结束都不会单独发送完成通知；整轮最终结束后才由后台线程投递。最终回答摘要限制约 1200 字符，不包含结构化思考和工具输出。测试发送使用示例数据，手动重发使用原记录变量和当前保存的配置。
+
+默认 HTTP 2xx 为成功，可选增加 JSON 字段判断，例如 `errcode` 等于 `0`。不跟随 HTTP 重定向，不自动重试；网络超时时接收方可能已经处理，请核对后手动重发。请求自动附带唯一 `X-Udata-Notification-Id`；同一轮同一配置的自动通知会去重，手动重发会生成新的发送 ID。
+
+配置与最近 200 条发送记录保存在 `data/users/<user>/notifications.json`。沿用当前项目的可信 `X-User-Id` 用户边界，文件在本机明文保存，无需主密钥文件；URL 和请求头保存后不通过配置查询接口回传。接口地址留空、同名请求头值留空会保留原值，移除请求头行会删除该项。配置文件不对 Agent 文件工具开放，日志不保存请求头、完整 URL 或原始响应正文。服务重启后未确认的发送记录标记为中断，不自动重放。
