@@ -2603,3 +2603,37 @@ html[data-mode="dark"] .permission-mode-switch { background: var(--surface-2); c
 @media (max-width: 600px) {
     .compact-composer .composer-safety-status { font-size: 11px; }
 }
+
+/* Grouped tool timeline keeps results and approvals outside the collapsible list. */
+.tool-group { margin: 8px 0; width: fit-content; min-width: min(100%, 280px); max-width: min(100%, 380px); border: 1px solid var(--border-default); border-radius: 10px; background: var(--surface-1); overflow: hidden; }
+.tool-group.is-open { width: 100%; max-width: min(100%, 640px); }
+.tool-group-heading { display: flex; flex-direction: column; gap: 4px; width: 100%; padding: 8px 10px; text-align: left; border: 0; color: var(--text-primary); background: var(--surface-2); }
+.tool-group-heading:hover { background: var(--surface-3); }
+.tool-group-heading:focus-visible { outline: 2px solid var(--accent); outline-offset: -3px; }
+.tool-group-title { display: flex; align-items: center; gap: 8px; width: 100%; min-width: 0; font-size: 12px; }
+.tool-group-title > svg { flex-shrink: 0; color: var(--text-secondary); }
+.tool-group-title > svg:last-child { margin-left: 0; }
+.tool-group-title > b { flex-shrink: 0; white-space: nowrap; line-height: 18px; }
+.tool-group-summary { display: flex; align-items: center; gap: 8px; width: 100%; min-width: 0; }
+.tool-group-summary .tool-group-categories { flex: 0 1 auto; max-width: 48%; }
+.tool-group-summary .tool-group-preview { flex: 1; min-width: 0; padding-left: 8px; border-left: 1px solid var(--border-default); }
+.tool-group-status { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; margin-left: auto; color: var(--text-secondary); font-size: 11px; }
+.tool-group-categories, .tool-group-preview, .tool-group-errors { display: block; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11px; line-height: 1.6; color: var(--text-secondary); }
+.tool-group.has-error { border-color: var(--danger); }
+.tool-group-errors { color: var(--danger); }
+.tool-group-list { padding: 0 12px; }
+.tool-group-list[hidden] { display: none; }
+.tool-group-list > .tool-call { margin: 0; border: 0; border-radius: 0; box-shadow: none; background: transparent; }
+.tool-group-list > .tool-call + .tool-call { border-top: 1px solid var(--border-default); }
+.tool-group-list .tool-heading { padding-left: 0; padding-right: 0; }
+.tool-group-list .tool-call > pre { max-height: 400px; overflow: auto; }
+@media (max-width: 600px) {
+    .tool-group-heading { padding: 8px 10px; }
+    .tool-group-title { gap: 6px; }
+    .tool-group-status { font-size: 11px; }
+    .tool-group-list { padding: 0 9px; }
+}
+/* Prevent a long group summary from expanding the chat grid under a split editor. */
+.chat-layout { min-width: 0; grid-template-columns: minmax(0, 1fr); }
+.tool-group-heading { min-width: 0; }
+.workspace-shell { grid-template-columns: minmax(0, 1fr); }

@@ -10,6 +10,8 @@ import IdeaToolbar from "./IdeaToolbar.jsx";
 import SessionHistory from "./SessionHistory.jsx";
 import ContextPanel from "./ContextPanel.jsx";
 import ToolCallHeader from "./ToolCallHeader.jsx";
+import ToolGroup from "./ToolGroup.jsx";
+import {groupToolActivities} from "./toolGroups.js";
 import ModelSettings from "./ModelSettings.jsx";
 import ScheduledTasks from "./ScheduledTasks.jsx";
 import ComposerPopover from "./ComposerPopover.jsx";
@@ -1763,6 +1765,14 @@ function ChatView({api, current, messages, running, stopping, onStop, models, se
                       tokenUsage, conversationElapsed, contextLength, provider, sandboxEnabled,
                       onModelChange, onThinkingDepthChange, onSend, onCreate, onDecide,
                       onPermissionMode, onCapabilityMode, onSandboxChange, onOpenFile}) {
+    const [toolView, setToolView] = useState(() => {
+        try { return localStorage.getItem("udataToolView") === "individual" ? "individual" : "grouped"; }
+        catch { return "grouped"; }
+    });
+    const changeToolView = value => {
+        setToolView(value);
+        try { localStorage.setItem("udataToolView", value); } catch { /* Preference remains usable if storage is unavailable. */ }
+    };
     const [prompt, setPrompt] = useState("");
     const [auditOpen, setAuditOpen] = useState(false);
     const [contextOpen, setContextOpen] = useState(false);
@@ -2034,7 +2044,7 @@ function ChatView({api, current, messages, running, stopping, onStop, models, se
                     </div>
                 </div>}
                 {messages.map(message =>
-                    <Message key={message.id} message={message}
+                    <Message key={message.id} message={message} toolView={toolView}
                              onOpenFile={onOpenFile}
                              onDecide={(action, always, callUuids) =>
                                  onDecide(message.id, action, always, callUuids)}/>)}
@@ -2181,6 +2191,9 @@ function ChatView({api, current, messages, running, stopping, onStop, models, se
                                 aria-label="自动引用" aria-pressed={referenceEnabled} title={referenceEnabled ? "关闭自动引用" : "开启自动引用"} onClick={toggleReference}><Link2 size={15}/></button>
                             <ComposerPopover label="对话设置" className={`composer-settings-button ${current.permissionMode === "full" || !sandboxEnabled ? "caution" : ""}`}
                                 trigger={<><Settings2 size={15}/><span className="composer-safety-status">{current.permissionMode === "full" ? "自动执行" : "需审批"} · 沙箱{sandboxEnabled ? "开" : "关"}</span></>}>
+                                <label>工具展示<select aria-label="工具展示" value={toolView} onChange={event => changeToolView(event.target.value)}>
+                                    <option value="grouped">分组视图 · 可折叠工具列表</option><option value="individual">逐条视图 · 独立工具卡片</option>
+                                </select></label>
                                 <label>能力模式<select value={current.capabilityMode || "standard"} disabled={running || current.active} onChange={event => onCapabilityMode(event.target.value)}>
                                     <option value="economy">经济 · 5 个基础工具</option><option value="standard">标准 · 增加 glob / grep</option><option value="super">超级 · 已启用的全部工具</option>
                                 </select></label>
@@ -2318,7 +2331,7 @@ function UsageAuditDialog({api, currentSessionId, onClose}) {
     </div>;
 }
 
-function Message({message, onDecide, onOpenFile}) {
+function Message({message, onDecide, onOpenFile, toolView}) {
     const parsed = message.role === "assistant"
         ? splitThinkContent(message.content || "")
         : {visible: message.content || "", thinking: "", pending: false};
@@ -2329,6 +2342,10 @@ function Message({message, onDecide, onOpenFile}) {
     const activityToolIds = new Set(
         activities.filter(item => item.type === "tool").map(item => item.callId)
     );
+    const timeline = toolView === "grouped" ? groupToolActivities(activities, message.tools) : activities;
+    const extraTools = message.tools?.filter(tool => !activityToolIds.has(tool.callId) && !isTodoTool(tool.name)) || [];
+    const extras = toolView === "grouped" ? groupToolActivities(extraTools.map(tool => ({type: "tool", callId: tool.callId})), extraTools) : [];
+    const renderTool = (tool, grouped) => <ToolCall key={tool.streamId || tool.callId} tool={tool} grouped={grouped}/>;
     return <article className={`message-row ${message.role}`}>
         <div className="message-avatar">
             {message.role === "user" ? <UserRound size={17}/> : <Sparkles size={17}/>}
@@ -2336,7 +2353,8 @@ function Message({message, onDecide, onOpenFile}) {
         <div className="message-body">
             <div className="message-author">{message.role === "user" ? "你" : "UdataBuddy"}</div>
             {!hasThinkingActivities && thinking && <Thinking content={thinking} active={parsed.pending}/>}
-            {activities.map(activity => {
+            {timeline.map(activity => {
+                if (activity.type === "tool_group") return <ToolGroup key={activity.id} tools={activity.tools} renderTool={renderTool}/>;
                 if (activity.type === "thinking") {
                     return <Thinking key={`thinking-${activity.id}`} content={activity.content}
                                      active={activity.active}/>;
@@ -2363,8 +2381,10 @@ function Message({message, onDecide, onOpenFile}) {
                 }
                 return null;
             })}
-            {message.tools?.filter(tool => !activityToolIds.has(tool.callId) && !isTodoTool(tool.name))
-                .map(tool => <ToolCall key={tool.callId} tool={tool}/>)}
+            {toolView === "grouped" ? extras.map(activity => activity.type === "tool_group"
+                ? <ToolGroup key={`extra-${activity.id}`} tools={activity.tools} renderTool={renderTool}/>
+                : renderTool(extraTools.find(tool => tool.callId === activity.callId), false))
+                : extraTools.map(tool => renderTool(tool, false))}
             {!hasTextActivities && parsed.visible && <div className={`markdown-body ${message.role}`}>
                 {message.role === "assistant"
                     ? <ReactMarkdown remarkPlugins={[remarkGfm]}>{parsed.visible}</ReactMarkdown>
@@ -2554,11 +2574,11 @@ function RuntimeChunkCard({chunk}) {
     </section>;
 }
 
-function ToolCall({tool}) {
-    const [open, setOpen] = useState(Boolean(tool.generating));
+function ToolCall({tool, grouped = false}) {
+    const [open, setOpen] = useState(Boolean(tool.generating && !grouped));
     useEffect(() => {
-        setOpen(Boolean(tool.generating));
-    }, [tool.generating]);
+        if (!grouped) setOpen(Boolean(tool.generating));
+    }, [tool.generating, grouped]);
     if (isTodoTool(tool.name)) {
         return <TodoCard todo={mergeTodoTool(null, tool)}/>;
     }
