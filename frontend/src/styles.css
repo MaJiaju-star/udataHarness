@@ -1070,6 +1070,7 @@ button, input, textarea, select { outline: none; }
     white-space: pre-wrap;
 }
 .tool-call {
+    container-type: inline-size;
     max-width: 690px;
     margin: 8px 0;
     overflow: hidden;
@@ -1115,6 +1116,48 @@ button, input, textarea, select { outline: none; }
     border-radius: 8px;
     color: #3f856f;
     background: var(--accent-soft);
+}
+.tool-call > .tool-heading { gap: 10px; padding: 12px; color: var(--text-primary); }
+.tool-heading:hover { background: var(--surface-2); }
+.tool-heading:focus-visible { outline: 2px solid var(--accent); outline-offset: -3px; border-radius: 10px; }
+.tool-heading .tool-icon { flex: 0 0 30px; width: 30px; height: 30px; color: var(--accent-dark); }
+.tool-heading-main { min-width: 0; flex: 1; }
+.tool-heading-title { display: flex; align-items: baseline; gap: 9px; min-width: 0; }
+.tool-call .tool-heading-name { flex: 0 0 auto; max-width: 34%; overflow: hidden; white-space: nowrap; text-overflow: ellipsis;
+    color: var(--text-secondary); font-size: 11px; font-weight: 600; }
+.tool-heading-target { display: flex; min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis;
+    color: var(--text-primary); font: 12px/1.5 "Cascadia Code", Consolas, monospace; }
+.tool-target-directory { min-width: 0; flex: 0 1 auto; overflow: hidden; text-overflow: ellipsis; color: var(--text-secondary); }
+.tool-heading-target strong { flex: 0 0 auto; max-width: 100%; overflow: hidden; text-overflow: ellipsis; font-weight: 600; }
+.tool-target-text { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.tool-heading-detail { display: flex; align-items: center; gap: 10px; min-width: 0; margin-top: 3px;
+    color: var(--text-secondary); font-size: 10px; line-height: 1.5; }
+.tool-heading-detail:empty { display: none; }
+.tool-heading-description { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tool-heading-diff { display: inline-flex; flex: 0 0 auto; gap: 6px; font-variant-numeric: tabular-nums; }
+.tool-heading-diff .diff-add { color: var(--accent-dark); }
+.tool-heading-diff .diff-remove { color: var(--danger); }
+.tool-heading-status { flex: 0 0 auto; text-align: right; font-size: 10px; color: var(--text-secondary); }
+.tool-heading-status > span { display: inline-flex; align-items: center; gap: 4px; white-space: nowrap; }
+.tool-call .tool-heading-status small { margin-top: 3px; color: var(--text-secondary); font-size: 10px; font-variant-numeric: tabular-nums; }
+.tool-heading-status.success { color: var(--accent-dark); }
+.tool-heading-status.error { color: var(--danger); }
+.tool-heading-status.running, .tool-heading-status.generating { color: var(--accent-dark); }
+.tool-heading-chevron { flex: 0 0 15px; display: flex; color: var(--text-secondary); }
+.tool-call.error { border-color: color-mix(in srgb, var(--danger) 40%, var(--border-default)); }
+.tool-call.error .tool-icon { color: var(--danger); background: color-mix(in srgb, var(--danger) 10%, var(--surface-1)); }
+@container (max-width: 400px) {
+    .tool-heading-title { flex-wrap: wrap; row-gap: 2px; }
+    .tool-heading-target { flex-basis: 100%; }
+    .tool-target-directory { display: none; }
+}
+@media (max-width: 540px) {
+    .tool-call > .tool-heading { gap: 8px; padding: 10px; }
+    .tool-heading-title { gap: 6px; }
+    .tool-heading-target { font-size: 11px; }
+    .tool-target-directory { display: none; }
+    .tool-heading-status { font-size: 9px; }
+    .tool-call .tool-heading-status small { font-size: 9px; }
 }
 .tool-call pre {
     max-height: 270px;

@@ -1,12 +1,58 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import {accumulateTokenUsage, emptyTokenUsage, summarizeAudit, cacheHitRate} from "../src/tokenUsage.js";
+import {accumulateTokenUsage, emptyTokenUsage, summarizeAudit, cacheHitRate, firstTokenLatencyText} from "../src/tokenUsage.js";
 
 const call = {
     type: "text_replay", usageScope: "model_call", runId: "main", reasonId: "reason-1",
     usage: {promptTokens: 1000, thinkTokens: 20, completionTokens: 200, totalTokens: 1200,
         cacheReadInputTokens: 800, cacheCreationInputTokens: 100}
 };
+
+const start = {type: "reason_start", runId: "main", reasonId: "r1", timestamp: 1000};
+
+test("first-token latency uses first main streaming content, ignoring child/empty events", () => {
+    let state = accumulateTokenUsage(emptyTokenUsage(), start);
+    for (const event of [
+        {type: "thinking", content: "", timestamp: 1010},
+        {type: "subagent_event", subtype: "text", content: "child", timestamp: 1020},
+        {type: "text", parentRunId: "main", content: "child", timestamp: 1030},
+        {type: "text", usageScope: "compaction", content: "summary", timestamp: 1040},
+        {type: "text_replay", content: "replayed", timestamp: 1050}
+    ]) state = accumulateTokenUsage(state, {runId: "main", reasonId: "r1", ...event});
+    assert.equal(state.firstTokenLatencyMs, null);
+    state = accumulateTokenUsage(state, {type: "thinking", content: "Let me check", runId: "main", reasonId: "r1", timestamp: 1250});
+    assert.equal(state.firstTokenLatencyMs, 250);
+    state = accumulateTokenUsage(state, {...start, reasonId: "r2", timestamp: 5000});
+    state = accumulateTokenUsage(state, {type: "text", content: "answer", runId: "main", reasonId: "r2", timestamp: 7000});
+    assert.equal(state.firstTokenLatencyMs, 250);
+});
+
+test("tool-argument-only first responses count, but names/start markers do not", () => {
+    let state = accumulateTokenUsage(emptyTokenUsage(), start);
+    state = accumulateTokenUsage(state, {type: "tool_args_start", runId: "main", content: "read", timestamp: 1200});
+    assert.equal(state.firstTokenLatencyMs, null);
+    state = accumulateTokenUsage(state, {type: "tool_args_delta", runId: "main", content: '{"file_path":', timestamp: 1550});
+    assert.equal(state.firstTokenLatencyMs, 550);
+});
+
+test("missing streaming evidence remains unknown across finish and later model calls", () => {
+    let state = accumulateTokenUsage(emptyTokenUsage(), start);
+    state = accumulateTokenUsage(state, {...call, reasonId: "r1", type: "thinking", finished: true, content: "whole reply", timestamp: 2000});
+    assert.equal(state.firstTokenLatencyMs, null);
+    state = accumulateTokenUsage(state, {...start, reasonId: "r2", timestamp: 3000});
+    state = accumulateTokenUsage(state, {type: "tool_args_delta", content: "{}", runId: "main", timestamp: 3500});
+    assert.equal(state.firstTokenLatencyMs, null);
+    assert.equal(accumulateTokenUsage(emptyTokenUsage(), {type: "text", content: "x", timestamp: 10}).firstTokenLatencyMs, null);
+});
+
+test("latency display handles zero, seconds, resets, and invalid timestamps", () => {
+    const state = accumulateTokenUsage(emptyTokenUsage(), start);
+    assert.equal(accumulateTokenUsage(state, {type: "text", runId: "main", content: "x", timestamp: 999}).firstTokenLatencyMs, null);
+    const zero = accumulateTokenUsage(state, {type: "text", runId: "main", content: "x", timestamp: 1000});
+    assert.equal(firstTokenLatencyText(zero.firstTokenLatencyMs), "0 ms");
+    assert.equal(firstTokenLatencyText(1250), "1.25 s");
+    assert.equal(firstTokenLatencyText(emptyTokenUsage().firstTokenLatencyMs), "—");
+});
 
 test("main calls accumulate once; child and compaction calls never count", () => {
     const first = accumulateTokenUsage(emptyTokenUsage(), call);

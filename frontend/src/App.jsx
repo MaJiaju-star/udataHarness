@@ -9,9 +9,10 @@ import {callIdea, isIdea, initialUserId, initialWorkspaceId} from "./host.js";
 import IdeaToolbar from "./IdeaToolbar.jsx";
 import SessionHistory from "./SessionHistory.jsx";
 import ContextPanel from "./ContextPanel.jsx";
+import ToolCallHeader from "./ToolCallHeader.jsx";
 import ReferenceInput from "./ReferenceInput.jsx";
 import {usePageDialog} from "./usePageDialog.jsx";
-import {accumulateTokenUsage, emptyTokenUsage, summarizeAudit, cacheHitRate} from "./tokenUsage.js";
+import {accumulateTokenUsage, emptyTokenUsage, summarizeAudit, cacheHitRate, firstTokenLatencyText} from "./tokenUsage.js";
 import {formatIdeaReference, readManualIdeaReference, withAutoReference, insertReferenceText, insertReferenceAtSelection, createReferenceReceiver} from "./ideaReferences.js";
 import {
     Activity, ArrowDown, ArrowLeft, Bot, Box, BrainCircuit, Check, ChevronDown, ChevronRight, Circle, CircleStop, Code2,
@@ -2222,6 +2223,8 @@ function TokenMeter({usage, contextLength, running, onOpenAudit, onOpenContext})
     const hitRateText = hitRate == null ? "—" : `${hitRate.toFixed(1)}%`;
     const hitRateFormula = "缓存读取 ÷ 全部输入（已包含缓存读写）";
     const speed = usage.tokensPerSecond > 0 ? `${usage.tokensPerSecond.toFixed(1)} tok/s` : "— tok/s";
+    const firstToken = firstTokenLatencyText(usage.firstTokenLatencyMs);
+    const firstTokenDescription = "本轮主 Agent 首次推理开始至首个文本、思考或工具参数流片段的服务端耗时；不含此前压缩、子代理与浏览器传输耗时。无流式片段时显示 —";
     const details = [
         "仅统计主 Agent 模型调用，不含子代理与压缩",
         `输入 ${formatTokens(usage.promptTokens)}`,
@@ -2232,6 +2235,7 @@ function TokenMeter({usage, contextLength, running, onOpenAudit, onOpenContext})
         `缓存命中率 ${hitRateText}`,
         `命中率口径 ${hitRateFormula}`,
         `整轮平均输出速度 ${speed}（输出 token ÷ 活跃执行耗时，含工具执行，不含审批挂起等待）`,
+        `首 Token ${firstToken}（${firstTokenDescription}）`,
         `模型上下文 ${formatTokens(contextLength)}`
     ].join(" · ");
     return <div className={`composer-token-meter ${running ? "running" : ""}`} role="status" title={details}>
@@ -2242,6 +2246,7 @@ function TokenMeter({usage, contextLength, running, onOpenAudit, onOpenContext})
         <span>缓存 {formatTokens(cacheTokens)}</span>
         <span>命中 {hitRateText}</span>
         <span title="输出 token ÷ 活跃执行耗时，含工具执行，不含审批挂起等待">整轮 {speed}</span>
+        <span title={firstTokenDescription}>首 Token {firstToken}</span>
         <i>上下文 {formatTokens(contextLength)}</i>
         <button type="button" className="token-audit-button" onClick={onOpenAudit}>审计台账</button>
         <button type="button" className="token-audit-button" disabled={!onOpenContext} onClick={onOpenContext}>上下文观察</button>
@@ -2548,20 +2553,13 @@ function ToolCall({tool}) {
         return <TodoCard todo={mergeTodoTool(null, tool)}/>;
     }
     const chartSpec = chartSpecFromTool(tool);
-    const status = tool.generating ? "参数生成中" : tool.running ? "执行中" : `${tool.durationMs || 0} ms`;
-    const details = tool.executionStarted
+    const details = tool.args && Object.keys(tool.args).length
         ? JSON.stringify(tool.args || {}, null, 2)
         : tool.argsText || "";
     const showDetails = Boolean(details || tool.output || tool.editDiff);
     return <>
         <div className={`tool-call ${tool.generating ? "generating" : ""} ${tool.error ? "error" : ""}`}>
-            <button onClick={() => setOpen(value => !value)}>
-                <span className="tool-icon">{tool.generating || tool.running
-                    ? <RefreshCw className="spin" size={15}/>
-                    : <Check size={15}/>}</span>
-                <span><b>{tool.name}</b><small>{status}</small></span>
-                {open ? <ChevronDown size={15}/> : <ChevronRight size={15}/>}
-            </button>
+            <ToolCallHeader tool={tool} open={open} onToggle={() => setOpen(value => !value)}/>
             {open && showDetails && <pre className={tool.generating ? "streaming-args" : ""}>
                 {details}{tool.output ? `\n\n${tool.output}` : ""}
             </pre>}

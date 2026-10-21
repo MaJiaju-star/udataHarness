@@ -8,6 +8,11 @@ export const emptyTokenUsage = () => ({
     modelCallCount: 0,
     durationMs: 0,
     tokensPerSecond: 0,
+    firstTokenLatencyMs: null,
+    firstTokenStartedAt: null,
+    firstTokenRunId: null,
+    firstTokenReasonId: null,
+    firstTokenPending: false,
     seenCalls: {}
 });
 
@@ -19,8 +24,39 @@ export function cacheHitRate(usage) {
     return input > 0 ? Math.min(100, Math.max(0, number(usage.cacheReadInputTokens) * 100 / input)) : null;
 }
 
+export function firstTokenLatencyText(value) {
+    if (value == null || !Number.isFinite(value) || value < 0) return "—";
+    return value < 1000 ? `${Math.round(value)} ms` : `${(value / 1000).toFixed(2)} s`;
+}
+
+// Server timestamps on both events avoid including browser clock skew/SSE delivery delay.
+// Keep the first main request of this user turn; later tool-loop requests cannot replace it.
+function trackFirstToken(current, event) {
+    if (current.firstTokenLatencyMs != null) return current;
+    if (event.type === "reason_start") {
+        if (current.firstTokenStartedAt != null) {
+            return event.runId === current.firstTokenRunId && event.reasonId === current.firstTokenReasonId
+                ? current : {...current, firstTokenPending: false};
+        }
+        if (!Number.isFinite(event.timestamp) || !event.runId || !event.reasonId) return current;
+        return {...current, firstTokenStartedAt: event.timestamp, firstTokenRunId: event.runId,
+            firstTokenReasonId: event.reasonId, firstTokenPending: true};
+    }
+    if (!current.firstTokenPending || event.runId !== current.firstTokenRunId) return current;
+    if (event.usageScope === "run" || (event.usageScope === "model_call"
+            && event.reasonId === current.firstTokenReasonId)) {
+        return {...current, firstTokenPending: false};
+    }
+    const tokenDelta = ["text", "thinking", "tool_args_delta"].includes(event.type)
+        && event.finished !== true && typeof event.content === "string" && event.content.length > 0;
+    if (!tokenDelta || (event.reasonId && event.reasonId !== current.firstTokenReasonId)
+            || !Number.isFinite(event.timestamp) || event.timestamp < current.firstTokenStartedAt) return current;
+    return {...current, firstTokenLatencyMs: event.timestamp - current.firstTokenStartedAt, firstTokenPending: false};
+}
+
 export function accumulateTokenUsage(current, event) {
-    if (!event || event.type === "subagent_event" || event.parentRunId) return current;
+    if (!event || event.type === "subagent_event" || event.parentRunId || event.usageScope === "compaction") return current;
+    current = trackFirstToken(current, event);
     if (event.usageScope === "run") {
         const durationMs = number(event.durationMs);
         return {
