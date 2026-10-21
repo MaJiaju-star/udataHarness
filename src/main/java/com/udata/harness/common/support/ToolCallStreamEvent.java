@@ -107,6 +107,11 @@ public class ToolCallStreamEvent extends AbsAgentEvent {
      */
     private String buildStreamId(ChatEvent event, ToolCall toolCall) {
         String index = toolCall == null ? null : toolCall.getIndex();
+        // Anthropic START/END use ToolCall.index="idx:N", while argument
+        // deltas expose ChatEvent.index=N without a ToolCall. They are one stream.
+        if (index != null && index.matches("idx:\\d+")) {
+            index = index.substring(4);
+        }
         if (Utils.isBlank(index)) {
             index = event.getIndex() >= 0 ? String.valueOf(event.getIndex()) : event.getToolCallId();
         }

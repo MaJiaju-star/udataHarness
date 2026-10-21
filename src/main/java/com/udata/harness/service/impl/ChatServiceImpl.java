@@ -133,6 +133,12 @@ public class ChatServiceImpl implements ChatService {
         userId = UserWorkspaceService.requireUserId(userId);
         String promptWithContext = request.promptWithContext();
         String sessionId = request.getSessionId();
+        try {
+            SessionMetadata before = sessionRepository.read(userId, sessionId);
+            requireActiveWorkspace(userId, before);
+            // Apply saved model changes before this new run occupies the active registry.
+            engines.get(userId, before.getWorkspaceId(), before.getCapabilityMode());
+        } catch (RuntimeException e) { return Flux.just(StreamEventMapper.error(e.getMessage())); }
         if (!activeRuns.begin(sessionId)) {
             return Flux.just(StreamEventMapper.error("This session is already running"));
         }
@@ -333,6 +339,8 @@ public class ChatServiceImpl implements ChatService {
                     options.interceptorAdd(new ToolCallStreamInterceptor());
                     options.toolContextPut(HarnessEngine.ATTR_CWD, workspace.toString());
                     if (!isBlank(selectedModel)) {
+                        if (engine.getModelOrNil(selectedModel) == null)
+                            throw new IllegalArgumentException("所选模型不存在或已停用，请重新选择模型");
                         options.chatModel(engine.getModelOrDefInstance(selectedModel));
                     }
                     if ("none".equals(thinkingDepth)) {

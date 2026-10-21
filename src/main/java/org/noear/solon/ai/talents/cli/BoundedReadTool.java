@@ -283,6 +283,7 @@ public final class BoundedReadTool extends AbsTalent {
         Path workPath = __cwd == null ? workspace : Paths.get(__cwd).toAbsolutePath().normalize();
         Path target = support.resolveSafePath(workPath, filePath, false,
                 terminal.isSandboxEnabled(), false, null);
+        com.udata.harness.repository.ModelConfigurationFiles.requireAllowed(target);
         if (!Files.exists(target)) {
             fileVersions.remember(__sessionId, target, null);
             return "错误：文件不存在";

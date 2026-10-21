@@ -95,8 +95,10 @@ final class SearchToolAccess {
      * @throws IOException 路径越界、符号链接逃逸等校验失败
      */
     Path resolve(Path workPath, String path) throws IOException {
-        return support.resolveSafePath(workPath, path, false,
+        Path target = support.resolveSafePath(workPath, path, false,
                 terminal.isSandboxEnabled(), false, null);
+        com.udata.harness.repository.ModelConfigurationFiles.requireAllowed(target);
+        return target;
     }
 
     /**
@@ -108,7 +110,7 @@ final class SearchToolAccess {
      * @return {@code true} 表示该条目应被过滤掉
      */
     boolean hiddenOrDenied(Path workPath, Path policyRoot, Path item) {
-        return support.isIgnored(workPath, item)
+        return com.udata.harness.repository.ModelConfigurationFiles.isProtected(item) || support.isIgnored(workPath, item)
                 || support.isReadDenied(policyRoot, item, terminal.isSandboxEnabled(), null);
     }
 

@@ -36,6 +36,7 @@ import java.util.stream.Collectors;
  */
 @Component
 public class SessionServiceImpl implements SessionService {
+    @Inject private com.udata.harness.service.ModelConfigurationService modelConfigurations;
     /**
      * 会话仓储，负责会话元数据与消息的读写。
      */
@@ -86,22 +87,22 @@ public class SessionServiceImpl implements SessionService {
     @Override
     public Map<String, Object> meta(String userId) {
         String safeUserId = UserWorkspaceService.requireUserId(userId);
-        HarnessEngine engine = engines.get(safeUserId);
+        HarnessEngine engine = modelConfigurations == null ? engines.get(safeUserId) : null;
         Map<String, Object> data = new LinkedHashMap<>();
         data.put("name", "UData Harness");
         data.put("userId", safeUserId);
         data.put("workspace", workspaces.getOrCreate(safeUserId).toString());
         data.put("activeWorkspace", workspaces.getActive(safeUserId));
         data.put("workspaces", workspaces.list(safeUserId));
-        data.put("defaultModel", engine.getDefaultModel());
+        data.put("defaultModel", engine == null ? modelConfigurations.preferred(safeUserId, "default") : engine.getDefaultModel());
         Map<String, String> modeModels = new LinkedHashMap<>();
-        modeModels.put(CapabilityMode.ECONOMY, preferredModel(engine, economyModel));
-        modeModels.put(CapabilityMode.STANDARD, preferredModel(engine, standardModel));
-        modeModels.put(CapabilityMode.SUPER, preferredModel(engine, superModel));
+        modeModels.put(CapabilityMode.ECONOMY, engine == null ? modelConfigurations.preferred(safeUserId, CapabilityMode.ECONOMY) : preferredModel(engine, economyModel));
+        modeModels.put(CapabilityMode.STANDARD, engine == null ? modelConfigurations.preferred(safeUserId, CapabilityMode.STANDARD) : preferredModel(engine, standardModel));
+        modeModels.put(CapabilityMode.SUPER, engine == null ? modelConfigurations.preferred(safeUserId, CapabilityMode.SUPER) : preferredModel(engine, superModel));
         data.put("modeModels", modeModels);
         data.put("sandboxEnabled", engines.isSandboxEnabled(safeUserId));
         List<Map<String, Object>> models = new ArrayList<>();
-        for (ChatConfig config : engine.getModels()) {
+        for (ChatConfig config : engine == null ? modelConfigurations.effective(safeUserId) : engine.getModels()) {
             Map<String, Object> item = new LinkedHashMap<>();
             item.put("name", config.getNameOrModel());
             item.put("model", config.getModel());
@@ -109,7 +110,15 @@ public class SessionServiceImpl implements SessionService {
             item.put("contextLength", config.getContextLength());
             models.add(item);
         }
+        if (modelConfigurations != null) {
+            Map<String, String> labels = new LinkedHashMap<>();
+            for (Object raw : (java.util.List<?>) modelConfigurations.list(safeUserId).get("models")) {
+                Map<?, ?> row = (Map<?, ?>) raw; labels.put(String.valueOf(row.get("id")), String.valueOf(row.get("label")));
+            }
+            for (Map<String, Object> row : models) row.put("label", labels.get(row.get("name")));
+        }
         data.put("models", models);
+        data.put("modelsReady", !models.isEmpty());
         return data;
     }
 
@@ -148,8 +157,13 @@ public class SessionServiceImpl implements SessionService {
     @Override
     public SessionMetadata create(String userId, String title, String model, String capabilityMode) {
         String mode = CapabilityMode.require(capabilityMode);
-        HarnessEngine engine = engines.get(userId);
-        if (Utils.isBlank(model)) {
+        HarnessEngine engine = modelConfigurations == null ? engines.get(userId) : null;
+        if (modelConfigurations != null) {
+            if (Utils.isBlank(model)) model = modelConfigurations.preferred(userId, mode);
+            final String selected = model;
+            if (modelConfigurations.effective(userId).stream().noneMatch(item -> selected.equals(item.getNameOrModel())))
+                throw new IllegalArgumentException("模型不存在或已停用，请在后台配置模型后重新选择");
+        } else if (Utils.isBlank(model)) {
             model = preferredModel(engine, CapabilityMode.ECONOMY.equals(mode) ? economyModel
                     : CapabilityMode.SUPER.equals(mode) ? superModel : standardModel);
         }
@@ -178,8 +192,8 @@ public class SessionServiceImpl implements SessionService {
             throw new IllegalStateException("Resolve pending approval before changing capability mode");
         }
         HarnessEngine engine = engines.get(userId, current.getWorkspaceId(), mode);
-        String preferred = preferredModel(engine, CapabilityMode.ECONOMY.equals(mode) ? economyModel
-                : CapabilityMode.SUPER.equals(mode) ? superModel : standardModel);
+        String preferred = modelConfigurations == null ? preferredModel(engine, CapabilityMode.ECONOMY.equals(mode) ? economyModel
+                : CapabilityMode.SUPER.equals(mode) ? superModel : standardModel) : modelConfigurations.preferred(userId, mode);
         return sessionRepository.updateCapabilityMode(userId, sessionId, mode, preferred);
     }
 

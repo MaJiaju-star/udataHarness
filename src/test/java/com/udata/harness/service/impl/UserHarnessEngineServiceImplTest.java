@@ -282,6 +282,37 @@ class UserHarnessEngineServiceImplTest {
         }
     }
 
+    @Test
+    void appliesPersonalModelsOnlyWhenRunsAndApprovalsAreIdleWithoutRebuildingEngine() throws Exception {
+        UserHarnessEngineServiceImpl service = runnableService();
+        com.udata.harness.service.ModelConfigurationService models = new com.udata.harness.service.ModelConfigurationService(
+                tempDir.resolve("data"), new Props());
+        com.udata.harness.common.support.ActiveRunRegistry runs = new com.udata.harness.common.support.ActiveRunRegistry();
+        inject(service, "modelConfigurations", models); inject(service, "activeRuns", runs);
+        java.util.Map<String, Object> form = new java.util.LinkedHashMap<>();
+        form.put("label", "model"); form.put("model", "test"); form.put("provider", "openai");
+        form.put("apiUrl", "http://localhost:8089/v1/chat/completions"); form.put("contextLength", 128000);
+        form.put("apiKey", "old-test-key");
+        String id = models.save("alice", form);
+        org.noear.solon.ai.harness.HarnessEngine engine = service.get("alice");
+        SessionRepository sessions = (SessionRepository) read(service, "sessionRepository");
+        String sessionId = sessions.create("alice", "test", id, "default", "standard").getSessionId();
+        runs.begin(sessionId);
+        form.put("id", id); form.put("apiKey", "new-test-key"); models.save("alice", form);
+        org.junit.jupiter.api.Assertions.assertSame(engine, service.get("alice"));
+        assertEquals("old-test-key", engine.getModelOrNil(id).getApiKey());
+        org.junit.jupiter.api.Assertions.assertTrue(service.modelsPending("alice"));
+        runs.end(sessionId);
+        sessions.getSession("alice", sessionId).pending(true, "approval");
+        service.get("alice"); assertEquals("old-test-key", engine.getModelOrNil(id).getApiKey());
+        sessions.getSession("alice", sessionId).pending(false, null);
+        org.junit.jupiter.api.Assertions.assertSame(engine, service.get("alice"));
+        assertEquals("new-test-key", engine.getModelOrNil(id).getApiKey());
+        assertFalse(service.modelsPending("alice"));
+        models.remove("alice", id);
+        org.junit.jupiter.api.Assertions.assertThrows(IllegalStateException.class, () -> service.get("alice"));
+    }
+
     private UserHarnessEngineServiceImpl configuredService() throws Exception {
         UserHarnessEngineServiceImpl service = new UserHarnessEngineServiceImpl();
         inject(service, "compressionMaxContextRatio", 0.75D);

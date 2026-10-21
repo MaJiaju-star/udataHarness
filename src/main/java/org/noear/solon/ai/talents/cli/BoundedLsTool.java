@@ -172,6 +172,7 @@ public final class BoundedLsTool extends AbsTalent {
         Path workPath = __cwd == null ? workspace : Paths.get(__cwd).toAbsolutePath().normalize();
         Path target = support.resolveSafePath(workPath, selectedPath, false,
                 terminal.isSandboxEnabled(), false, null);
+        com.udata.harness.repository.ModelConfigurationFiles.requireAllowed(target);
         if (!Files.exists(target)) return "错误：路径不存在";
         if (!Files.isDirectory(target)) return "错误：目标不是目录";
         Path policyRoot = support.getSandboxPolicyRoot(workPath, selectedPath);
@@ -214,7 +215,7 @@ public final class BoundedLsTool extends AbsTalent {
                     }
 
                     private boolean filtered(Path item) {
-                        return support.isIgnored(workPath, item)
+                        return com.udata.harness.repository.ModelConfigurationFiles.isProtected(item) || support.isIgnored(workPath, item)
                                 || support.isReadDenied(policyRoot, item, terminal.isSandboxEnabled(), null)
                                 || (!includeHidden && item.getFileName().toString().startsWith("."));
                     }
@@ -522,7 +523,7 @@ public final class BoundedLsTool extends AbsTalent {
     }
 
     boolean filtered(Path workPath, Path policyRoot, Path item, boolean showHidden) {
-        return support.isIgnored(workPath, item)
+        return com.udata.harness.repository.ModelConfigurationFiles.isProtected(item) || support.isIgnored(workPath, item)
                 || support.isReadDenied(policyRoot, item, terminal.isSandboxEnabled(), null)
                 || (!showHidden && item.getFileName().toString().startsWith("."));
     }

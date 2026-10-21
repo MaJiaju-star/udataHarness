@@ -481,8 +481,10 @@ public final class SafeMutationTalent extends AbsTalent {
      */
     private Path resolve(String filePath, String cwd, boolean write) throws IOException {
         Path workPath = cwd == null ? workspace : Paths.get(cwd).toAbsolutePath().normalize();
-        return support.resolveSafePath(workPath, filePath, write,
+        Path target = support.resolveSafePath(workPath, filePath, write,
                 terminal.isSandboxEnabled(), false, null);
+        com.udata.harness.repository.ModelConfigurationFiles.requireAllowed(target);
+        return target;
     }
 
     /** 判断是否为不可本地访问的逻辑挂载；此类目标不走本地文件守卫。 */

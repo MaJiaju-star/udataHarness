@@ -21,6 +21,8 @@ public interface UserHarnessEngineService {
      */
     HarnessEngine get(String userId);
 
+    default boolean modelsPending(String userId) { return false; }
+
     default HarnessEngine get(String userId, String workspaceId) {
         return get(userId);
     }

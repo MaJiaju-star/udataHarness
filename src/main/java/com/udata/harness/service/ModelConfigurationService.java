@@ -1,6 +1,6 @@
 package com.udata.harness.service;
 
-import com.udata.harness.repository.ModelSecretVault;
+import com.udata.harness.repository.ModelConfigurationFiles;
 import org.noear.snack4.ONode;
 import org.noear.solon.Solon;
 import org.noear.solon.ai.chat.ChatConfig;
@@ -21,23 +21,19 @@ public class ModelConfigurationService {
     public static final List<String> PROVIDERS = Collections.unmodifiableList(Arrays.asList(
             "openai", "openai-responses", "anthropic", "gemini", "ollama", "dashscope"));
     @Inject("${agent.data-dir:./data}") private String dataDir;
-    @Inject("${agent.model-secrets.master-key-file:}") private String masterKeyFile;
     private Path testRoot;
     private Props testProps;
-    private ModelSecretVault vault;
     public ModelConfigurationService() { }
-    public ModelConfigurationService(Path root, Props props, Path master) {
-        testRoot = root; testProps = props; vault = new ModelSecretVault(root, master);
+    public ModelConfigurationService(Path root, Props props) {
+        testRoot = root; testProps = props;
     }
     private Path root() { return testRoot != null ? testRoot : Paths.get(dataDir).toAbsolutePath().normalize(); }
     private Props props() { return testProps != null ? testProps : Solon.cfg(); }
-    private ModelSecretVault vault() {
-        if (vault == null) vault = new ModelSecretVault(root(), masterKeyFile != null && !masterKeyFile.trim().isEmpty()
-                ? Paths.get(masterKeyFile) : Paths.get(System.getProperty("user.home"),
-                ".udata-harness", "model-keys", UUID.nameUUIDFromBytes(root().toString().getBytes(StandardCharsets.UTF_8)) + ".key"));
-        return vault;
+    private Path file(String user) {
+        Path file = root().resolve("users").resolve(UserWorkspaceService.requireUserId(user)).resolve("models.json");
+        ModelConfigurationFiles.protect(file);
+        return file;
     }
-    private Path file(String user) { return root().resolve("users").resolve(UserWorkspaceService.requireUserId(user)).resolve("models.json"); }
     @SuppressWarnings("unchecked")
     private Map<String, Object> state(String user) {
         UserWorkspaceService.requireUserId(user);
@@ -94,14 +90,14 @@ public class ModelConfigurationService {
         config.setName(string(row.get("id"))); config.setModel(string(row.get("model")));
         config.setApiUrl(string(row.get("apiUrl"))); config.setProvider(string(row.get("provider")));
         config.setContextLength(((Number) row.get("contextLength")).longValue());
-        try { config.setApiKey(vault().read(user, string(row.get("secretRef")))); }
-        catch (IOException e) { throw new IllegalStateException("模型密钥读取失败", e); }
+        if (needsApiKeyReset(row)) throw new IllegalStateException("旧版模型密钥需要在后台重新填写并保存");
+        config.setApiKey(string(row.get("apiKey")));
         return config;
     }
     public synchronized List<ChatConfig> effective(String user) {
         Map<String, ChatConfig> configs = new LinkedHashMap<>();
         for (ChatConfig config : systemModels()) configs.put(config.getNameOrModel(), config);
-        for (Map<String, Object> row : rows(state(user))) if (!Boolean.FALSE.equals(row.get("enabled"))) {
+        for (Map<String, Object> row : rows(state(user))) if (!Boolean.FALSE.equals(row.get("enabled")) && !needsApiKeyReset(row)) {
             ChatConfig config = config(user, row); configs.put(config.getNameOrModel(), config);
         }
         return new ArrayList<>(configs.values());
@@ -121,7 +117,9 @@ public class ModelConfigurationService {
         for (ChatConfig config : systemModels()) list.add(safe(config, "system", config.getNameOrModel()));
         for (Map<String, Object> row : rows(state)) {
             Map<String, Object> item = new LinkedHashMap<>(row);
-            item.remove("secretRef"); item.put("hasApiKey", !string(row.get("secretRef")).isEmpty());
+            item.remove("secretRef"); item.remove("apiKey");
+            item.put("hasApiKey", !string(row.get("apiKey")).isEmpty());
+            item.put("apiKeyNeedsReset", needsApiKeyReset(row));
             item.put("source", "personal"); item.put("name", row.get("id")); list.add(item);
         }
         result.put("models", list); result.put("defaults", new LinkedHashMap<>((Map<?, ?>) state.get("defaults")));
@@ -162,11 +160,11 @@ public class ModelConfigurationService {
         Map<String, Object> row = validated(input, id);
         String key = string(input.get("apiKey"));
         if (key.length() > 16384 || key.contains("\n") || key.contains("\r")) throw new IllegalArgumentException("API Key 格式无效");
-        String ref = previous != null ? string(previous.get("secretRef")) : copied != null ? string(copied.get("secretRef")) : "";
-        if (Boolean.TRUE.equals(input.get("clearApiKey"))) ref = "";
-        if (!key.isEmpty()) try { ref = vault().save(user, key); }
-        catch (IOException e) { throw new IllegalStateException("模型密钥保存失败", e); }
-        row.put("secretRef", ref);
+        Map<String, Object> source = previous != null ? previous : copied;
+        boolean clear = Boolean.TRUE.equals(input.get("clearApiKey"));
+        if (key.isEmpty() && !clear && source != null && needsApiKeyReset(source))
+            throw new IllegalArgumentException("旧版模型密钥需要重新填写，或勾选清除密钥后保存");
+        row.put("apiKey", !key.isEmpty() ? key : clear || source == null ? "" : string(source.get("apiKey")));
         if (previous != null) rows(state).remove(previous);
         rows(state).add(row);
         clearInvalidDefaults(state);
@@ -214,7 +212,10 @@ public class ModelConfigurationService {
             final String sourceId = id;
             Map<String, Object> previous = rows(state(user)).stream().filter(row -> sourceId.equals(row.get("id"))).findFirst().orElse(null);
             Map<String, Object> row = validated(input, "test");
-            row.put("secretRef", previous == null || Boolean.TRUE.equals(input.get("clearApiKey")) ? "" : previous.get("secretRef"));
+            boolean clear = Boolean.TRUE.equals(input.get("clearApiKey"));
+            if (previous != null && needsApiKeyReset(previous) && !clear && string(input.get("apiKey")).isEmpty())
+                throw new IllegalArgumentException("旧版模型密钥需要重新填写");
+            row.put("apiKey", previous == null || clear ? "" : previous.get("apiKey"));
             selected = config(user, row);
             if (!string(input.get("apiKey")).isEmpty()) selected.setApiKey(string(input.get("apiKey")));
         }
@@ -230,5 +231,8 @@ public class ModelConfigurationService {
             result.put("success", false); result.put("message", "连接失败，请检查协议、API 地址、模型标识、密钥及网络（最长等待 20 秒）");
         }
         result.put("durationMs", (System.nanoTime() - started) / 1000000L); return result;
+    }
+    private static boolean needsApiKeyReset(Map<String, Object> row) {
+        return !row.containsKey("apiKey") && !string(row.get("secretRef")).isEmpty();
     }
 }

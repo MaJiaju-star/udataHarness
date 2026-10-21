@@ -15,6 +15,9 @@ import com.udata.harness.repository.UsageAuditRepository;
 import org.noear.solon.ai.AiUsage;
 import com.udata.harness.service.UserHarnessEngineService;
 import com.udata.harness.service.UserWorkspaceService;
+import com.udata.harness.service.ModelConfigurationService;
+import com.udata.harness.common.support.ActiveRunRegistry;
+import org.noear.solon.ai.agent.react.intercept.HITL;
 import org.noear.solon.Solon;
 import org.noear.solon.Utils;
 import org.noear.solon.ai.chat.ChatConfig;
@@ -60,6 +63,23 @@ import java.util.concurrent.ConcurrentHashMap;
  */
 @Component
 public class UserHarnessEngineServiceImpl implements UserHarnessEngineService {
+    @Inject private ModelConfigurationService modelConfigurations;
+    @Inject private ActiveRunRegistry activeRuns;
+    private final Map<String, String> modelRevisions = new ConcurrentHashMap<>();
+
+    @Override
+    public boolean modelsPending(String userId) {
+        if (modelConfigurations == null) return false;
+        String prefix = UserWorkspaceService.requireUserId(userId) + ":";
+        String revision = modelConfigurations.revision(userId);
+        return engines.keySet().stream().anyMatch(key -> key.startsWith(prefix) && !revision.equals(modelRevisions.get(key))) && modelsBusy(userId);
+    }
+
+    private boolean modelsBusy(String userId) {
+        return sessionRepository.list(userId).stream().anyMatch(session -> activeRuns.isActive(session.getSessionId())
+                || sessionRepository.getSession(userId, session.getSessionId()).isPending()
+                || !HITL.getPendingTasks(sessionRepository.getSession(userId, session.getSessionId())).isEmpty());
+    }
     /**
      * 用户设置文件中记录沙箱开关的属性键。
      */
@@ -321,13 +341,37 @@ public class UserHarnessEngineServiceImpl implements UserHarnessEngineService {
     }
 
     @Override
-    public HarnessEngine get(String userId, String workspaceId, String capabilityMode) {
+    public synchronized HarnessEngine get(String userId, String workspaceId, String capabilityMode) {
+        if (modelConfigurations != null) synchronized (modelConfigurations) {
+            return getConfigured(userId, workspaceId, capabilityMode);
+        }
+        return getConfigured(userId, workspaceId, capabilityMode);
+    }
+
+    private HarnessEngine getConfigured(String userId, String workspaceId, String capabilityMode) {
         String mode = CapabilityMode.require(capabilityMode);
         String safeUserId = UserWorkspaceService.requireUserId(userId);
         com.udata.harness.common.domain.WorkspaceMetadata workspace = workspaces.resolve(safeUserId, workspaceId);
         String key = safeUserId + ":" + workspace.getWorkspaceId() + ":" + mode;
-        return engines.computeIfAbsent(key, ignored -> build(
-                safeUserId, workspace.getWorkspaceId(), Paths.get(workspace.getPath()), mode));
+        HarnessEngine engine = engines.get(key);
+        String revision = modelConfigurations == null ? "legacy" : modelConfigurations.revision(safeUserId);
+        if (engine == null) {
+            engine = build(safeUserId, workspace.getWorkspaceId(), Paths.get(workspace.getPath()), mode);
+            engines.put(key, engine); modelRevisions.put(key, revision);
+        } else if (modelConfigurations != null && !revision.equals(modelRevisions.get(key)) && !modelsBusy(safeUserId)) {
+            List<ChatConfig> configs = modelConfigurations.effective(safeUserId);
+            // No active/pending trace can observe this replacement. Avoid restarting MCP/LSP.
+            if (configs.isEmpty()) throw new IllegalStateException("请先在后台管理中配置并启用模型");
+            if (!configs.isEmpty()) {
+                for (ChatConfig config : configs) engine.addModel(config);
+                engine.setDefaultModel(modelConfigurations.preferred(safeUserId, "default"));
+                java.util.Set<String> names = configs.stream().map(ChatConfig::getNameOrModel).collect(java.util.stream.Collectors.toSet());
+                for (ChatConfig old : new ArrayList<>(engine.getModels()))
+                    if (!names.contains(old.getNameOrModel())) engine.removeModel(old.getNameOrModel());
+            }
+            modelRevisions.put(key, revision);
+        }
+        return engine;
     }
 
     /**
@@ -648,11 +692,12 @@ public class UserHarnessEngineServiceImpl implements UserHarnessEngineService {
         }
 
         //2. 从 app.yml 注册模型列表；未配置列表时保留旧单模型配置兼容性。
-        List<ChatConfig> modelConfigs = loadModelConfigs();
+        List<ChatConfig> modelConfigs = modelConfigurations == null ? loadModelConfigs() : modelConfigurations.effective(userId);
+        if (modelConfigs.isEmpty()) throw new IllegalStateException("请先在后台管理中配置并启用模型");
         for (ChatConfig chatConfig : modelConfigs) {
             builder.modelAdd(chatConfig);
         }
-        String defaultModel = modelConfigs.stream()
+        String defaultModel = modelConfigurations != null ? modelConfigurations.preferred(userId, "default") : modelConfigs.stream()
                 .anyMatch(item -> modelName.equals(item.getNameOrModel()))
                 ? modelName : modelConfigs.get(0).getNameOrModel();
         HarnessEngine engine = builder.defaultModel(defaultModel).build();

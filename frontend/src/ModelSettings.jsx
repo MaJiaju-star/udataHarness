@@ -77,11 +77,12 @@ export default function ModelSettings({api, notify, onChanged}) {
                     <label>实际模型标识<input required maxLength={200} value={form.model} onChange={e => field("model", e.target.value)} placeholder="服务端实际识别的 model 值"/></label>
                     <label>API Key<input type="password" autoComplete="new-password" value={form.apiKey} onChange={e => field("apiKey", e.target.value)}
                         placeholder={form.hasApiKey ? "已配置，留空保留原密钥" : "本地无鉴权模型可留空"}/></label>
-                    {form.hasApiKey && <label className="model-checkbox"><input type="checkbox" checked={form.clearApiKey} onChange={e => field("clearApiKey", e.target.checked)}/>清除原密钥（填写新密钥时使用新密钥）</label>}
+                    {(form.hasApiKey || form.apiKeyNeedsReset) && <label className="model-checkbox"><input type="checkbox" checked={form.clearApiKey} onChange={e => field("clearApiKey", e.target.checked)}/>清除原密钥（填写新密钥时使用新密钥）</label>}
                     <label>上下文窗口（Token）<input required type="number" min={1024} max={100000000} step={1} value={form.contextLength} onChange={e => field("contextLength", e.target.value)}/></label>
                     <label className="model-checkbox"><input type="checkbox" checked={form.enabled} onChange={e => field("enabled", e.target.checked)}/>启用，允许新会话选择</label>
                 </fieldset>
-                <div className="model-secret-note"><ShieldCheck size={14}/>密钥不回传浏览器；保存后与普通配置分开加密存储。</div>
+                <div className="model-secret-note"><ShieldCheck size={14}/>密钥不回传浏览器；直接保存在个人模型配置文件中。</div>
+                {form.apiKeyNeedsReset && <div className="model-secret-note">旧版加密密钥已停止使用，请重新填写 API Key 后保存，或勾选清除密钥。</div>}
                 {tested && <div className={`model-banner ${tested.success ? "success" : "error"}`} role="status">{tested.message} · {tested.durationMs} ms</div>}
                 {!readonly && <div className="model-editor-actions">
                     {form.id && <button type="button" className="danger" disabled={!!busy} onClick={() => run("delete", async () => {

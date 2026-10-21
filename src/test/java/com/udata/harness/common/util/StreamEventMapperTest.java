@@ -182,6 +182,30 @@ class StreamEventMapperTest {
     }
 
     @Test
+    void anthropicBlockStartDeltaAndCoreEndShareOneStreamIdentity() {
+        ReActTrace trace = new ReActTrace();
+        ToolCall tool = new ToolCall("idx:2", "toolu-abc", "read", "{\"file_path\":\"a.java\"}", null);
+        ChatEvent start = ChatEventDefault.of(ChatEventType.TOOL_CALL_START)
+                .responseId("msg-claude").step(0).index(2).toolCallId("toolu-abc").toolCall(tool).build();
+        // Anthropic input_json_delta has a block index and call ID, but no ToolCall/name.
+        ChatEvent delta = ChatEventDefault.of(ChatEventType.TOOL_CALL_ARGS_DELTA)
+                .responseId("msg-claude").step(0).index(2).toolCallId("toolu-abc").text("{\"file_path\":").build();
+        // Core-generated end has ToolCall.index=idx:2 and no explicit event index.
+        ChatEvent end = ChatEventDefault.of(ChatEventType.TOOL_CALL_END)
+                .responseId("msg-claude").step(0).toolCallId("toolu-abc").toolCall(tool)
+                .text("{\"file_path\":\"a.java\"}").build();
+        String expected = "msg-claude:0:2";
+        for (ChatEvent event : new ChatEvent[]{start, delta, end}) {
+            Map<String, Object> mapped = StreamEventMapper.mapData(new ToolCallStreamEvent(trace, event));
+            assertEquals(expected, mapped.get("streamId"));
+            assertEquals("toolu-abc", mapped.get("callId"));
+        }
+        ChatEvent another = ChatEventDefault.of(ChatEventType.TOOL_CALL_ARGS_DELTA)
+                .responseId("msg-claude").step(0).index(3).toolCallId("toolu-other").text("{}").build();
+        assertNotEquals(expected, new ToolCallStreamEvent(trace, another).getStreamId());
+    }
+
+    @Test
     void mapsWrappedSubagentEventWithTaskContext() {
         ReActTrace parentTrace = new ReActTrace();
         ChatEvent textDelta = ChatEventDefault.of(ChatEventType.TEXT_DELTA)

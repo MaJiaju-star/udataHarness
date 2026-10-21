@@ -1,6 +1,5 @@
 package com.udata.harness.service;
 
-import com.udata.harness.repository.ModelSecretVault;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import org.noear.solon.core.Props;
@@ -12,7 +11,7 @@ import static org.junit.jupiter.api.Assertions.*;
 class ModelConfigurationServiceTest {
     @TempDir Path root;
     private ModelConfigurationService service(Props props) {
-        return new ModelConfigurationService(root, props, root.resolve("external/master.key"));
+        return new ModelConfigurationService(root, props);
     }
     private Map<String, Object> form() {
         Map<String, Object> input = new LinkedHashMap<>();
@@ -31,7 +30,9 @@ class ModelConfigurationServiceTest {
         assertTrue(reopened.effective("bob").isEmpty());
         String json = org.noear.snack4.ONode.serialize(reopened.list("alice"));
         assertFalse(json.contains("fake-test-key")); assertFalse(json.contains("secretRef"));
-        assertFalse(new String(Files.readAllBytes(root.resolve("users/alice/models.json")), StandardCharsets.UTF_8).contains("fake-test-key"));
+        assertTrue(new String(Files.readAllBytes(root.resolve("users/alice/models.json")), StandardCharsets.UTF_8).contains("fake-test-key"));
+        assertFalse(Files.exists(root.resolve("model-secrets")));
+        assertFalse(Files.exists(root.resolve("external/master.key")));
         input.put("id", id); input.put("apiKey", ""); input.put("label", "重命名"); reopened.save("alice", input);
         assertEquals(id, reopened.effective("alice").get(0).getNameOrModel());
         assertEquals("fake-test-key", reopened.effective("alice").get(0).getApiKey());
@@ -64,14 +65,21 @@ class ModelConfigurationServiceTest {
         assertThrows(IllegalArgumentException.class, () -> service.list("../alice"));
         assertThrows(IllegalArgumentException.class, () -> service.save("bob", input));
     }
-    @Test void corruptFilesAndMissingMasterKeyFailClosed() throws Exception {
-        ModelConfigurationService service = service(new Props()); service.save("alice", form());
-        Files.delete(root.resolve("external/master.key"));
-        assertThrows(IllegalStateException.class, () -> service.effective("alice"));
-        assertFalse(Files.exists(root.resolve("external/master.key")));
-        assertThrows(IllegalStateException.class, () -> service.save("alice", form()));
-        assertFalse(Files.exists(root.resolve("external/master.key")));
-        Files.write(root.resolve("users/alice/models.json"), "invalid-json".getBytes(StandardCharsets.UTF_8));
+    @Test void corruptFilesFailClosedAndLegacyKeysCanBeReplaced() throws Exception {
+        ModelConfigurationService service = service(new Props());
+        String id = service.save("alice", form());
+        Path file = root.resolve("users/alice/models.json");
+        String stored = new String(Files.readAllBytes(file), StandardCharsets.UTF_8);
+        Files.write(file, stored.replace("\"apiKey\":\"fake-test-key\"", "\"secretRef\":\"legacy-reference\"").getBytes(StandardCharsets.UTF_8));
+        assertEquals(true, rows(service, "alice").get(0).get("apiKeyNeedsReset"));
+        assertEquals(false, rows(service, "alice").get(0).get("hasApiKey"));
+        assertTrue(service.effective("alice").isEmpty());
+        Map<String, Object> input = form(); input.put("id", id); input.put("apiKey", "");
+        assertThrows(IllegalArgumentException.class, () -> service.save("alice", input));
+        input.put("apiKey", "replacement-test-key"); service.save("alice", input);
+        assertEquals("replacement-test-key", service.effective("alice").get(0).getApiKey());
+        assertFalse(new String(Files.readAllBytes(file), StandardCharsets.UTF_8).contains("secretRef"));
+        Files.write(file, "invalid-json".getBytes(StandardCharsets.UTF_8));
         assertThrows(IllegalStateException.class, () -> service.list("alice"));
     }
     @Test void personalCopyReusesCredentialsWithoutExposingOrMutatingTheSource() {
@@ -94,9 +102,9 @@ class ModelConfigurationServiceTest {
         org.noear.solon.ai.talents.cli.TerminalTalent terminal = new org.noear.solon.ai.talents.cli.TerminalTalent(
                 new org.noear.solon.ai.talents.mount.MountManager(root.toString()));
         org.noear.solon.ai.talents.cli.BoundedReadTool reader = new org.noear.solon.ai.talents.cli.BoundedReadTool(terminal, root.toString());
-        assertThrows(SecurityException.class, () -> reader.read("external/master.key", 1, 1, null));
+        assertThrows(SecurityException.class, () -> reader.read("users/alice/models.json", 1, 1, null));
         org.noear.solon.ai.talents.cli.BoundedGrepTool grep = new org.noear.solon.ai.talents.cli.BoundedGrepTool(terminal, root.toString());
-        assertThrows(SecurityException.class, () -> grep.grep(".*", "model-secrets", null, "content", null, null, null, null, null));
+        assertThrows(SecurityException.class, () -> grep.grep(".*", "users/alice/models.json", null, "content", null, null, null, null, null));
     }
 
     @Test void testConnectionUsesDraftAndRetainedKeyWithoutSavingIt() throws Exception {

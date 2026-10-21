@@ -10,6 +10,8 @@ import IdeaToolbar from "./IdeaToolbar.jsx";
 import SessionHistory from "./SessionHistory.jsx";
 import ContextPanel from "./ContextPanel.jsx";
 import ToolCallHeader from "./ToolCallHeader.jsx";
+import ModelSettings from "./ModelSettings.jsx";
+import {findToolStreamIndex} from "./toolStream.js";
 import ReferenceInput from "./ReferenceInput.jsx";
 import {usePageDialog} from "./usePageDialog.jsx";
 import {accumulateTokenUsage, emptyTokenUsage, summarizeAudit, cacheHitRate, firstTokenLatencyText} from "./tokenUsage.js";
@@ -224,7 +226,7 @@ function mergeSubagentTool(tools, activities, event) {
         }
     };
     if (subtype === "tool_args_start") {
-        if (!nextTools.some(tool => tool.streamId === event.streamId)) {
+        if (findToolStreamIndex(nextTools, event) < 0) {
             const tool = {
                 callId: `subagent-stream-${event.streamId || uid()}`,
                 streamId: event.streamId,
@@ -238,7 +240,7 @@ function mergeSubagentTool(tools, activities, event) {
             nextTools.push(tool);
         }
     } else if (subtype === "tool_args_delta") {
-        let index = nextTools.findIndex(tool => tool.streamId === event.streamId);
+        let index = findToolStreamIndex(nextTools, event);
         if (index < 0) {
             const tool = {
                 callId: `subagent-stream-${event.streamId || uid()}`,
@@ -260,7 +262,7 @@ function mergeSubagentTool(tools, activities, event) {
             argsText: `${nextTools[index].argsText || ""}${asText(event.content)}`
         };
     } else if (subtype === "tool_args_end") {
-        const index = nextTools.findIndex(tool => tool.streamId === event.streamId);
+        const index = findToolStreamIndex(nextTools, event);
         if (index >= 0) nextTools[index] = {
             ...nextTools[index],
             providerCallId: event.callId || nextTools[index].providerCallId,
@@ -1027,11 +1029,12 @@ function App() {
                 next.activities = next.activities.map(item =>
                     item.type === "thinking" && item.active ? {...item, active: false} : item
                 );
-                const existing = next.tools.find(tool => tool.streamId === event.streamId);
+                const existing = next.tools[findToolStreamIndex(next.tools, event)];
                 if (!existing) {
                     const tool = {
                         callId: `stream-${event.streamId || uid()}`,
                         streamId: event.streamId,
+                        providerCallId: event.callId,
                         name: event.toolName || "正在生成工具调用",
                         argsText: "",
                         generating: true,
@@ -1048,11 +1051,11 @@ function App() {
                 }
             }
             if (event.type === "tool_args_delta") {
-                let index = next.tools.findIndex(tool => tool.streamId === event.streamId);
+                let index = findToolStreamIndex(next.tools, event);
                 if (index < 0) {
                     const callId = `stream-${event.streamId || uid()}`;
                     next.tools.push({
-                        callId, streamId: event.streamId,
+                        callId, streamId: event.streamId, providerCallId: event.callId,
                         name: event.toolName || "正在生成工具调用",
                         argsText: "", generating: true, streamed: true, running: false
                     });
@@ -1063,9 +1066,10 @@ function App() {
                 }
                 next.tools[index] = {
                     ...next.tools[index],
+                    providerCallId: event.callId || next.tools[index].providerCallId,
                     name: event.toolName || next.tools[index].name,
                     argsText: `${next.tools[index].argsText || ""}${asText(event.content)}`,
-                    generating: true
+                    generating: !next.tools[index].executionStarted
                 };
                 if (isTodoTool(next.tools[index].name)) {
                     ensureTodoActivity(next.tools[index].callId);
@@ -1073,9 +1077,10 @@ function App() {
                 }
             }
             if (event.type === "tool_args_end") {
-                const index = next.tools.findIndex(tool => tool.streamId === event.streamId);
+                const index = findToolStreamIndex(next.tools, event);
                 if (index >= 0) next.tools[index] = {
                     ...next.tools[index],
+                    providerCallId: event.callId || next.tools[index].providerCallId,
                     name: event.toolName || next.tools[index].name,
                     argsText: asText(event.content) || next.tools[index].argsText,
                     generating: false
@@ -1091,10 +1096,11 @@ function App() {
                 next.activities = next.activities.map(item =>
                     item.type === "thinking" && item.active ? {...item, active: false} : item
                 );
-                const streamedIndex = next.tools.findIndex(tool =>
+                let streamedIndex = event.callId ? next.tools.findIndex(tool =>
+                    tool.callId === event.callId || tool.providerCallId === event.callId) : -1;
+                if (streamedIndex < 0) streamedIndex = next.tools.findIndex(tool =>
                     tool.streamed && !tool.executionStarted
-                    && (!event.toolName || tool.name === event.toolName)
-                );
+                    && (!event.toolName || tool.name === event.toolName));
                 if (streamedIndex >= 0) {
                     const previousCallId = next.tools[streamedIndex].callId;
                     const callId = event.callId || previousCallId;
@@ -1129,7 +1135,7 @@ function App() {
             if (event.type === "tool_end") {
                 const index = next.tools.findIndex(tool => event.callId ? tool.callId === event.callId : tool.running);
                 if (index >= 0) next.tools[index] = {
-                    ...next.tools[index], running: false, durationMs: event.durationMs,
+                    ...next.tools[index], running: false, generating: false, durationMs: event.durationMs,
                     output: event.error || event.content, error: Boolean(event.error),
                     editDiff: event.editDiff, bashOutput: event.bashOutput
                 };
@@ -1396,7 +1402,15 @@ function App() {
         return <>
             {pageDialog}
             <AdminShell api={api} notify={notify} userId={userId} workspace={meta?.workspace}
-                        onBack={() => {
+                        onModelsChanged={async () => {
+                            const fresh = await api("/api/meta"); setMeta(fresh);
+                            setSelectedModel(value => (fresh.models || []).some(row => row.name === value) ? value : "");
+                        }}
+                        onBack={async () => {
+                            try {
+                                const fresh = await api("/api/meta"); setMeta(fresh);
+                                setSelectedModel(value => (fresh.models || []).some(row => row.name === value) ? value : "");
+                            } catch (error) { notify(error.message); }
                             window.location.hash = "";
                             setPage("workspace");
                         }}/>
@@ -1473,7 +1487,7 @@ function App() {
                         <h1>{title}</h1>
                         <span className="header-meta">
                             {running || current?.active ? <><span className="pulse-dot"/> 智能体运行中</> :
-                                <><span className="ready-dot"/> {meta?.models?.[0]?.model || "正在连接"}</>}
+                                <><span className="ready-dot"/> {meta?.models?.[0]?.model || (meta?.modelsReady === false ? "请到后台配置模型" : "正在连接")}</>}
                         </span>
                     </div>
                     <button className="global-search-trigger" onClick={() => setGlobalSearch({mode: "content"})}>
@@ -1488,7 +1502,7 @@ function App() {
                             <button className="stop-button" onClick={() => stopRun().catch(error => notify(error.message))}>
                                 <CircleStop size={16}/> 停止
                             </button>}
-                        <div className="model-chip"><Zap size={14}/>{selectedModel || meta?.defaultModel || "model"}</div>
+                        <div className="model-chip"><Zap size={14}/>{activeModel?.label || activeModel?.name || "未配置模型"}</div>
                     </div>
                 </header>}
 
@@ -1548,8 +1562,8 @@ function App() {
                     </label>
                     <label>模型
                         <select value={newSessionModel} onChange={event => setNewSessionModel(event.target.value)}>
-                            <option value="">模式默认 · {meta?.modeModels?.[newSessionMode] || meta?.defaultModel || "默认模型"}</option>
-                            {(meta?.models || []).map(item => <option key={item.name} value={item.name}>{item.name}</option>)}
+                            <option value="">模式默认 · {meta?.models?.find(row => row.name === (meta?.modeModels?.[newSessionMode] || meta?.defaultModel))?.label || "默认模型"}</option>
+                            {(meta?.models || []).map(item => <option key={item.name} value={item.name}>{item.label || item.name}</option>)}
                         </select>
                     </label>
                     <div className="capability-dialog-actions">
@@ -1564,9 +1578,10 @@ function App() {
     );
 }
 
-function AdminShell({api, notify, userId, workspace, onBack}) {
-    const [section, setSection] = useState("mcp");
+function AdminShell({api, notify, userId, workspace, onBack, onModelsChanged}) {
+    const [section, setSection] = useState("models");
     const sections = [
+        {id: "models", label: "模型配置", description: "连接与默认模型", icon: Bot},
         {id: "mcp", label: "MCP 管理", description: "外部工具服务", icon: Network},
         {id: "lsp", label: "LSP 管理", description: "代码理解服务", icon: FileCode2},
         {id: "skills", label: "Skill 管理", description: "可复用能力包", icon: Sparkles},
@@ -1607,6 +1622,7 @@ function AdminShell({api, notify, userId, workspace, onBack}) {
                 <button onClick={onBack}><ArrowLeft size={16}/>返回对话</button>
             </header>
             <section className="admin-content">
+                {section === "models" && <ModelSettings api={api} notify={notify} onChanged={onModelsChanged}/>}
                 {section === "mcp" && <IntegrationsView api={api} notify={notify}/>}
                 {section === "lsp" && <LspView api={api} notify={notify}/>}
                 {section === "skills" && <CapabilitiesView api={api} notify={notify} section="skills"/>}
@@ -2121,10 +2137,11 @@ function ChatView({api, current, messages, running, stopping, onStop, models, se
                     <div className="composer-config-bar">
                         <label>
                             <Bot size={13}/><span>模型</span>
-                            <select value={selectedModel} disabled={running}
+                            <select value={selectedModel} disabled={running || !models.length}
                                     onChange={event => onModelChange(event.target.value)}>
+                                {!models.length && <option value="">请先配置模型</option>}
                                 {models.map(item => <option key={item.name} value={item.name}>
-                                    {item.name}
+                                    {item.label || item.name}
                                 </option>)}
                             </select>
                         </label>
@@ -2194,7 +2211,7 @@ function ChatView({api, current, messages, running, stopping, onStop, models, se
                             </button>
                             <span><Activity size={14}/>{running ? "正在执行任务" : "/ Skill · @ 文件/目录 · # SubAgent"}</span>
                         </div>
-                        <button className="send-button" onClick={submit} disabled={!prompt.trim()}
+                        <button className="send-button" onClick={submit} disabled={!prompt.trim() || !models.length}
                                 aria-label={running || pendingPrompts.length > 0 ? "加入待发送队列" : "发送消息"}
                                 title={running || pendingPrompts.length > 0 ? "加入待发送队列" : "发送消息"}>
                             <Send size={17}/>
@@ -2547,7 +2564,7 @@ function RuntimeChunkCard({chunk}) {
 function ToolCall({tool}) {
     const [open, setOpen] = useState(Boolean(tool.generating));
     useEffect(() => {
-        if (tool.generating) setOpen(true);
+        setOpen(Boolean(tool.generating));
     }, [tool.generating]);
     if (isTodoTool(tool.name)) {
         return <TodoCard todo={mergeTodoTool(null, tool)}/>;
