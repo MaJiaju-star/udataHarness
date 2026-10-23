@@ -313,6 +313,9 @@ public class SessionServiceImpl implements SessionService {
         Object storedActivities = session.getContext().get(ChatServiceImpl.FILE_ACTIVITIES_KEY);
         Map<?, ?> activitiesByRun = storedActivities instanceof Map<?, ?>
                 ? (Map<?, ?>) storedActivities : Collections.emptyMap();
+        Object storedMemories = session.getContext().get(com.udata.harness.memory.MemoryService.HISTORY_KEY);
+        Map<?, ?> memoriesByRun = storedMemories instanceof Map ? (Map<?, ?>) storedMemories : Collections.emptyMap();
+        java.util.Set<String> shownMemories = new java.util.HashSet<>();
         //2. 顺序遍历历史：ToolMessage 按 callId 回填工具输出，其余消息转为 UI 结构。
         for (ChatMessage message : session.getMessages()) {
             if (message instanceof ToolMessage) {
@@ -356,6 +359,8 @@ public class SessionServiceImpl implements SessionService {
             }
             if (message instanceof AssistantMessage) {
                 Object runId = message.getMetadata().get("_runId");
+                if (runId != null && memoriesByRun.containsKey(String.valueOf(runId)) && shownMemories.add(String.valueOf(runId)))
+                    item.put("memoryRecall", memoriesByRun.get(String.valueOf(runId)));
                 Object fileActivities = runId == null ? null : activitiesByRun.get(String.valueOf(runId));
                 if (fileActivities != null) {
                     item.put("fileActivities", fileActivities);

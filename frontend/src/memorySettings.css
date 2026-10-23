@@ -1,0 +1,17 @@
+.memory-settings .memory-controls, .memory-log { max-width: 1200px; margin: 0 auto 20px; border: 1px solid var(--border-default); background: var(--surface-1); border-radius: 12px; padding: 20px; }
+.memory-controls p { font-size: 12px; color: var(--text-secondary); line-height: 1.8; margin: 12px 0 18px; }
+.memory-state { font-size: 11px; color: var(--text-secondary); }
+.memory-filter { display: flex; gap: 10px; align-items: end; max-width: 1200px; margin: 0 auto 16px; }
+.memory-filter label:first-child, .memory-filter > input { flex: 1; min-width: 0; }
+.memory-filter > select { max-width: 130px; }.memory-filter > button { flex-shrink: 0; }
+.memory-filter label:nth-child(2) { max-width: 175px; }
+.memory-tabs { display: flex; gap: 8px; max-width: 1200px; margin: 0 auto 18px; }
+.memory-settings textarea { box-sizing: border-box; width: 100%; resize: vertical; padding: 10px; border: 1px solid var(--border-default); border-radius: 7px; background: var(--surface-1); color: var(--text-primary); font: inherit; line-height: 1.7; }
+.memory-settings textarea:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.memory-log article { padding: 14px 0; border-bottom: 1px solid var(--border-default); overflow-wrap: anywhere; }
+.memory-log b, .memory-log small { display: block; font-size: 12px; }.memory-log small { margin-top: 6px; color: var(--text-secondary); }
+.memory-log p { white-space: pre-wrap; font-size: 12px; line-height: 1.7; }.memory-log summary { cursor: pointer; font-size: 12px; color: var(--text-secondary); }
+.memory-recall { max-width: 640px; margin: 0 0 12px; color: var(--text-secondary); font-size: 11px; }
+.memory-recall summary { cursor: pointer; }.memory-recall article { border-left: 2px solid var(--border-default); padding: 4px 12px; margin: 10px 0; }
+.memory-recall p { white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.7; }
+@media(max-width: 600px) { .memory-filter { flex-wrap: wrap; }.memory-filter label:first-child { flex-basis: 100%; }.memory-controls { padding: 15px; }.memory-tabs button { flex: 1; } }

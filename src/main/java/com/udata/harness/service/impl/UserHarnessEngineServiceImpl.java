@@ -589,7 +589,7 @@ public class UserHarnessEngineServiceImpl implements UserHarnessEngineService {
                 .disallowedToolsAdd(disabledWebTools())
                 .disallowedToolsAdd(disabledOptionalTools())
                 .disallowedToolsAdd(CapabilityMode.SUPER.equals(capabilityMode)
-                        ? Arrays.asList("memory") // No memory provider is configured by this application.
+                        ? Arrays.asList("memory") // Request-scoped UdataMemory Talent enforces user/project isolation and the per-user switch.
                         : Arrays.asList("verify", "now", "skillread", "skillrefresh",
                                 "task", "multitask", "subagent", "lsp", "todoread", "todowrite",
                                 "bash_start", "bash_wait", "bash_stop", "websearch", "codesearch", "webfetch"))

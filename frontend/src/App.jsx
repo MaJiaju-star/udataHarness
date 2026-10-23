@@ -14,6 +14,7 @@ import ToolGroup from "./ToolGroup.jsx";
 import {groupToolActivities} from "./toolGroups.js";
 import ModelSettings from "./ModelSettings.jsx";
 import NotificationSettings from "./NotificationSettings.jsx";
+import MemorySettings from "./MemorySettings.jsx";
 import ScheduledTasks from "./ScheduledTasks.jsx";
 import ComposerPopover from "./ComposerPopover.jsx";
 import useConversationTimer from "./useConversationTimer.js";
@@ -1017,6 +1018,7 @@ function App() {
                     next.activities.push({id: `todo-${messageId}`, type: "todo"});
                 }
             };
+            if (event.type === "memory_recall") next.memoryRecall = event;
             if (event.type === "text" || event.type === "text_replay") {
                 const merged = mergeReasonContentActivities(
                     next.activities,
@@ -1601,6 +1603,7 @@ function AdminShell({api, notify, userId, workspace, onBack, onModelsChanged}) {
     const sections = [
         {id: "models", label: "模型配置", description: "连接与默认模型", icon: Bot},
         {id: "notifications", label: "通知配置", description: "HTTP 回调与发送记录", icon: Send},
+        {id: "memory", label: "心智记忆", description: "全局与项目长期记忆", icon: Sparkles},
         {id: "mcp", label: "MCP 管理", description: "外部工具服务", icon: Network},
         {id: "lsp", label: "LSP 管理", description: "代码理解服务", icon: FileCode2},
         {id: "skills", label: "Skill 管理", description: "可复用能力包", icon: Sparkles},
@@ -1642,6 +1645,7 @@ function AdminShell({api, notify, userId, workspace, onBack, onModelsChanged}) {
             </header>
             <section className="admin-content">
                 {section === "notifications" && <NotificationSettings api={api} notify={notify}/>}
+                {section === "memory" && <MemorySettings api={api} notify={notify} currentWorkspace={workspace}/>}
                 {section === "models" && <ModelSettings api={api} notify={notify} onChanged={onModelsChanged}/>}
                 {section === "mcp" && <IntegrationsView api={api} notify={notify}/>}
                 {section === "lsp" && <LspView api={api} notify={notify}/>}
@@ -2355,6 +2359,9 @@ function Message({message, onDecide, onOpenFile, toolView}) {
         </div>
         <div className="message-body">
             <div className="message-author">{message.role === "user" ? "你" : "UdataBuddy"}</div>
+            {message.memoryRecall?.enabled && <details className="memory-recall"><summary>本轮使用记忆 {message.memoryRecall.entries?.length || 0} 条 · 约 {message.memoryRecall.estimatedTokens || 0} Token</summary>
+                {(message.memoryRecall.entries || []).map(row => <article key={row.id}><b>{row.scope === "global" ? "全局" : "项目"} · {row.key}</b><p>{row.content}</p><small>来源：{row.source === "manual" ? "后台录入" : row.source} · 版本 {row.revision}</small></article>)}
+                {!message.memoryRecall.entries?.length && <p>本轮未检索到符合预算的相关记忆。</p>}</details>}
             {!hasThinkingActivities && thinking && <Thinking content={thinking} active={parsed.pending}/>}
             {timeline.map(activity => {
                 if (activity.type === "tool_group") return <ToolGroup key={activity.id} tools={activity.tools} renderTool={renderTool}/>;

@@ -101,6 +101,7 @@ public class ChatServiceImpl implements ChatService {
 
     @Inject private com.udata.harness.common.support.ScheduledRunEvents scheduledRunEvents;
     @Inject private com.udata.harness.notification.NotificationService notifications;
+    @Inject private com.udata.harness.memory.MemoryService memories;
 
     /**
      * 用户工作区服务，用于校验会话工作区并解析工作目录。
@@ -179,6 +180,12 @@ public class ChatServiceImpl implements ChatService {
         String thinkingDepth = normalizeThinkingDepth(request.getThinkingDepth());
         try {
             rememberRunOptions(session, selectedModel, thinkingDepth);
+            if (memories != null) {
+                // Use only the user's own message for write intent; editor attachments are untrusted source data.
+                session.getContext().put(com.udata.harness.memory.MemoryService.SNAPSHOT_KEY,
+                        memories.snapshot(userId, metadata.getWorkspaceId(), request.getPrompt()));
+                session.updateSnapshot();
+            }
             session.getContext().put(com.udata.harness.common.support.ScheduledRunEvents.SESSION_KEY,
                     executionId == null ? "" : executionId);
             if (executionId != null) session.updateSnapshot();
@@ -384,12 +391,16 @@ public class ChatServiceImpl implements ChatService {
         Path workspace = java.nio.file.Paths.get(workspaces.resolve(userId, metadata.getWorkspaceId()).getPath());
         HarnessEngine engine = engines.get(userId, metadata.getWorkspaceId(), metadata.getCapabilityMode());
         //1. 组装本次模型调用的重试、拦截器、cwd、模型与思考档位配置。
+        Object saved = session.getContext().get(com.udata.harness.memory.MemoryService.SNAPSHOT_KEY);
+        final Map<String, Object> memorySnapshot = saved instanceof Map ? (Map<String, Object>) saved : java.util.Collections.emptyMap();
         Flux<String> chunks = engine.prompt(prompt)
                 .session(session)
                 .options(options -> {
                     options.retryConfig(modelMaxAttempts, modelRetryInitialDelayMs);
                     options.interceptorAdd(new ToolCallStreamInterceptor());
                     options.toolContextPut(HarnessEngine.ATTR_CWD, workspace.toString());
+                    com.udata.harness.memory.MemoryTalent.configure(options, memories, userId,
+                            metadata.getWorkspaceId(), session.getSessionId(), memorySnapshot);
                     if (!isBlank(selectedModel)) {
                         if (engine.getModelOrNil(selectedModel) == null)
                             throw new IllegalArgumentException("所选模型不存在或已停用，请重新选择模型");
@@ -405,7 +416,11 @@ public class ChatServiceImpl implements ChatService {
                 // HITL 审批恢复会重放挂起前同一 reasonId 的文本；该文本已经在上一个
                 // SSE 分段发给浏览器，必须在映射前过滤，避免前端再次追加。
                 .filter(chunk -> !StreamEventMapper.isReasonReplay(chunk, suspendedReasonId))
-                .doOnNext(chunk -> trackFileActivity(workspace, session, chunk))
+                .doOnNext(chunk -> {
+                    trackFileActivity(workspace, session, chunk);
+                    if (engine.getMainAgent().name().equals(chunk.getAgentName()))
+                        com.udata.harness.memory.MemoryService.recordRecall(session, chunk.getRunId(), memorySnapshot);
+                })
                 .map(chunk -> {
                     Map<String, Object> event = StreamEventMapper.mapData(chunk);
                     if (notifications != null) notifications.observe(session, event);
@@ -416,7 +431,8 @@ public class ChatServiceImpl implements ChatService {
 
         //2. 过滤 HITL 恢复重放的 Reason 文本，跟踪文件活动并映射为标准 SSE JSON；
         //   随后在流结束时检查是否出现新的挂起任务。
-        return chunks.concatWith(Flux.defer(() -> {
+        Map<String, Object> recallEvent = com.udata.harness.memory.MemoryService.recallView(memorySnapshot);
+        return Flux.concat(Flux.just(ONode.serialize(recallEvent)), chunks).concatWith(Flux.defer(() -> {
             List<HITLTask> pendingTasks = HITL.getPendingTasks(session);
             if (pendingTasks.isEmpty()) {
                 return Flux.empty();

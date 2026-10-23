@@ -192,6 +192,8 @@ public class TaskTalent extends AbsTalent {
                         .session(session)
                         .options(o -> {
                             o.toolContextPut(HarnessEngine.ATTR_CWD, __cwd);
+                            com.udata.harness.memory.MemoryTalent memory = com.udata.harness.memory.MemoryTalent.inherited(__parentSession);
+                            if (memory != null) o.talentAdd(memory);
                             o.toolContextPut(ChatSession.ATTR_SESSIONID, __sessionId);
                         })
                         .stream()
@@ -221,6 +223,8 @@ public class TaskTalent extends AbsTalent {
                         .session(session)
                         .options(o -> {
                             o.toolContextPut(HarnessEngine.ATTR_CWD, __cwd);
+                            com.udata.harness.memory.MemoryTalent memory = com.udata.harness.memory.MemoryTalent.inherited(__parentSession);
+                            if (memory != null) o.talentAdd(memory);
                             o.toolContextPut(ChatSession.ATTR_SESSIONID, __sessionId);
                         })
                         .stream()
