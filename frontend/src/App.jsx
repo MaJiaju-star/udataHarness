@@ -15,7 +15,8 @@ import VirtualMessageList from "./VirtualMessageList.jsx";
 import {HistoryProvider, MessageScope, HistoryContent, DeferredToolDetails, useDisclosure, useHistoryChunks, ChunkActions} from "./HistoryView.jsx";
 import {prependHistory, mergeLatestHistory} from "./historyPaging.js";
 import {createScrollFollow} from "./scrollFollow.js";
-import StreamMarkdown from "./StreamMarkdown.jsx";
+import useSmoothScroll from "./useSmoothScroll.js";
+import StreamMarkdown, {StreamMotionContext, StreamText} from "./StreamMarkdown.jsx";
 import {streamStyle} from "./streamTail.js";
 import {groupToolActivities} from "./toolGroups.js";
 import ModelSettings from "./ModelSettings.jsx";
@@ -1863,8 +1864,11 @@ function ChatView({api, current, messages, historyPage, onLoadOlder, onReloadHis
     const captureHistoryAnchor = useRef(null);
     const scrollFollowRef = useRef(null);
     if (!scrollFollowRef.current) scrollFollowRef.current = createScrollFollow();
-    const programmaticScrollRef = useRef(false);
-    const scrollTimerRef = useRef(null);
+    const isFollowing = useCallback(() => scrollFollowRef.current.isFollowing(), []);
+    const messageScroller = useSmoothScroll(scrollContainerRef, isFollowing);
+    const followOutput = useCallback((instant = false) => {
+        if (instant) messageScroller.snap(); else messageScroller.follow();
+    }, [messageScroller]);
     const activePath = useWorkspaceStore(state => state.activePath);
     const selections = useWorkspaceStore(state => state.selections);
     const referenceEnabled = useWorkspaceStore(state => state.referenceEnabled);
@@ -1892,62 +1896,42 @@ function ChatView({api, current, messages, historyPage, onLoadOlder, onReloadHis
         };
     }, []);
 
-    const isFollowing = useCallback(() => scrollFollowRef.current.isFollowing(), []);
     const scrollToBottom = useCallback((behavior = "auto") => {
         const element = scrollContainerRef.current;
         if (!element) return;
         scrollFollowRef.current.resume();
-        programmaticScrollRef.current = behavior === "smooth";
         setShowScrollToBottom(false);
-        element.scrollTo({top: element.scrollHeight, behavior});
-        if (scrollTimerRef.current) window.clearTimeout(scrollTimerRef.current);
-        if (behavior === "smooth") {
-            scrollTimerRef.current = window.setTimeout(() => {
-                programmaticScrollRef.current = false;
-            }, 500);
-        }
-    }, []);
+        if (behavior === "smooth") messageScroller.follow(); else messageScroller.snap();
+    }, [messageScroller]);
 
     const handleMessageScroll = () => {
         const element = scrollContainerRef.current;
         if (!element) return;
-        const nearBottom = element.scrollHeight - element.scrollTop - element.clientHeight <= 60;
-        if (programmaticScrollRef.current) {
-            if (nearBottom) programmaticScrollRef.current = false;
-            return;
-        }
         setShowScrollToBottom(!scrollFollowRef.current.isFollowing());
     };
 
     const pauseAutoFollow = () => {
-        if (programmaticScrollRef.current) {
-            const element = scrollContainerRef.current;
-            element?.scrollTo({top: element.scrollTop, behavior: "instant"});
-        }
-        programmaticScrollRef.current = false;
         scrollFollowRef.current.pause();
+        messageScroller.stop();
         setShowScrollToBottom(true);
     };
 
     useEffect(() => {
+        messageScroller.stop();
         scrollFollowRef.current.resume();
         setShowScrollToBottom(false);
         const frame = window.requestAnimationFrame(() => scrollFollowRef.current.follow(() => scrollToBottom()));
         return () => window.cancelAnimationFrame(frame);
-    }, [current?.sessionId, scrollToBottom]);
+    }, [current?.sessionId, scrollToBottom, messageScroller]);
 
     useEffect(() => {
         if (!scrollFollowRef.current.isFollowing()) {
             setShowScrollToBottom(true);
             return undefined;
         }
-        const frame = window.requestAnimationFrame(() => scrollFollowRef.current.follow(() => scrollToBottom()));
+        const frame = window.requestAnimationFrame(() => scrollFollowRef.current.follow(() => messageScroller.follow()));
         return () => window.cancelAnimationFrame(frame);
-    }, [messages, running, scrollToBottom]);
-
-    useEffect(() => () => {
-        if (scrollTimerRef.current) window.clearTimeout(scrollTimerRef.current);
-    }, []);
+    }, [messages, running, messageScroller]);
 
     useEffect(() => {
         if (!promptInsertion || !current || lastInsertionRef.current === promptInsertion.id) return;
@@ -2096,7 +2080,7 @@ function ChatView({api, current, messages, historyPage, onLoadOlder, onReloadHis
              onScroll={handleMessageScroll} tabIndex={0} role="region" aria-label="对话消息"
              onClickCapture={event => { if (event.target.closest("button, summary") && !event.target.closest(".hitl-card")) { pauseAutoFollow(); captureHistoryAnchor.current?.(); } }}
              onWheel={event => event.deltaY < 0 && pauseAutoFollow()}
-             onPointerDown={event => { if (event.target === event.currentTarget) pauseAutoFollow(); }}
+             onPointerDown={event => { if (event.target === event.currentTarget || event.target.closest(".thinking-content pre")) pauseAutoFollow(); }}
              onKeyDown={event => {
                  if (event.target === event.currentTarget && ["ArrowUp", "PageUp", "Home"].includes(event.key)) pauseAutoFollow();
              }}
@@ -2118,7 +2102,9 @@ function ChatView({api, current, messages, historyPage, onLoadOlder, onReloadHis
                     {historyPage?.error && !historyPage.hasMore && <button type="button" onClick={onReloadHistory}>重试加载</button>}
                 </div>
                 <HistoryProvider api={api} sessionId={current?.sessionId}>
-                    <VirtualMessageList key={current?.sessionId} messages={messages} scrollRef={scrollContainerRef} captureRef={captureHistoryAnchor} isFollowing={isFollowing} renderMessage={renderMessage}/>
+                    <StreamMotionContext.Provider value={showScrollToBottom}>
+                        <VirtualMessageList key={current?.sessionId} messages={messages} scrollRef={scrollContainerRef} captureRef={captureHistoryAnchor} isFollowing={isFollowing} followOutput={followOutput} renderMessage={renderMessage}/>
+                    </StreamMotionContext.Provider>
                 </HistoryProvider>
                 {running && messages.at(-1)?.role !== "assistant" &&
                     <div className="typing-row"><span/><span/><span/></div>}
@@ -2436,12 +2422,12 @@ const Message = memo(function Message({message, onDecide, onOpenFile, toolView, 
             {message.memoryRecall?.enabled && <details className="memory-recall"><summary>本轮使用记忆 {message.memoryRecall.entries?.length || 0} 条 · 约 {message.memoryRecall.estimatedTokens || 0} Token</summary>
                 {(message.memoryRecall.entries || []).map(row => <article key={row.id}><b>{row.scope === "global" ? "全局" : "项目"} · {row.key}</b><p>{row.content}</p><small>来源：{row.source === "manual" ? "后台录入" : row.source} · 版本 {row.revision}</small></article>)}
                 {!message.memoryRecall.entries?.length && <p>本轮未检索到符合预算的相关记忆。</p>}</details>}
-            {!hasThinkingActivities && thinking && <Thinking content={thinking} active={parsed.pending}/>}
+            {!hasThinkingActivities && thinking && <Thinking content={thinking} active={animate && parsed.pending} streamEffect={streamEffect}/>}
             {timeline.map(activity => {
                 if (activity.type === "tool_group") return <ToolGroup key={activity.id} tools={activity.tools} renderTool={renderTool}/>;
                 if (activity.type === "thinking") {
                     return <Thinking key={`thinking-${activity.id}`} disclosureId={activity.id} contentRef={activity.contentRef} content={activity.content}
-                                     active={activity.active}/>;
+                                     active={animate && activity.active} streamEffect={streamEffect}/>;
                 }
                 if (activity.type === "tool") {
                     const tool = message.tools?.find(item => item.callId === activity.callId);
@@ -2452,7 +2438,7 @@ const Message = memo(function Message({message, onDecide, onOpenFile, toolView, 
                 }
                 if (activity.type === "subagent") {
                     const subagent = message.subagents?.[activity.subagentId];
-                    return subagent ? <MessageScope key={activity.id} id={`child:${subagent.subagentId}`}><SubagentCard subagent={subagent}/></MessageScope> : null;
+                    return subagent ? <MessageScope key={activity.id} id={`child:${subagent.subagentId}`}><SubagentCard subagent={subagent} streamEffect={streamEffect}/></MessageScope> : null;
                 }
                 if (activity.type === "runtime_chunk") {
                     const chunk = message.runtimeChunks?.[activity.chunkId];
@@ -2562,7 +2548,7 @@ function FileActivitySummary({tools, activities, onOpenFile}) {
     </section>;
 }
 
-const Thinking = memo(function Thinking({content, active = false, disclosureId = "thinking", contentRef}) {
+const Thinking = memo(function Thinking({content, active = false, disclosureId = "thinking", contentRef, streamEffect = "soft"}) {
     const [open, setOpen] = useDisclosure(`thinking:${disclosureId}`, active, active);
     const preview = useMemo(() => content.slice(0, 512).replace(/\s+/g, " ").trim().slice(0, 88), [content]);
     return <div className={`thinking-card ${open ? "is-open" : ""} ${active ? "active" : ""}`}>
@@ -2576,12 +2562,13 @@ const Thinking = memo(function Thinking({content, active = false, disclosureId =
             {open ? <ChevronDown size={16}/> : <ChevronRight size={16}/>}
         </button>
         <div className={`thinking-collapse ${open ? "open" : ""}`} aria-hidden={!open}>
-            {open && <div className="thinking-content"><div className="thinking-line"/><HistoryContent reference={contentRef} initial={content} render={text => <pre>{text}</pre>}/></div>}
+            {open && <div className="thinking-content"><div className="thinking-line"/><HistoryContent reference={contentRef} initial={content}
+                render={text => <StreamText content={text} active={active} mode={streamEffect}/>}/></div>}
         </div>
     </div>;
 });
 
-function SubagentCard({subagent}) {
+function SubagentCard({subagent, streamEffect}) {
     const running = subagent.status === "running";
     const [open, setOpen] = useDisclosure(`subagent:${subagent.subagentId}`, false);
     const activities = subagent.activities || [];
@@ -2615,7 +2602,7 @@ function SubagentCard({subagent}) {
             {activities.map(activity => {
                 if (activity.type === "thinking") {
                     return <Thinking key={`subagent-thinking-${activity.id}`} disclosureId={activity.id}
-                                     content={activity.content} active={activity.active}/>;
+                                     content={activity.content} active={running && activity.active} streamEffect={streamEffect}/>;
                 }
                 if (activity.type === "text" && activity.content) {
                     return running

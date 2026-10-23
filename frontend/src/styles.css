@@ -955,7 +955,7 @@ button, input, textarea, select { outline: none; }
 .markdown-body > :last-child { margin-bottom: 0; }
 .stream-glyph {
     position: relative;
-    animation: stream-reveal 480ms cubic-bezier(.2, .65, .3, 1) both;
+    animation: stream-reveal 240ms cubic-bezier(.2, .65, .3, 1) both;
 }
 [data-stream-style="glow"] .stream-glyph { animation-name: stream-chase; }
 .stream-glyph[data-stream-tip="true"]::after {
@@ -963,10 +963,11 @@ button, input, textarea, select { outline: none; }
     width: 2px; height: .85em; border-radius: 2px; background: var(--accent);
     pointer-events: none; animation: stream-breathe 1.6s ease-in-out infinite;
 }
-@keyframes stream-reveal { from { opacity: .52; } to { opacity: 1; } }
+.stream-glyph[data-stream-moving="true"]::after { animation: none; opacity: .5; }
+@keyframes stream-reveal { from { opacity: .65; } to { opacity: 1; } }
 @keyframes stream-chase {
-    0% { opacity: .52; text-shadow: none; }
-    45% { opacity: 1; text-shadow: 0 0 6px var(--accent); }
+    0% { opacity: .65; text-shadow: none; }
+    45% { opacity: 1; text-shadow: 0 0 3px var(--accent); }
     100% { opacity: 1; text-shadow: none; }
 }
 @keyframes stream-breathe { 0%, 100% { opacity: .2; } 50% { opacity: .65; } }
