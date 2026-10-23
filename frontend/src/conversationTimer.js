@@ -37,3 +37,19 @@ export function conversationElapsedText(ms) {
     if (seconds < 3600) return `${Math.floor(seconds / 60)} 分 ${seconds % 60} 秒`;
     return `${Math.floor(seconds / 3600)} 时 ${Math.floor(seconds % 3600 / 60)} 分 ${seconds % 60} 秒`;
 }
+
+// Transition notifications only. The display owns its repaint timer, so elapsed
+// ticks never rerender App or the conversation's historical messages.
+export function createConversationTimerStore(now) {
+    const clock = createConversationTimer(now), listeners = new Set();
+    const invoke = (method, key, event) => {
+        if (!clock[method](key, event)) return;
+        for (const listener of listeners) listener(key);
+    };
+    return {
+        begin: key => invoke("begin", key), resume: key => invoke("resume", key),
+        end: key => invoke("end", key), event: (key, event) => invoke("event", key, event),
+        snapshot: key => clock.snapshot(key),
+        subscribe(listener) { listeners.add(listener); return () => listeners.delete(listener); }
+    };
+}

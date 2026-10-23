@@ -1,15 +1,15 @@
 import {useEffect, useId, useState} from "react";
 import {ChevronDown, ChevronRight, Wrench} from "lucide-react";
 import {summarizeToolGroup} from "./toolGroups.js";
+import {useDisclosure} from "./HistoryView.jsx";
 
 export default function ToolGroup({tools, renderTool}) {
     const {counts, categories, current, failures, targets} = summarizeToolGroup(tools);
     const pending = counts.running + counts.generating;
     const active = pending + counts.waiting > 0;
-    const [open, setOpen] = useState(active);
+    const [open, setOpen] = useDisclosure(`group:${tools[0]?.streamId || tools[0]?.callId}`, active, active);
     const id = useId();
     // Follow lifecycle transitions, not every stream delta, so manual toggles remain usable.
-    useEffect(() => { setOpen(active); }, [active]);
     if (tools.length === 1) return renderTool(tools[0], false);
     const status = [pending && `执行中 ${pending}`, counts.waiting && `等待 ${counts.waiting}`,
         counts.error && `失败 ${counts.error}`, counts.success && `已完成 ${counts.success}`].filter(Boolean).join(" / ");
@@ -22,6 +22,6 @@ export default function ToolGroup({tools, renderTool}) {
             </span>
             {failures && <span className="tool-group-errors" title={failures}>失败：{failures}</span>}
         </button>
-        <div id={id} hidden={!open} className="tool-group-list">{tools.map(tool => renderTool(tool, true))}</div>
+        <div id={id} hidden={!open} className="tool-group-list">{open && tools.map(tool => renderTool(tool, true))}</div>
     </section>;
 }

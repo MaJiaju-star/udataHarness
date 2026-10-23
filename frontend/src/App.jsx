@@ -1,4 +1,4 @@
-import {lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState} from "react";
+import {lazy, memo, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState} from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import ChartCard, {chartSpecFromTool} from "./ChartCard.jsx";
@@ -11,13 +11,20 @@ import SessionHistory from "./SessionHistory.jsx";
 import ContextPanel from "./ContextPanel.jsx";
 import ToolCallHeader from "./ToolCallHeader.jsx";
 import ToolGroup from "./ToolGroup.jsx";
+import VirtualMessageList from "./VirtualMessageList.jsx";
+import {HistoryProvider, MessageScope, HistoryContent, DeferredToolDetails, useDisclosure, useHistoryChunks, ChunkActions} from "./HistoryView.jsx";
+import {prependHistory, mergeLatestHistory} from "./historyPaging.js";
+import {createScrollFollow} from "./scrollFollow.js";
+import StreamMarkdown from "./StreamMarkdown.jsx";
+import {streamStyle} from "./streamTail.js";
 import {groupToolActivities} from "./toolGroups.js";
 import ModelSettings from "./ModelSettings.jsx";
 import NotificationSettings from "./NotificationSettings.jsx";
 import MemorySettings from "./MemorySettings.jsx";
 import ScheduledTasks from "./ScheduledTasks.jsx";
 import ComposerPopover from "./ComposerPopover.jsx";
-import useConversationTimer from "./useConversationTimer.js";
+import useConversationTimer, {useConversationElapsed} from "./useConversationTimer.js";
+import {createStreamBatcher, applyMessageBatch} from "./streamBatcher.js";
 import {conversationElapsedText} from "./conversationTimer.js";
 import {findToolStreamIndex} from "./toolStream.js";
 import ReferenceInput from "./ReferenceInput.jsx";
@@ -458,35 +465,27 @@ function restoreTodoFromTools(tools) {
 function restoreHistory(history = []) {
     const result = [];
     for (const item of history) {
-        const message = {
-            id: uid(),
-            role: item.role === "user" ? "user" : "assistant",
-            content: item.content || "",
-            thinking: item.thinking ? item.content : "",
-            tools: item.tools || [],
-            fileActivities: item.fileActivities || [],
-            finished: true
-        };
+        const id = item.id || uid(), tools = item.tools || [], thinking = Boolean(item.thinking);
+        const activities = [];
+        if (item.content || item.contentRef) activities.push({id: `${thinking ? "thinking" : "text"}-${id}`,
+            type: thinking ? "thinking" : "text", content: item.content || "", contentRef: item.contentRef, active: false});
+        tools.forEach(tool => activities.push({id: `tool-${tool.callId}`, type: "tool", callId: tool.callId}));
+        const message = {id, role: item.role === "user" ? "user" : "assistant", content: thinking ? "" : item.content || "",
+            contentRef: item.contentRef, thinking: thinking ? item.content : "", tools, activities,
+            memoryRecall: item.memoryRecall, fileActivities: item.fileActivities || [], finished: true};
         const previous = result.at(-1);
         if (message.role === "assistant" && previous?.role === "assistant") {
             previous.content = [previous.content, message.content].filter(Boolean).join("\n\n");
             previous.thinking = [previous.thinking, message.thinking].filter(Boolean).join("\n");
-            previous.tools = [...(previous.tools || []), ...(message.tools || [])];
-            previous.fileActivities = [
-                ...(previous.fileActivities || []),
-                ...(message.fileActivities || [])
-            ];
-        } else {
-            result.push(message);
-        }
+            previous.tools.push(...tools); previous.activities.push(...activities);
+            previous.fileActivities.push(...message.fileActivities);
+            previous.memoryRecall ||= message.memoryRecall;
+        } else result.push(message);
     }
     for (const message of result) {
-        if (message.role !== "assistant") continue;
-        const todo = restoreTodoFromTools(message.tools);
-        if (todo) {
-            message.todo = todo;
-            message.activities = [{id: `todo-${message.id}`, type: "todo"}];
-        }
+        if (message.role !== "assistant") { message.activities = []; continue; }
+        const todo = restoreTodoFromTools(message.tools.filter(tool => !tool.detailRef));
+        if (todo) { message.todo = todo; message.activities.push({id: `todo-${message.id}`, type: "todo"}); }
     }
     return result;
 }
@@ -578,6 +577,202 @@ async function readEventStream(stream, onEvent) {
     }
 }
 
+function reduceAssistantEvent(message, event) {
+    const next = {
+        ...message,
+        tools: [...(message.tools || [])],
+        activities: [...(message.activities || [])],
+        reasonBuffers: {...(message.reasonBuffers || {})},
+        subagents: {...(message.subagents || {})},
+        runtimeChunks: {...(message.runtimeChunks || {})},
+        todo: message.todo ? {...message.todo} : null
+    };
+    const ensureTodoActivity = callId => {
+        if (callId) {
+            next.activities = next.activities.filter(item =>
+                !(item.type === "tool" && item.callId === callId));
+        }
+        if (!next.activities.some(item => item.type === "todo")) {
+            next.activities.push({id: `todo-${message.id}`, type: "todo"});
+        }
+    };
+    if (event.type === "memory_recall") next.memoryRecall = event;
+    if (event.type === "text" || event.type === "text_replay") {
+        const merged = mergeReasonContentActivities(
+            next.activities,
+            next.reasonBuffers,
+            event);
+        next.activities = merged.activities;
+        next.reasonBuffers = merged.reasonBuffers;
+        next.content = next.activities
+            .filter(item => item.type === "text")
+            .map(item => item.content)
+            .join("\n\n");
+    }
+    if (event.type === "thinking") {
+        next.thinking = mergeStreamText(next.thinking, event.content);
+        next.activities = mergeThinkingActivity(next.activities, event);
+    }
+    if (event.type === "tool_args_start") {
+        next.activities = next.activities.map(item =>
+            item.type === "thinking" && item.active ? {...item, active: false} : item
+        );
+        const existing = next.tools[findToolStreamIndex(next.tools, event)];
+        if (!existing) {
+            const tool = {
+                callId: `stream-${event.streamId || uid()}`,
+                streamId: event.streamId,
+                providerCallId: event.callId,
+                name: event.toolName || "正在生成工具调用",
+                argsText: "",
+                generating: true,
+                streamed: true,
+                running: false
+            };
+            next.tools.push(tool);
+            if (isTodoTool(tool.name)) {
+                ensureTodoActivity(tool.callId);
+                next.todo = mergeTodoTool(next.todo, tool);
+            } else {
+                next.activities.push({id: `tool-${tool.callId}`, type: "tool", callId: tool.callId});
+            }
+        }
+    }
+    if (event.type === "tool_args_delta") {
+        let index = findToolStreamIndex(next.tools, event);
+        if (index < 0) {
+            const callId = `stream-${event.streamId || uid()}`;
+            next.tools.push({
+                callId, streamId: event.streamId, providerCallId: event.callId,
+                name: event.toolName || "正在生成工具调用",
+                argsText: "", generating: true, streamed: true, running: false
+            });
+            if (!isTodoTool(event.toolName)) {
+                next.activities.push({id: `tool-${callId}`, type: "tool", callId});
+            }
+            index = next.tools.length - 1;
+        }
+        next.tools[index] = {
+            ...next.tools[index],
+            providerCallId: event.callId || next.tools[index].providerCallId,
+            name: event.toolName || next.tools[index].name,
+            argsText: `${next.tools[index].argsText || ""}${asText(event.content)}`,
+            generating: !next.tools[index].executionStarted
+        };
+        if (isTodoTool(next.tools[index].name)) {
+            ensureTodoActivity(next.tools[index].callId);
+            next.todo = mergeTodoTool(next.todo, next.tools[index]);
+        }
+    }
+    if (event.type === "tool_args_end") {
+        const index = findToolStreamIndex(next.tools, event);
+        if (index >= 0) next.tools[index] = {
+            ...next.tools[index],
+            providerCallId: event.callId || next.tools[index].providerCallId,
+            name: event.toolName || next.tools[index].name,
+            argsText: asText(event.content) || next.tools[index].argsText,
+            generating: false
+        };
+        if (index >= 0 && isTodoTool(next.tools[index].name)) {
+            ensureTodoActivity(next.tools[index].callId);
+            next.todo = mergeTodoTool(next.todo, next.tools[index]);
+        }
+    }
+    if (event.type === "tool_start") {
+        // 工具开始意味着它之前的模型思考阶段已经结束，即使供应商没有发出
+        // finished=true 的最后一个 thinking 增量，也不能让卡片一直显示推理中。
+        next.activities = next.activities.map(item =>
+            item.type === "thinking" && item.active ? {...item, active: false} : item
+        );
+        let streamedIndex = event.callId ? next.tools.findIndex(tool =>
+            tool.callId === event.callId || tool.providerCallId === event.callId) : -1;
+        if (streamedIndex < 0) streamedIndex = next.tools.findIndex(tool =>
+            tool.streamed && !tool.executionStarted
+            && (!event.toolName || tool.name === event.toolName));
+        if (streamedIndex >= 0) {
+            const previousCallId = next.tools[streamedIndex].callId;
+            const callId = event.callId || previousCallId;
+            next.tools[streamedIndex] = {
+                ...next.tools[streamedIndex], callId,
+                name: event.toolName || next.tools[streamedIndex].name,
+                args: event.args || {}, generating: false, running: true,
+                executionStarted: true, fileOperation: event.fileOperation
+            };
+            next.activities = next.activities.map(item =>
+                item.type === "tool" && item.callId === previousCallId
+                    ? {...item, callId}
+                    : item
+            );
+        } else {
+            const tool = {
+                callId: event.callId || uid(), name: event.toolName || "tool",
+                args: event.args || {}, running: true, executionStarted: true,
+                fileOperation: event.fileOperation
+            };
+            next.tools.push(tool);
+            if (isTodoTool(tool.name)) ensureTodoActivity(tool.callId);
+            else next.activities.push({id: `tool-${tool.callId}`, type: "tool", callId: tool.callId});
+        }
+        const startedTool = next.tools.find(tool => tool.callId === event.callId)
+            || next.tools.find(tool => tool.running && tool.name === event.toolName);
+        if (startedTool && isTodoTool(startedTool.name)) {
+            ensureTodoActivity(startedTool.callId);
+            next.todo = mergeTodoTool(next.todo, startedTool);
+        }
+    }
+    if (event.type === "tool_end") {
+        const index = next.tools.findIndex(tool => event.callId ? tool.callId === event.callId : tool.running);
+        if (index >= 0) next.tools[index] = {
+            ...next.tools[index], running: false, generating: false, durationMs: event.durationMs,
+            output: event.error || event.content, error: Boolean(event.error),
+            editDiff: event.editDiff, bashOutput: event.bashOutput
+        };
+        if (index >= 0 && isTodoTool(next.tools[index].name)) {
+            ensureTodoActivity(next.tools[index].callId);
+            next.todo = mergeTodoTool(next.todo, next.tools[index]);
+        }
+    }
+    if (event.type === "subagent_event") {
+        const subagentId = subagentEventId(event);
+        if (!next.activities.some(item => item.type === "subagent" && item.subagentId === subagentId)) {
+            next.activities.push({id: `subagent-${subagentId}`, type: "subagent", subagentId});
+        }
+        next.subagents = mergeSubagentEvent(next.subagents, {...event, subagentId});
+    }
+    if (event.type === "chunk" && event.content) {
+        const chunkId = `${event.runId || "run"}-${event.chunkType || "chunk"}`;
+        const currentChunk = next.runtimeChunks[chunkId] || {
+            id: chunkId,
+            chunkType: event.chunkType || "运行事件",
+            content: ""
+        };
+        next.runtimeChunks[chunkId] = {
+            ...currentChunk,
+            content: mergeStreamText(currentChunk.content, event.content)
+        };
+        if (!next.activities.some(item => item.type === "runtime_chunk" && item.chunkId === chunkId)) {
+            next.activities.push({id: `runtime-${chunkId}`, type: "runtime_chunk", chunkId});
+        }
+    }
+    if (event.type === "hitl") {
+        next.hitl = event;
+        // HITL 是等待用户决策的正常暂停，不应和普通运行错误同时展示。
+        next.error = null;
+    }
+    if (event.type === "done" && !next.content && event.content) next.content = event.content;
+    if (event.type === "done" || event.type === "run_end" || event.type === "error") {
+        next.finished = true;
+        next.activities = next.activities.map(item =>
+            item.type === "thinking" && item.active ? {...item, active: false} : item
+        );
+    }
+    if (event.type === "done" || event.type === "run_end" || event.type === "error") {
+        next.tools = next.tools.map(tool => ({...tool, running: false, generating: false}));
+    }
+    if (event.type === "error") next.error = event.message || event.content || "智能体运行失败";
+    return next;
+}
+
 function App() {
     const {confirm: confirmAction, prompt: promptAction, dialog: pageDialog} = usePageDialog();
     const [historyOpen, setHistoryOpen] = useState(false);
@@ -591,6 +786,12 @@ function App() {
     const [current, setCurrent] = useState(null);
     const ensureReferenceSession = useRef(null);
     const [messages, setMessages] = useState([]);
+    const [historyPage, setHistoryPage] = useState({sessionId: null, hasMore: false, loading: false});
+    const historyGeneration = useRef(0), olderRequest = useRef(null), historyOwner = useRef(null);
+    const historyState = useRef(null);
+    useLayoutEffect(() => { historyState.current = {messages, page: historyPage}; }, [messages, historyPage]);
+    useLayoutEffect(() => { historyOwner.current = current?.sessionId; }, [current?.sessionId]);
+    useEffect(() => { historyGeneration.current++; setHistoryPage({sessionId: null, hasMore: false, loading: false}); }, [userId, workspaceId]);
     const [running, setRunning] = useState(false);
     const [stopping, setStopping] = useState(false);
     const [pendingPrompts, setPendingPrompts] = useState([]);
@@ -605,7 +806,7 @@ function App() {
     const [workspacePickerOpen, setWorkspacePickerOpen] = useState(false);
     const [globalSearch, setGlobalSearch] = useState(null);
     const [tokenUsage, setTokenUsage] = useState(emptyTokenUsage);
-    const conversationTimer = useConversationTimer(userId, current?.sessionId);
+    const conversationTimer = useConversationTimer(userId);
     const [selectedModel, setSelectedModel] = useState("");
     const [createSessionOpen, setCreateSessionOpen] = useState(false);
     const [newSessionMode, setNewSessionMode] = useState("standard");
@@ -636,11 +837,6 @@ function App() {
         setNotice(message);
         window.clearTimeout(window.__udataNotice);
         window.__udataNotice = window.setTimeout(() => setNotice(""), 3200);
-    }, []);
-
-    const trackTokenUsage = useCallback(event => {
-        if (!event) return;
-        setTokenUsage(currentUsage => accumulateTokenUsage(currentUsage, event));
     }, []);
 
     const api = useCallback(async (path, options = {}) => {
@@ -704,18 +900,45 @@ function App() {
         }
     }, [api, notify]);
 
-    const loadSessionMessages = useCallback(async sessionId => {
-        const [history, status] = await Promise.all([
-            api(`/api/sessions/messages?sessionId=${encodeURIComponent(sessionId)}`),
-            api(`/api/sessions/status?sessionId=${encodeURIComponent(sessionId)}`)
-        ]);
-        const restored = restoreHistory(history);
-        if (status.hitl) {
-            restored.push({id: uid(), role: "assistant", content: "", tools: [],
-                hitl: JSON.parse(status.hitl), finished: true});
+    const loadSessionMessages = useCallback(async (sessionId, preserveOlder = false) => {
+        const generation = ++historyGeneration.current;
+        olderRequest.current = null;
+        setHistoryPage(old => preserveOlder ? {...old, loading: true, error: ""} : {sessionId, hasMore: false, loading: true});
+        try {
+            const [page, status] = await Promise.all([
+                api(`/api/sessions/history?sessionId=${encodeURIComponent(sessionId)}`),
+                api(`/api/sessions/status?sessionId=${encodeURIComponent(sessionId)}`)
+            ]);
+            const restored = restoreHistory(page.messages);
+            if (status.hitl) restored.push({id: `pending-${sessionId}`, role: "assistant", content: "", tools: [], hitl: JSON.parse(status.hitl), finished: true});
+            if (generation === historyGeneration.current && historyOwner.current === sessionId) {
+                const previous = historyState.current;
+                const merged = preserveOlder && previous.page.sessionId === sessionId ? mergeLatestHistory(previous.messages, restored) : {messages: restored, keptOlder: false};
+                setMessages(merged.messages);
+                setHistoryPage({sessionId, hasMore: merged.keptOlder ? previous.page.hasMore : page.hasMore,
+                    before: merged.keptOlder ? previous.page.before : page.nextBefore, loading: false});
+            }
+        } catch (error) {
+            if (generation === historyGeneration.current && historyOwner.current === sessionId)
+                setHistoryPage({sessionId, hasMore: false, loading: false, error: error.message});
+            throw error;
         }
-        return restored;
     }, [api]);
+    const loadOlderMessages = useCallback(async () => {
+        const {sessionId, before, hasMore, loading} = historyPage;
+        if (!sessionId || !hasMore || loading || olderRequest.current) return;
+        const request = {}, generation = historyGeneration.current; olderRequest.current = request;
+        setHistoryPage(old => ({...old, loading: true, error: ""}));
+        try {
+            const page = await api(`/api/sessions/history?sessionId=${encodeURIComponent(sessionId)}&before=${before}`);
+            if (generation === historyGeneration.current && historyOwner.current === sessionId) {
+                setMessages(items => prependHistory(restoreHistory(page.messages), items));
+                setHistoryPage({sessionId, hasMore: page.hasMore, before: page.nextBefore, loading: false});
+            }
+        } catch (error) {
+            if (generation === historyGeneration.current && historyOwner.current === sessionId) setHistoryPage(old => ({...old, loading: false, error: error.message}));
+        } finally { if (olderRequest.current === request) olderRequest.current = null; }
+    }, [api, historyPage]);
 
     async function refreshAfterRun() {
         const results = await Promise.allSettled([loadSessions(), refreshWorkspaceFiles()]);
@@ -776,8 +999,7 @@ function App() {
                 if (selected) {
                     setCurrent(selected);
                     if (!selected.active && (selected.updatedAt !== current?.updatedAt || current?.active)) {
-                        const restored = await loadSessionMessages(selected.sessionId);
-                        if (!cancelled) setMessages(restored);
+                        await loadSessionMessages(selected.sessionId, true);
                     }
                 } else if (current) {
                     setCurrent(null);
@@ -870,7 +1092,8 @@ function App() {
         setSelectedModel(session.model || meta?.defaultModel || "");
         setTokenUsage(emptyTokenUsage());
         if (mobile) useWorkspaceStore.getState().setMobilePane("chat");
-        setMessages(await loadSessionMessages(session.sessionId));
+        setMessages([]);
+        await loadSessionMessages(session.sessionId);
     }
 
 
@@ -997,208 +1220,17 @@ function App() {
         notify("会话已重命名");
     }
 
-    const mutateAssistant = useCallback((messageId, event) => {
-        setMessages(items => items.map(message => {
-            if (message.id !== messageId) return message;
-            const next = {
-                ...message,
-                tools: [...(message.tools || [])],
-                activities: [...(message.activities || [])],
-                reasonBuffers: {...(message.reasonBuffers || {})},
-                subagents: {...(message.subagents || {})},
-                runtimeChunks: {...(message.runtimeChunks || {})},
-                todo: message.todo ? {...message.todo} : null
-            };
-            const ensureTodoActivity = callId => {
-                if (callId) {
-                    next.activities = next.activities.filter(item =>
-                        !(item.type === "tool" && item.callId === callId));
-                }
-                if (!next.activities.some(item => item.type === "todo")) {
-                    next.activities.push({id: `todo-${messageId}`, type: "todo"});
-                }
-            };
-            if (event.type === "memory_recall") next.memoryRecall = event;
-            if (event.type === "text" || event.type === "text_replay") {
-                const merged = mergeReasonContentActivities(
-                    next.activities,
-                    next.reasonBuffers,
-                    event);
-                next.activities = merged.activities;
-                next.reasonBuffers = merged.reasonBuffers;
-                next.content = next.activities
-                    .filter(item => item.type === "text")
-                    .map(item => item.content)
-                    .join("\n\n");
-            }
-            if (event.type === "thinking") {
-                next.thinking = mergeStreamText(next.thinking, event.content);
-                next.activities = mergeThinkingActivity(next.activities, event);
-            }
-            if (event.type === "tool_args_start") {
-                next.activities = next.activities.map(item =>
-                    item.type === "thinking" && item.active ? {...item, active: false} : item
-                );
-                const existing = next.tools[findToolStreamIndex(next.tools, event)];
-                if (!existing) {
-                    const tool = {
-                        callId: `stream-${event.streamId || uid()}`,
-                        streamId: event.streamId,
-                        providerCallId: event.callId,
-                        name: event.toolName || "正在生成工具调用",
-                        argsText: "",
-                        generating: true,
-                        streamed: true,
-                        running: false
-                    };
-                    next.tools.push(tool);
-                    if (isTodoTool(tool.name)) {
-                        ensureTodoActivity(tool.callId);
-                        next.todo = mergeTodoTool(next.todo, tool);
-                    } else {
-                        next.activities.push({id: `tool-${tool.callId}`, type: "tool", callId: tool.callId});
-                    }
-                }
-            }
-            if (event.type === "tool_args_delta") {
-                let index = findToolStreamIndex(next.tools, event);
-                if (index < 0) {
-                    const callId = `stream-${event.streamId || uid()}`;
-                    next.tools.push({
-                        callId, streamId: event.streamId, providerCallId: event.callId,
-                        name: event.toolName || "正在生成工具调用",
-                        argsText: "", generating: true, streamed: true, running: false
-                    });
-                    if (!isTodoTool(event.toolName)) {
-                        next.activities.push({id: `tool-${callId}`, type: "tool", callId});
-                    }
-                    index = next.tools.length - 1;
-                }
-                next.tools[index] = {
-                    ...next.tools[index],
-                    providerCallId: event.callId || next.tools[index].providerCallId,
-                    name: event.toolName || next.tools[index].name,
-                    argsText: `${next.tools[index].argsText || ""}${asText(event.content)}`,
-                    generating: !next.tools[index].executionStarted
-                };
-                if (isTodoTool(next.tools[index].name)) {
-                    ensureTodoActivity(next.tools[index].callId);
-                    next.todo = mergeTodoTool(next.todo, next.tools[index]);
-                }
-            }
-            if (event.type === "tool_args_end") {
-                const index = findToolStreamIndex(next.tools, event);
-                if (index >= 0) next.tools[index] = {
-                    ...next.tools[index],
-                    providerCallId: event.callId || next.tools[index].providerCallId,
-                    name: event.toolName || next.tools[index].name,
-                    argsText: asText(event.content) || next.tools[index].argsText,
-                    generating: false
-                };
-                if (index >= 0 && isTodoTool(next.tools[index].name)) {
-                    ensureTodoActivity(next.tools[index].callId);
-                    next.todo = mergeTodoTool(next.todo, next.tools[index]);
-                }
-            }
-            if (event.type === "tool_start") {
-                // 工具开始意味着它之前的模型思考阶段已经结束，即使供应商没有发出
-                // finished=true 的最后一个 thinking 增量，也不能让卡片一直显示推理中。
-                next.activities = next.activities.map(item =>
-                    item.type === "thinking" && item.active ? {...item, active: false} : item
-                );
-                let streamedIndex = event.callId ? next.tools.findIndex(tool =>
-                    tool.callId === event.callId || tool.providerCallId === event.callId) : -1;
-                if (streamedIndex < 0) streamedIndex = next.tools.findIndex(tool =>
-                    tool.streamed && !tool.executionStarted
-                    && (!event.toolName || tool.name === event.toolName));
-                if (streamedIndex >= 0) {
-                    const previousCallId = next.tools[streamedIndex].callId;
-                    const callId = event.callId || previousCallId;
-                    next.tools[streamedIndex] = {
-                        ...next.tools[streamedIndex], callId,
-                        name: event.toolName || next.tools[streamedIndex].name,
-                        args: event.args || {}, generating: false, running: true,
-                        executionStarted: true, fileOperation: event.fileOperation
-                    };
-                    next.activities = next.activities.map(item =>
-                        item.type === "tool" && item.callId === previousCallId
-                            ? {...item, callId}
-                            : item
-                    );
-                } else {
-                    const tool = {
-                        callId: event.callId || uid(), name: event.toolName || "tool",
-                        args: event.args || {}, running: true, executionStarted: true,
-                        fileOperation: event.fileOperation
-                    };
-                    next.tools.push(tool);
-                    if (isTodoTool(tool.name)) ensureTodoActivity(tool.callId);
-                    else next.activities.push({id: `tool-${tool.callId}`, type: "tool", callId: tool.callId});
-                }
-                const startedTool = next.tools.find(tool => tool.callId === event.callId)
-                    || next.tools.find(tool => tool.running && tool.name === event.toolName);
-                if (startedTool && isTodoTool(startedTool.name)) {
-                    ensureTodoActivity(startedTool.callId);
-                    next.todo = mergeTodoTool(next.todo, startedTool);
-                }
-            }
-            if (event.type === "tool_end") {
-                const index = next.tools.findIndex(tool => event.callId ? tool.callId === event.callId : tool.running);
-                if (index >= 0) next.tools[index] = {
-                    ...next.tools[index], running: false, generating: false, durationMs: event.durationMs,
-                    output: event.error || event.content, error: Boolean(event.error),
-                    editDiff: event.editDiff, bashOutput: event.bashOutput
-                };
-                if (index >= 0 && isTodoTool(next.tools[index].name)) {
-                    ensureTodoActivity(next.tools[index].callId);
-                    next.todo = mergeTodoTool(next.todo, next.tools[index]);
-                }
-            }
-            if (event.type === "subagent_event") {
-                const subagentId = subagentEventId(event);
-                if (!next.activities.some(item => item.type === "subagent" && item.subagentId === subagentId)) {
-                    next.activities.push({id: `subagent-${subagentId}`, type: "subagent", subagentId});
-                }
-                next.subagents = mergeSubagentEvent(next.subagents, {...event, subagentId});
-            }
-            if (event.type === "chunk" && event.content) {
-                const chunkId = `${event.runId || "run"}-${event.chunkType || "chunk"}`;
-                const currentChunk = next.runtimeChunks[chunkId] || {
-                    id: chunkId,
-                    chunkType: event.chunkType || "运行事件",
-                    content: ""
-                };
-                next.runtimeChunks[chunkId] = {
-                    ...currentChunk,
-                    content: mergeStreamText(currentChunk.content, event.content)
-                };
-                if (!next.activities.some(item => item.type === "runtime_chunk" && item.chunkId === chunkId)) {
-                    next.activities.push({id: `runtime-${chunkId}`, type: "runtime_chunk", chunkId});
-                }
-            }
-            if (event.type === "hitl") {
-                next.hitl = event;
-                // HITL 是等待用户决策的正常暂停，不应和普通运行错误同时展示。
-                next.error = null;
-            }
-            if (event.type === "done" && !next.content && event.content) next.content = event.content;
-            if (event.type === "done" || event.type === "run_end" || event.type === "error") {
-                next.finished = true;
-                next.activities = next.activities.map(item =>
-                    item.type === "thinking" && item.active ? {...item, active: false} : item
-                );
-            }
-            if (event.type === "done" || event.type === "run_end" || event.type === "error") {
-                next.tools = next.tools.map(tool => ({...tool, running: false, generating: false}));
-            }
-            if (event.type === "error") next.error = event.message || event.content || "智能体运行失败";
-            return next;
-        }));
+    const mutateAssistant = useCallback((messageId, events) => {
+        setMessages(items => applyMessageBatch(items, messageId, events, reduceAssistantEvent));
     }, []);
 
     async function stream(path, body, messageId, controller) {
         if (path === "/api/chat/stream") conversationTimer.begin(body.sessionId);
         else if (path === "/api/hitl/decide") conversationTimer.resume(body.sessionId);
+        const batcher = createStreamBatcher(events => {
+            setTokenUsage(usage => events.reduce(accumulateTokenUsage, usage));
+            mutateAssistant(messageId, events);
+        });
         try {
             const response = await fetch(path, {
                 method: "POST",
@@ -1212,11 +1244,12 @@ function App() {
             await readEventStream(response.body, event => {
                 conversationTimer.event(body.sessionId, event);
                 if (event.type === "error") failed = true;
-                trackTokenUsage(event);
-                mutateAssistant(messageId, event);
+                batcher.push(event);
             });
             return failed;
         } finally {
+            // Flush before end/abort/error handling, including background tabs where timers may be delayed.
+            batcher.close();
             // Keep a paused approval clock; otherwise freeze on completion, disconnect or abort.
             conversationTimer.end(body.sessionId);
             setTokenUsage(value => value.firstTokenPending ? {...value, firstTokenPending: false} : value);
@@ -1526,7 +1559,7 @@ function App() {
                 </header>}
 
                 <section className="content-shell">
-                    <ChatView api={api} current={current} messages={messages} running={running || !!current?.active}
+                    <ChatView api={api} current={current} messages={messages} historyPage={historyPage} onLoadOlder={loadOlderMessages} onReloadHistory={() => loadSessionMessages(current.sessionId).catch(error => notify(error.message))} running={running || !!current?.active}
                               pendingPrompts={pendingPrompts.filter(item => item.sessionId === current?.sessionId)}
                               onCancelPending={cancelPendingPrompt}
                               queuePaused={queuePaused} onResumeQueue={() => setQueuePaused(false)}
@@ -1535,7 +1568,7 @@ function App() {
                               models={meta?.models || []} selectedModel={selectedModel}
                               thinkingDepth={thinkingDepth}
                               tokenUsage={tokenUsage}
-                              conversationElapsed={conversationTimer.view}
+                              conversationTimer={conversationTimer}
                               contextLength={activeModel?.contextLength || 1000000}
                               provider={activeModel?.provider}
                               sandboxEnabled={meta?.sandboxEnabled !== false}
@@ -1768,15 +1801,34 @@ function activeFileReference(path, selection) {
     return `@${path}#L${selection.startLine}-L${selection.endLine}`;
 }
 
-function ChatView({api, current, messages, running, stopping, onStop, models, selectedModel, thinkingDepth, ideaContext = [], onRemoveContext,
+function useEventCallback(handler) {
+    const ref = useRef(handler);
+    useLayoutEffect(() => { ref.current = handler; });
+    return useCallback((...args) => ref.current?.(...args), []);
+}
+
+
+function ChatView({api, current, messages, historyPage, onLoadOlder, onReloadHistory, running, stopping, onStop, models, selectedModel, thinkingDepth, ideaContext = [], onRemoveContext,
                       pendingPrompts = [], onCancelPending, queuePaused, onResumeQueue,
-                      tokenUsage, conversationElapsed, contextLength, provider, sandboxEnabled,
+                      tokenUsage, conversationTimer, contextLength, provider, sandboxEnabled,
                       onModelChange, onThinkingDepthChange, onSend, onCreate, onDecide,
                       onPermissionMode, onCapabilityMode, onSandboxChange, onOpenFile}) {
+    const stableOpenFile = useEventCallback(onOpenFile);
+    const stableDecide = useEventCallback(onDecide);
     const [toolView, setToolView] = useState(() => {
         try { return localStorage.getItem("udataToolView") === "individual" ? "individual" : "grouped"; }
         catch { return "grouped"; }
     });
+    const [streamEffect, setStreamEffect] = useState(() => {
+        try { return streamStyle(localStorage.getItem("udataStreamEffect")); } catch { return "soft"; }
+    });
+    const activeMessageId = running ? messages.at(-1)?.id : null;
+    const renderMessage = useCallback(message => <Message message={message} toolView={toolView} streamEffect={streamEffect}
+        streamActive={message.id === activeMessageId} onOpenFile={stableOpenFile} onDecide={stableDecide}/>, [toolView, streamEffect, activeMessageId, stableOpenFile, stableDecide]);
+    const changeStreamEffect = value => {
+        const next = streamStyle(value); setStreamEffect(next);
+        try { localStorage.setItem("udataStreamEffect", next); } catch { /* Keep the preference usable without storage. */ }
+    };
     const changeToolView = value => {
         setToolView(value);
         try { localStorage.setItem("udataToolView", value); } catch { /* Preference remains usable if storage is unavailable. */ }
@@ -1808,7 +1860,9 @@ function ChatView({api, current, messages, running, stopping, onStop, models, se
     };
     const endRef = useRef(null);
     const scrollContainerRef = useRef(null);
-    const autoFollowRef = useRef(true);
+    const captureHistoryAnchor = useRef(null);
+    const scrollFollowRef = useRef(null);
+    if (!scrollFollowRef.current) scrollFollowRef.current = createScrollFollow();
     const programmaticScrollRef = useRef(false);
     const scrollTimerRef = useRef(null);
     const activePath = useWorkspaceStore(state => state.activePath);
@@ -1838,10 +1892,11 @@ function ChatView({api, current, messages, running, stopping, onStop, models, se
         };
     }, []);
 
+    const isFollowing = useCallback(() => scrollFollowRef.current.isFollowing(), []);
     const scrollToBottom = useCallback((behavior = "auto") => {
         const element = scrollContainerRef.current;
         if (!element) return;
-        autoFollowRef.current = true;
+        scrollFollowRef.current.resume();
         programmaticScrollRef.current = behavior === "smooth";
         setShowScrollToBottom(false);
         element.scrollTo({top: element.scrollHeight, behavior});
@@ -1861,28 +1916,32 @@ function ChatView({api, current, messages, running, stopping, onStop, models, se
             if (nearBottom) programmaticScrollRef.current = false;
             return;
         }
-        autoFollowRef.current = nearBottom;
-        setShowScrollToBottom(!nearBottom);
+        setShowScrollToBottom(!scrollFollowRef.current.isFollowing());
     };
 
     const pauseAutoFollow = () => {
+        if (programmaticScrollRef.current) {
+            const element = scrollContainerRef.current;
+            element?.scrollTo({top: element.scrollTop, behavior: "instant"});
+        }
         programmaticScrollRef.current = false;
-        autoFollowRef.current = false;
+        scrollFollowRef.current.pause();
         setShowScrollToBottom(true);
     };
 
     useEffect(() => {
-        autoFollowRef.current = true;
+        scrollFollowRef.current.resume();
         setShowScrollToBottom(false);
-        window.requestAnimationFrame(() => scrollToBottom());
+        const frame = window.requestAnimationFrame(() => scrollFollowRef.current.follow(() => scrollToBottom()));
+        return () => window.cancelAnimationFrame(frame);
     }, [current?.sessionId, scrollToBottom]);
 
     useEffect(() => {
-        if (!autoFollowRef.current) {
+        if (!scrollFollowRef.current.isFollowing()) {
             setShowScrollToBottom(true);
             return undefined;
         }
-        const frame = window.requestAnimationFrame(() => scrollToBottom());
+        const frame = window.requestAnimationFrame(() => scrollFollowRef.current.follow(() => scrollToBottom()));
         return () => window.cancelAnimationFrame(frame);
     }, [messages, running, scrollToBottom]);
 
@@ -2033,14 +2092,15 @@ function ChatView({api, current, messages, running, stopping, onStop, models, se
 
     return <div className="chat-layout">
         <div className="message-stage">
-        <div ref={scrollContainerRef} className="message-scroll" onScroll={handleMessageScroll}
+        <div ref={scrollContainerRef} className="message-scroll" data-stream-style={streamEffect} data-stream-paused={showScrollToBottom}
+             onScroll={handleMessageScroll} tabIndex={0} role="region" aria-label="对话消息"
+             onClickCapture={event => { if (event.target.closest("button, summary") && !event.target.closest(".hitl-card")) { pauseAutoFollow(); captureHistoryAnchor.current?.(); } }}
              onWheel={event => event.deltaY < 0 && pauseAutoFollow()}
-             onTouchMove={() => {
-                 const element = scrollContainerRef.current;
-                 if (element && element.scrollHeight - element.scrollTop - element.clientHeight > 60) {
-                     pauseAutoFollow();
-                 }
-             }}>
+             onPointerDown={event => { if (event.target === event.currentTarget) pauseAutoFollow(); }}
+             onKeyDown={event => {
+                 if (event.target === event.currentTarget && ["ArrowUp", "PageUp", "Home"].includes(event.key)) pauseAutoFollow();
+             }}
+             onTouchMove={pauseAutoFollow}>
             <div className="message-column">
                 {messages.length === 0 && <div className="conversation-empty">
                     <div className="mini-orb"><Sparkles size={20}/></div>
@@ -2051,11 +2111,15 @@ function ChatView({api, current, messages, running, stopping, onStop, models, se
                             <button key={text} onClick={() => setPrompt(text)}>{text}<ChevronRight size={15}/></button>)}
                     </div>
                 </div>}
-                {messages.map(message =>
-                    <Message key={message.id} message={message} toolView={toolView}
-                             onOpenFile={onOpenFile}
-                             onDecide={(action, always, callUuids) =>
-                                 onDecide(message.id, action, always, callUuids)}/>)}
+                <div className="history-page-controls">
+                    {historyPage?.loading && <span role="status">正在加载历史…</span>}
+                    {historyPage?.error && <span role="alert">{historyPage.error}</span>}
+                    {historyPage?.hasMore && <button type="button" disabled={historyPage.loading} onClick={() => { pauseAutoFollow(); captureHistoryAnchor.current?.(); onLoadOlder(); }}>加载更早消息</button>}
+                    {historyPage?.error && !historyPage.hasMore && <button type="button" onClick={onReloadHistory}>重试加载</button>}
+                </div>
+                <HistoryProvider api={api} sessionId={current?.sessionId}>
+                    <VirtualMessageList key={current?.sessionId} messages={messages} scrollRef={scrollContainerRef} captureRef={captureHistoryAnchor} isFollowing={isFollowing} renderMessage={renderMessage}/>
+                </HistoryProvider>
                 {running && messages.at(-1)?.role !== "assistant" &&
                     <div className="typing-row"><span/><span/><span/></div>}
                 <div ref={endRef}/>
@@ -2202,6 +2266,9 @@ function ChatView({api, current, messages, running, stopping, onStop, models, se
                                 <label>工具展示<select aria-label="工具展示" value={toolView} onChange={event => changeToolView(event.target.value)}>
                                     <option value="grouped">分组视图 · 可折叠工具列表</option><option value="individual">逐条视图 · 独立工具卡片</option>
                                 </select></label>
+                                <label>输出动效<select aria-label="输出动效" value={streamEffect} onChange={event => changeStreamEffect(event.target.value)}>
+                                    <option value="off">关闭 · 即时显示</option><option value="soft">柔和 · 尾部显影</option><option value="glow">追光 · 显影与微光</option>
+                                </select></label>
                                 <label>能力模式<select value={current.capabilityMode || "standard"} disabled={running || current.active} onChange={event => onCapabilityMode(event.target.value)}>
                                     <option value="economy">经济 · 5 个基础工具</option><option value="standard">标准 · 增加 glob / grep</option><option value="super">超级 · 已启用的全部工具</option>
                                 </select></label>
@@ -2213,7 +2280,7 @@ function ChatView({api, current, messages, running, stopping, onStop, models, se
                                 <label className="mobile-thinking">思考深度<select aria-label="思考深度" value={thinkingDepth} disabled={running} onChange={event => onThinkingDepthChange(event.target.value)}>
                                     {thinkingDepthOptions.map(item => <option key={item.value} value={item.value}>{item.label}</option>)}
                                 </select></label>
-                                <p>能力模式控制可用工具；权限模式控制执行审批。{running ? "执行期间暂不可修改。" : "设置对当前会话生效，沙箱对当前用户工作区生效。"}</p>
+                                <p>输出动效偏好保存在本浏览器，上滚阅读时暂停。能力模式控制可用工具；权限模式控制执行审批。{running ? "执行期间暂不可修改能力、权限和沙箱。" : "能力和权限对当前会话生效，沙箱对当前用户工作区生效。"}</p>
                             </ComposerPopover>
                             {current?.sessionId && <ScheduledTasks key={current.sessionId} api={api} sessionId={current.sessionId} prompt={prompt} models={models} onViewConversation={() => scrollToBottom("smooth")}/>}
                         </div>
@@ -2226,7 +2293,7 @@ function ChatView({api, current, messages, running, stopping, onStop, models, se
                     </div>
                 </div>
             </div>
-            <TokenMeter usage={tokenUsage} elapsed={conversationElapsed} contextLength={contextLength}
+            <TokenMeter usage={tokenUsage} timer={conversationTimer} sessionId={current?.sessionId} contextLength={contextLength}
                         provider={provider} running={running} onOpenAudit={() => setAuditOpen(true)}
                         onOpenContext={current?.sessionId ? () => setContextOpen(true) : null}/>
             {contextOpen && current?.sessionId && <ContextPanel key={current.sessionId} api={api}
@@ -2241,7 +2308,8 @@ function Feature({icon: Icon, title, text}) {
     return <div className="feature-card"><Icon size={19}/><div><b>{title}</b><span>{text}</span></div></div>;
 }
 
-function TokenMeter({usage, elapsed, contextLength, running, onOpenAudit, onOpenContext}) {
+function TokenMeter({usage, timer, sessionId, contextLength, running, onOpenAudit, onOpenContext}) {
+    const elapsed = useConversationElapsed(timer, sessionId);
     const cacheTokens = usage.cacheReadInputTokens + usage.cacheCreationInputTokens;
     const hitRate = cacheHitRate(usage);
     const hitRateText = hitRate == null ? "—" : `${hitRate.toFixed(1)}%`;
@@ -2338,7 +2406,12 @@ function UsageAuditDialog({api, currentSessionId, onClose}) {
     </div>;
 }
 
-function Message({message, onDecide, onOpenFile, toolView}) {
+const MarkdownContent = memo(function MarkdownContent({content, active = false, mode = "soft"}) {
+    return <StreamMarkdown content={content} active={active} mode={mode}/>;
+});
+
+const Message = memo(function Message({message, onDecide, onOpenFile, toolView, streamActive, streamEffect}) {
+    const decide = useCallback((action, always, callUuids) => onDecide(message.id, action, always, callUuids), [message.id, onDecide]);
     const parsed = message.role === "assistant"
         ? splitThinkContent(message.content || "")
         : {visible: message.content || "", thinking: "", pending: false};
@@ -2352,7 +2425,8 @@ function Message({message, onDecide, onOpenFile, toolView}) {
     const timeline = toolView === "grouped" ? groupToolActivities(activities, message.tools) : activities;
     const extraTools = message.tools?.filter(tool => !activityToolIds.has(tool.callId) && !isTodoTool(tool.name)) || [];
     const extras = toolView === "grouped" ? groupToolActivities(extraTools.map(tool => ({type: "tool", callId: tool.callId})), extraTools) : [];
-    const renderTool = (tool, grouped) => <ToolCall key={tool.streamId || tool.callId} tool={tool} grouped={grouped}/>;
+    const animate = streamActive && !message.finished && !message.hitl && !message.error;
+    const renderTool = useCallback((tool, grouped) => <ToolCall key={tool.streamId || tool.callId} tool={tool} grouped={grouped}/>, []);
     return <article className={`message-row ${message.role}`}>
         <div className="message-avatar">
             {message.role === "user" ? <UserRound size={17}/> : <Sparkles size={17}/>}
@@ -2366,7 +2440,7 @@ function Message({message, onDecide, onOpenFile, toolView}) {
             {timeline.map(activity => {
                 if (activity.type === "tool_group") return <ToolGroup key={activity.id} tools={activity.tools} renderTool={renderTool}/>;
                 if (activity.type === "thinking") {
-                    return <Thinking key={`thinking-${activity.id}`} content={activity.content}
+                    return <Thinking key={`thinking-${activity.id}`} disclosureId={activity.id} contentRef={activity.contentRef} content={activity.content}
                                      active={activity.active}/>;
                 }
                 if (activity.type === "tool") {
@@ -2378,7 +2452,7 @@ function Message({message, onDecide, onOpenFile, toolView}) {
                 }
                 if (activity.type === "subagent") {
                     const subagent = message.subagents?.[activity.subagentId];
-                    return subagent ? <SubagentCard key={activity.id} subagent={subagent}/> : null;
+                    return subagent ? <MessageScope key={activity.id} id={`child:${subagent.subagentId}`}><SubagentCard subagent={subagent}/></MessageScope> : null;
                 }
                 if (activity.type === "runtime_chunk") {
                     const chunk = message.runtimeChunks?.[activity.chunkId];
@@ -2386,7 +2460,8 @@ function Message({message, onDecide, onOpenFile, toolView}) {
                 }
                 if (activity.type === "text" && activity.content) {
                     return <div className="markdown-body assistant timeline-text" key={activity.id}>
-                        <ReactMarkdown remarkPlugins={[remarkGfm]}>{activity.content}</ReactMarkdown>
+                        <HistoryContent reference={activity.contentRef} initial={activity.content} render={text => <MarkdownContent content={text}
+                            active={animate && activity === activities.at(-1)} mode={streamEffect}/>}/>
                     </div>;
                 }
                 return null;
@@ -2397,8 +2472,8 @@ function Message({message, onDecide, onOpenFile, toolView}) {
                 : extraTools.map(tool => renderTool(tool, false))}
             {!hasTextActivities && parsed.visible && <div className={`markdown-body ${message.role}`}>
                 {message.role === "assistant"
-                    ? <ReactMarkdown remarkPlugins={[remarkGfm]}>{parsed.visible}</ReactMarkdown>
-                    : parsed.visible}
+                    ? <MarkdownContent content={parsed.visible} active={animate} mode={streamEffect}/>
+                    : <HistoryContent reference={message.contentRef} initial={parsed.visible} render={text => <>{text}</>}/>}
             </div>}
             {message.role === "assistant" && message.finished &&
                 <FileActivitySummary tools={message.tools} activities={message.fileActivities}
@@ -2408,23 +2483,18 @@ function Message({message, onDecide, onOpenFile, toolView}) {
                 && !Object.keys(message.runtimeChunks || {}).length
                 && message.role === "assistant" && !message.error &&
                 <div className="typing-row inline"><span/><span/><span/></div>}
-            {message.hitl && <HitlCard event={message.hitl} onDecide={onDecide}/>}
+            {message.hitl && <HitlCard event={message.hitl} onDecide={decide}/>}
             {message.error && <div className="message-error"><X size={16}/>{message.error}</div>}
         </div>
     </article>;
-}
+});
 
 function TodoCard({todo}) {
     const items = todo.items || [];
     const done = items.filter(item => item.status === "done").length;
     const active = items.find(item => item.status === "active");
     const complete = items.length > 0 && done === items.length;
-    const [open, setOpen] = useState(!complete);
-    const wasComplete = useRef(complete);
-    useEffect(() => {
-        if (!wasComplete.current && complete) setOpen(false);
-        wasComplete.current = complete;
-    }, [complete]);
+    const [open, setOpen] = useDisclosure("todo", !complete, complete);
     const percent = items.length > 0 ? Math.round(done * 100 / items.length) : 0;
     const summary = todo.updating ? "正在更新任务计划"
         : complete ? "全部任务已完成"
@@ -2458,7 +2528,7 @@ function TodoCard({todo}) {
 }
 
 function FileActivitySummary({tools, activities, onOpenFile}) {
-    const [open, setOpen] = useState(true);
+    const [open, setOpen] = useDisclosure("file-activity", true);
     const activity = fileActivityFromTools(tools, activities);
     const sections = [
         {id: "read", label: "读取", icon: Search, paths: activity.read},
@@ -2492,12 +2562,9 @@ function FileActivitySummary({tools, activities, onOpenFile}) {
     </section>;
 }
 
-function Thinking({content, active = false}) {
-    const [open, setOpen] = useState(active);
-    useEffect(() => {
-        setOpen(active);
-    }, [active]);
-    const preview = content.replace(/\s+/g, " ").trim().slice(0, 88);
+const Thinking = memo(function Thinking({content, active = false, disclosureId = "thinking", contentRef}) {
+    const [open, setOpen] = useDisclosure(`thinking:${disclosureId}`, active, active);
+    const preview = useMemo(() => content.slice(0, 512).replace(/\s+/g, " ").trim().slice(0, 88), [content]);
     return <div className={`thinking-card ${open ? "is-open" : ""} ${active ? "active" : ""}`}>
         <button onClick={() => setOpen(value => !value)} aria-expanded={open}>
             <span className="thinking-icon"><BrainCircuit size={16}/></span>
@@ -2509,14 +2576,14 @@ function Thinking({content, active = false}) {
             {open ? <ChevronDown size={16}/> : <ChevronRight size={16}/>}
         </button>
         <div className={`thinking-collapse ${open ? "open" : ""}`} aria-hidden={!open}>
-            <div className="thinking-content"><div className="thinking-line"/><pre>{content}</pre></div>
+            {open && <div className="thinking-content"><div className="thinking-line"/><HistoryContent reference={contentRef} initial={content} render={text => <pre>{text}</pre>}/></div>}
         </div>
     </div>;
-}
+});
 
 function SubagentCard({subagent}) {
     const running = subagent.status === "running";
-    const [open, setOpen] = useState(false);
+    const [open, setOpen] = useDisclosure(`subagent:${subagent.subagentId}`, false);
     const activities = subagent.activities || [];
     const activityToolIds = new Set(
         activities.filter(item => item.type === "tool").map(item => item.callId)
@@ -2547,14 +2614,14 @@ function SubagentCard({subagent}) {
         {open && <div className="subagent-content">
             {activities.map(activity => {
                 if (activity.type === "thinking") {
-                    return <Thinking key={`subagent-thinking-${activity.id}`}
+                    return <Thinking key={`subagent-thinking-${activity.id}`} disclosureId={activity.id}
                                      content={activity.content} active={activity.active}/>;
                 }
                 if (activity.type === "text" && activity.content) {
                     return running
                         ? <pre className="subagent-stream" key={activity.id}>{activity.content}</pre>
                         : <div className="markdown-body assistant subagent-text" key={activity.id}>
-                            <ReactMarkdown remarkPlugins={[remarkGfm]}>{activity.content}</ReactMarkdown>
+                            <HistoryContent reference={activity.contentRef} initial={activity.content} render={text => <MarkdownContent content={text}/>}/>
                         </div>;
                 }
                 if (activity.type === "tool") {
@@ -2574,7 +2641,7 @@ function SubagentCard({subagent}) {
 }
 
 function RuntimeChunkCard({chunk}) {
-    const [open, setOpen] = useState(false);
+    const [open, setOpen] = useDisclosure(`chunk:${chunk.id}`, false);
     return <section className="runtime-chunk-card">
         <button onClick={() => setOpen(value => !value)} aria-expanded={open}>
             <span><Code2 size={14}/><b>运行事件</b><small>{chunk.chunkType}</small></span>
@@ -2584,26 +2651,25 @@ function RuntimeChunkCard({chunk}) {
     </section>;
 }
 
-function ToolCall({tool, grouped = false}) {
-    const [open, setOpen] = useState(Boolean(tool.generating && !grouped));
-    useEffect(() => {
-        if (!grouped) setOpen(Boolean(tool.generating));
-    }, [tool.generating, grouped]);
+const ToolCall = memo(function ToolCall({tool, grouped = false}) {
+    const active = Boolean(tool.generating && !grouped);
+    const [open, setOpen] = useDisclosure(`tool:${tool.streamId || tool.callId}`, active, active);
+    if (tool.detailRef && (isTodoTool(tool.name) || ["render_chart", "render_echart", "render_antv_chart"].includes(tool.name)))
+        return <DeferredStructuredTool tool={tool}/>;
     if (isTodoTool(tool.name)) {
         return <TodoCard todo={mergeTodoTool(null, tool)}/>;
     }
     const chartSpec = chartSpecFromTool(tool);
-    const details = tool.args && Object.keys(tool.args).length
-        ? JSON.stringify(tool.args || {}, null, 2)
+    const details = !open ? "" : tool.args && Object.keys(tool.args).length
+        ? JSON.stringify(tool.args, null, 2)
         : tool.argsText || "";
     const showDetails = Boolean(details || tool.output || tool.editDiff);
     return <>
         <div className={`tool-call ${open ? "is-open" : ""} ${tool.generating ? "generating" : ""} ${tool.error ? "error" : ""}`}>
             <ToolCallHeader tool={tool} open={open} onToggle={() => setOpen(value => !value)}/>
-            {open && showDetails && <pre className={tool.generating ? "streaming-args" : ""}>
-                {details}{tool.output ? `\n\n${tool.output}` : ""}
-            </pre>}
-            {open && tool.editDiff && <EditDiffView diff={tool.editDiff}/>}
+            {open && tool.detailRef && <DeferredToolDetails reference={tool.detailRef}/>}
+            {open && !tool.detailRef && showDetails && <PagedToolText id={tool.callId} text={details + (tool.output ? `\n\n${tool.output}` : "")} generating={tool.generating}/>}
+            {open && !tool.detailRef && tool.editDiff && <EditDiffView diff={tool.editDiff}/>}
         </div>
         {tool.name === "render_chart" && !tool.running && <ChartCard spec={chartSpec}/>}
         {tool.name === "render_echart" && !tool.running &&
@@ -2615,6 +2681,22 @@ function ToolCall({tool, grouped = false}) {
                 <AntVChartCard tool={tool}/>
             </Suspense>}
     </>;
+});
+
+function DeferredStructuredTool({tool}) {
+    const argsRef = useMemo(() => ({...tool.detailRef, part: "args"}), [tool.detailRef]);
+    const outputRef = useMemo(() => ({...tool.detailRef, part: "output"}), [tool.detailRef]);
+    const args = useHistoryChunks(argsRef, "", true), output = useHistoryChunks(outputRef, "", true);
+    const ready = args.content && !args.hasMore && !output.hasMore && !args.loading && !output.loading && !args.error && !output.error;
+    let parsed;
+    if (ready) { try { parsed = JSON.parse(args.content); } catch { parsed = {}; } }
+    if (ready) return <ToolCall tool={{...tool, args: parsed, output: output.content, detailRef: undefined}}/>;
+    return <section className="tool-call"><small>{tool.name} · 按需读取历史数据</small><ChunkActions value={args}/><ChunkActions value={output}/></section>;
+}
+
+function PagedToolText({id, text, generating}) {
+    const [limit, setLimit] = useDisclosure(`tool-limit:${id}`, 16000);
+    return <><pre className={generating ? "streaming-args" : ""}>{text.slice(0, limit)}</pre>{text.length > limit && <button className="history-more" onClick={() => setLimit(value => value + 16000)}>继续显示结果（{limit} / {text.length} 字符）</button>}</>;
 }
 
 function EditDiffView({diff}) {

@@ -1,0 +1,55 @@
+export function prependHistory(older, current) {
+    const existing = new Set(current.map(message => message.id));
+    return [...older.filter(message => !existing.has(message.id)), ...current];
+}
+export function mergeLatestHistory(current, latest) {
+    const ids = new Set(latest.map(message => message.id));
+    const historical = current.filter(message => message.id.startsWith("history-"));
+    if (!historical.some(message => ids.has(message.id))) return {messages: latest, keptOlder: false};
+    const first = Number(latest[0]?.id.replace("history-", ""));
+    const older = historical.filter(message => Number(message.id.replace("history-", "")) < first);
+    return {messages: [...older, ...latest], keptOlder: older.length > 0};
+}
+
+export function virtualOffsets(messages, heights, estimate = 220) {
+    const offsets = [0];
+    for (const message of messages) offsets.push(offsets.at(-1) + (heights.get(message.id) || estimate));
+    return offsets;
+}
+export function indexAt(offsets, position) {
+    let low = 0, high = Math.max(0, offsets.length - 2);
+    while (low < high) { const mid = Math.ceil((low + high) / 2); if (offsets[mid] <= position) low = mid; else high = mid - 1; }
+    return low;
+}
+export function virtualRange(offsets, top, height, overscan = 900) {
+    const count = offsets.length - 1;
+    if (!count) return {start: 0, end: 0};
+    return {start: indexAt(offsets, Math.max(0, top - overscan)), end: Math.min(count, indexAt(offsets, top + height + overscan) + 1)};
+}
+
+/** Session-owned async cache. Pending requests survive row unmounts; subscriptions never do. */
+export function createHistoryCache(maxEntries = 100) {
+    const values = new Map(), listeners = new Map(), pending = new Map();
+    const emit = key => listeners.get(key)?.forEach(listener => listener());
+    return {
+        get(key, initial) { if (!values.has(key)) values.set(key, initial); return values.get(key); },
+        subscribe(key, listener) {
+            if (!listeners.has(key)) listeners.set(key, new Set()); listeners.get(key).add(listener);
+            return () => { listeners.get(key)?.delete(listener); if (!listeners.get(key)?.size) listeners.delete(key); };
+        },
+        load(key, fetchPage) {
+            if (pending.has(key)) return pending.get(key);
+            const old = values.get(key); values.set(key, {...old, loading: true, error: ""}); emit(key);
+            const request = Promise.resolve().then(() => fetchPage(old.nextOffset)).then(page => {
+                values.set(key, {content: old.content + page.content, nextOffset: page.nextOffset, hasMore: page.hasMore, loading: false, error: ""});
+            }, error => { values.set(key, {...old, loading: false, error: error.message}); }).finally(() => {
+                pending.delete(key); emit(key);
+                for (const candidate of values.keys()) {
+                    if (values.size <= maxEntries) break;
+                    if (!listeners.has(candidate) && !pending.has(candidate)) values.delete(candidate);
+                }
+            });
+            pending.set(key, request); return request;
+        }
+    };
+}

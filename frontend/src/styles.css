@@ -808,6 +808,13 @@ button, input, textarea, select { outline: none; }
 .chat-layout { display: grid; grid-template-rows: minmax(0, 1fr) auto; height: 100%; background: white; }
 .message-stage { position: relative; min-height: 0; overflow: hidden; }
 .message-scroll { height: 100%; overflow-y: auto; scrollbar-width: thin; }
+.virtual-messages, .virtual-message-row { overflow-anchor: none; }
+.virtual-message-row { display: flow-root; }
+.history-page-controls { display: flex; gap: 10px; align-items: center; justify-content: center; min-height: 30px; margin-bottom: 12px; color: var(--text-secondary); font-size: 12px; }
+.history-page-controls button, .history-chunk-actions button, .history-more { padding: 6px 10px; border: 1px solid var(--border-default); border-radius: 7px; background: var(--surface-1); color: var(--text-secondary); cursor: pointer; font-size: 12px; }
+.history-page-controls button:disabled, .history-chunk-actions button:disabled { opacity: .6; cursor: default; }
+.history-chunk-actions { display: flex; gap: 8px; align-items: center; margin: 6px 0; color: var(--text-secondary); font-size: 11px; }
+.history-chunk-actions:empty { display: none; }
 .message-column { width: min(850px, calc(100% - 42px)); min-height: 100%; margin: 0 auto; padding: 34px 0 26px; }
 .scroll-to-bottom {
     position: absolute;
@@ -946,6 +953,29 @@ button, input, textarea, select { outline: none; }
 .markdown-body { color: #303438; font-size: 14px; line-height: 1.72; overflow-wrap: anywhere; }
 .markdown-body > :first-child { margin-top: 0; }
 .markdown-body > :last-child { margin-bottom: 0; }
+.stream-glyph {
+    position: relative;
+    animation: stream-reveal 480ms cubic-bezier(.2, .65, .3, 1) both;
+}
+[data-stream-style="glow"] .stream-glyph { animation-name: stream-chase; }
+.stream-glyph[data-stream-tip="true"]::after {
+    content: ""; position: absolute; right: -4px; bottom: .05em;
+    width: 2px; height: .85em; border-radius: 2px; background: var(--accent);
+    pointer-events: none; animation: stream-breathe 1.6s ease-in-out infinite;
+}
+@keyframes stream-reveal { from { opacity: .52; } to { opacity: 1; } }
+@keyframes stream-chase {
+    0% { opacity: .52; text-shadow: none; }
+    45% { opacity: 1; text-shadow: 0 0 6px var(--accent); }
+    100% { opacity: 1; text-shadow: none; }
+}
+@keyframes stream-breathe { 0%, 100% { opacity: .2; } 50% { opacity: .65; } }
+[data-stream-paused="true"] .stream-glyph { animation: none; opacity: 1; text-shadow: none; }
+[data-stream-paused="true"] .stream-glyph::after { display: none; }
+@media (prefers-reduced-motion: reduce) {
+    .stream-glyph { animation: none !important; opacity: 1; text-shadow: none; }
+    .stream-glyph::after { display: none; }
+}
 .markdown-body p, .markdown-body ul, .markdown-body ol { margin: .65em 0; }
 .markdown-body h1, .markdown-body h2, .markdown-body h3 { margin: 1.25em 0 .55em; line-height: 1.35; }
 .markdown-body h1 { font-size: 21px; }
