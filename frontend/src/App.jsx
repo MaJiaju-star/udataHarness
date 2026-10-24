@@ -2549,16 +2549,15 @@ function FileActivitySummary({tools, activities, onOpenFile}) {
 }
 
 const Thinking = memo(function Thinking({content, active = false, disclosureId = "thinking", contentRef, streamEffect = "soft"}) {
-    const [open, setOpen] = useDisclosure(`thinking:${disclosureId}`, active, active);
+    const [open, setOpen] = useDisclosure(`thinking:${disclosureId}`, false);
     const preview = useMemo(() => content.slice(0, 512).replace(/\s+/g, " ").trim().slice(0, 88), [content]);
     return <div className={`thinking-card ${open ? "is-open" : ""} ${active ? "active" : ""}`}>
         <button onClick={() => setOpen(value => !value)} aria-expanded={open}>
-            <span className="thinking-icon"><BrainCircuit size={16}/></span>
+            <span className="thinking-icon"><BrainCircuit size={14}/></span>
             <span className="thinking-title">
                 <b>{active ? "正在思考" : "已完成思考"}</b>
-                {!open && <small>{preview}{content.length > 88 ? "…" : ""}</small>}
+                {!open && <small title={preview}>{preview}{content.length > 88 ? "…" : ""}</small>}
             </span>
-            {active && <span className="thinking-status"><i/> 推理中</span>}
             {open ? <ChevronDown size={16}/> : <ChevronRight size={16}/>}
         </button>
         <div className={`thinking-collapse ${open ? "open" : ""}`} aria-hidden={!open}>
@@ -2638,15 +2637,16 @@ function RuntimeChunkCard({chunk}) {
     </section>;
 }
 
-const ToolCall = memo(function ToolCall({tool, grouped = false}) {
-    const active = Boolean(tool.generating && !grouped);
-    const [open, setOpen] = useDisclosure(`tool:${tool.streamId || tool.callId}`, active, active);
+const ToolCall = memo(function ToolCall({tool}) {
+    const [open, setOpen] = useDisclosure(`tool:${tool.streamId || tool.callId}`, false);
     if (tool.detailRef && (isTodoTool(tool.name) || ["render_chart", "render_echart", "render_antv_chart"].includes(tool.name)))
         return <DeferredStructuredTool tool={tool}/>;
     if (isTodoTool(tool.name)) {
         return <TodoCard todo={mergeTodoTool(null, tool)}/>;
     }
     const chartSpec = chartSpecFromTool(tool);
+    const errorSummary = tool.error ? (typeof tool.error === "string" ? tool.error
+        : tool.output || "执行失败，展开查看详情").slice(0, 240).replace(/\s+/g, " ") : "";
     const details = !open ? "" : tool.args && Object.keys(tool.args).length
         ? JSON.stringify(tool.args, null, 2)
         : tool.argsText || "";
@@ -2654,6 +2654,7 @@ const ToolCall = memo(function ToolCall({tool, grouped = false}) {
     return <>
         <div className={`tool-call ${open ? "is-open" : ""} ${tool.generating ? "generating" : ""} ${tool.error ? "error" : ""}`}>
             <ToolCallHeader tool={tool} open={open} onToggle={() => setOpen(value => !value)}/>
+            {!open && errorSummary && <div className="tool-error-summary" title={errorSummary}>{errorSummary}</div>}
             {open && tool.detailRef && <DeferredToolDetails reference={tool.detailRef}/>}
             {open && !tool.detailRef && showDetails && <PagedToolText id={tool.callId} text={details + (tool.output ? `\n\n${tool.output}` : "")} generating={tool.generating}/>}
             {open && !tool.detailRef && tool.editDiff && <EditDiffView diff={tool.editDiff}/>}

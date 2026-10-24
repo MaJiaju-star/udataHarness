@@ -16,7 +16,7 @@ export default function ToolCallHeader({tool, open, onToggle}) {
     const hasDirectory = summary.path && separator >= 0 && separator < summary.target.length - 1;
     return <button className="tool-heading" onClick={onToggle} aria-expanded={open}
                    aria-label={`${tool.name}：${summary.target}，${status.label}，${open ? "收起" : "展开"}详情`}>
-        <span className="tool-icon"><Icon size={16}/></span>
+        <span className="tool-icon"><Icon size={14}/></span>
         <span className="tool-heading-main">
             <span className="tool-heading-title">
                 <b className="tool-heading-name" title={tool.name}>{tool.name}</b>
@@ -34,9 +34,9 @@ export default function ToolCallHeader({tool, open, onToggle}) {
                 </span>}
             </span>
         </span>
-        <span className={`tool-heading-status ${status.kind}`}>
+        <span className={`tool-heading-status ${status.kind}`} title={[status.label, duration, summary.detail].filter(Boolean).join(" · ")}>
             <span><StatusIcon size={12} className={["running", "generating"].includes(status.kind) ? "spin" : undefined}/>{status.label}</span>
-            {duration && <small>{duration}</small>}
+            {open && duration && <small>{duration}</small>}
         </span>
         <span className="tool-heading-chevron">{open ? <ChevronDown size={15}/> : <ChevronRight size={15}/>}</span>
     </button>;
