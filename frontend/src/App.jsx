@@ -1,5 +1,6 @@
 import {lazy, memo, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState} from "react";
 import ReactMarkdown from "react-markdown";
+import ThinkingPreview from "./ThinkingPreview.jsx";
 import remarkGfm from "remark-gfm";
 import ChartCard, {chartSpecFromTool} from "./ChartCard.jsx";
 import GlobalSearchDialog from "./GlobalSearchDialog.jsx";
@@ -2550,13 +2551,12 @@ function FileActivitySummary({tools, activities, onOpenFile}) {
 
 const Thinking = memo(function Thinking({content, active = false, disclosureId = "thinking", contentRef, streamEffect = "soft"}) {
     const [open, setOpen] = useDisclosure(`thinking:${disclosureId}`, false);
-    const preview = useMemo(() => content.slice(0, 512).replace(/\s+/g, " ").trim().slice(0, 88), [content]);
     return <div className={`thinking-card ${open ? "is-open" : ""} ${active ? "active" : ""}`}>
         <button onClick={() => setOpen(value => !value)} aria-expanded={open}>
             <span className="thinking-icon"><BrainCircuit size={14}/></span>
             <span className="thinking-title">
                 <b>{active ? "正在思考" : "已完成思考"}</b>
-                {!open && <small title={preview}>{preview}{content.length > 88 ? "…" : ""}</small>}
+                {!open && <ThinkingPreview content={content} active={active} mode={streamEffect}/>}
             </span>
             {open ? <ChevronDown size={16}/> : <ChevronRight size={16}/>}
         </button>
