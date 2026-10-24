@@ -807,7 +807,7 @@ button, input, textarea, select { outline: none; }
 .content-shell { min-width: 0; min-height: 0; overflow: hidden; }
 .chat-layout { display: grid; grid-template-rows: minmax(0, 1fr) auto; height: 100%; background: white; }
 .message-stage { position: relative; min-height: 0; overflow: hidden; }
-.message-scroll { height: 100%; overflow-y: auto; scrollbar-width: thin; }
+.message-scroll { height: 100%; overflow-y: auto; scrollbar-width: thin; overflow-anchor: none; }
 .virtual-messages, .virtual-message-row { overflow-anchor: none; }
 .virtual-message-row { display: flow-root; }
 .history-page-controls { display: flex; gap: 10px; align-items: center; justify-content: center; min-height: 30px; margin-bottom: 12px; color: var(--text-secondary); font-size: 12px; }

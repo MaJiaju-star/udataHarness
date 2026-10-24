@@ -29,7 +29,11 @@ function ThinkingPre({children, follow}) {
         else if (!initialized.current) scroller.snap();
         else scroller.follow();
         initialized.current = true;
-    }, [children, follow, scroller]);
+        // The animated child publishes frames independently of the incoming SSE props.
+        const observer = new MutationObserver(() => { if (follow) scroller.follow(); });
+        observer.observe(ref.current, {childList: true, characterData: true, subtree: true});
+        return () => observer.disconnect();
+    }, [follow, scroller]);
     return <pre ref={ref}>{children}</pre>;
 }
 
@@ -71,8 +75,8 @@ function FlowMarkdown({content, plain = false}) {
         if (!paused && !reduced) decorateTail(tree, clock, moving);
         return tree.children;
     }, [plain, shown, paused, reduced, clock, moving]);
-    if (plain) return <ThinkingPre follow={!paused}>{plainNodes.map((node, index) => node.type === "text" ? node.value
-        : <StreamSpan key={node.properties["data-stream-id"] || index} node={node}>{node.children[0].value}</StreamSpan>)}</ThinkingPre>;
+    if (plain) return <>{plainNodes.map((node, index) => node.type === "text" ? node.value
+        : <StreamSpan key={node.properties["data-stream-id"] || index} node={node}>{node.children[0].value}</StreamSpan>)}</>;
     return <ReactMarkdown remarkPlugins={[remarkGfm]} rehypePlugins={plugins} components={components}>{shown}</ReactMarkdown>;
 }
 
@@ -83,6 +87,7 @@ export default memo(function StreamMarkdown({content, active = false, mode = "so
 
 export const StreamText = memo(function StreamText({content, active = false, mode = "soft"}) {
     const paused = useContext(StreamMotionContext);
-    return active && mode !== "off" ? <FlowMarkdown content={content} plain/>
-        : <ThinkingPre follow={active && !paused}>{content}</ThinkingPre>;
+    // Keep the scroll element mounted when streaming finishes or motion settings change.
+    return <ThinkingPre follow={active && !paused}>{active && mode !== "off"
+        ? <FlowMarkdown content={content} plain/> : content}</ThinkingPre>;
 });

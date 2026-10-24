@@ -1,13 +1,14 @@
 import {memo, useCallback, useLayoutEffect, useMemo, useRef, useState} from "react";
-import {indexAt, virtualOffsets, virtualRange} from "./historyPaging.js";
+import {anchoredVirtualTop, indexAt, virtualOffsets, virtualRange} from "./historyPaging.js";
 import {MessageScope} from "./HistoryView.jsx";
-import {anchorShift} from "./scrollFollow.js";
 
 /** Variable-height window. Measurements and row identities survive prepend and stream updates. */
 export default memo(function VirtualMessageList({messages, scrollRef, captureRef, isFollowing, followOutput, renderMessage}) {
     const root = useRef(null), heights = useRef(new Map()), anchor = useRef(null), geometry = useRef(null);
     const initialized = useRef(false);
     const [revision, setRevision] = useState(0), [viewport, setViewport] = useState({top: 0, height: 800});
+    const viewportRef = useRef(viewport);
+    viewportRef.current = viewport;
     // Measurement cache is mutated in place; revision intentionally invalidates its derived offsets.
     // eslint-disable-next-line react-hooks/exhaustive-deps
     const offsets = useMemo(() => virtualOffsets(messages, heights.current), [messages, revision]);
@@ -28,20 +29,40 @@ export default memo(function VirtualMessageList({messages, scrollRef, captureRef
         // Capture native scroll immediately: a stream commit can run before the next animation frame.
         const scroll = refresh;
         element.addEventListener("scroll", scroll, {passive: true});
-        const resize = new ResizeObserver(scroll); resize.observe(element); refresh();
+        const resize = new ResizeObserver(() => {
+            refresh();
+            // Batch reflow measurements only on container resize, not on every scroll/commit.
+            let changed = false;
+            for (const row of root.current?.children || []) {
+                const id = row.dataset.messageId, height = row.getBoundingClientRect().height;
+                if (id && height > 0 && Math.abs((heights.current.get(id) || 220) - height) >= 1) {
+                    heights.current.set(id, height); changed = true;
+                }
+            }
+            if (changed) setRevision(value => value + 1);
+        });
+        resize.observe(element); refresh();
         return () => { element.removeEventListener("scroll", scroll); resize.disconnect(); };
     }, [scrollRef, refresh]);
     useLayoutEffect(() => {
         const element = scrollRef.current, list = root.current;
         if (!element || !list) return;
-        const shift = anchorShift(anchor.current, messages, offsets);
+        const previousTop = viewportRef.current.top;
+        const top = anchoredVirtualTop(anchor.current, messages, offsets, previousTop);
+        const shift = top - previousTop;
         geometry.current = {messages, offsets};
         if (isFollowing()) followOutput(!initialized.current);
-        else if (shift) element.scrollTop += shift;
+        else if (Math.abs(shift) >= 1) {
+            const origin = list.getBoundingClientRect().top - element.getBoundingClientRect().top + element.scrollTop;
+            element.scrollTop = origin + top;
+        }
         if (messages.length) initialized.current = true;
         refresh();
     }, [messages, offsets, isFollowing, followOutput, refresh, scrollRef]);
-    const range = virtualRange(offsets, viewport.top, viewport.height);
+    // Keep the reader's row mounted during a height correction. Using the old top here
+    // can replace it with a spacer, clamp native scrollTop and strand the viewport blank.
+    const rangeTop = anchoredVirtualTop(anchor.current, messages, offsets, viewport.top);
+    const range = virtualRange(offsets, rangeTop, viewport.height);
     const measure = useCallback((id, height) => {
         if (height <= 0 || Math.abs((heights.current.get(id) || 220) - height) < 1) return;
         heights.current.set(id, height); setRevision(value => value + 1);

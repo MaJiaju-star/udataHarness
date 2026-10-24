@@ -27,6 +27,16 @@ export function virtualRange(offsets, top, height, overscan = 900) {
     return {start: indexAt(offsets, Math.max(0, top - overscan)), end: Math.min(count, indexAt(offsets, top + height + overscan) + 1)};
 }
 
+/** Select rows using the corrected anchor before React removes the old window. */
+export function anchoredVirtualTop(anchor, messages, offsets, top) {
+    if (!anchor) return top;
+    const index = messages.findIndex(message => message.id === anchor.id);
+    if (index < 0) return top;
+    const inset = Math.max(0, top - anchor.start);
+    // A collapsed/reflowed message may no longer contain the old reading offset.
+    return offsets[index] + Math.min(inset, Math.max(0, offsets[index + 1] - offsets[index] - 1));
+}
+
 /** Session-owned async cache. Pending requests survive row unmounts; subscriptions never do. */
 export function createHistoryCache(maxEntries = 100) {
     const values = new Map(), listeners = new Map(), pending = new Map();

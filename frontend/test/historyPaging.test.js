@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import {prependHistory, mergeLatestHistory, virtualOffsets, virtualRange, indexAt, createHistoryCache} from "../src/historyPaging.js";
+import {anchoredVirtualTop, prependHistory, mergeLatestHistory, virtualOffsets, virtualRange, indexAt, createHistoryCache} from "../src/historyPaging.js";
 
 test("prepend is deduplicated and preserves active stream object identity", () => {
     const active = {id: "active", content: "stream"}, old = {id: "history-30"}, older = {id: "history-1"};
@@ -34,6 +34,29 @@ test("pending details deduplicate, survive row unmount and notify remounted subs
     const unsubscribe = cache.subscribe("key", () => notifications++);
     resolve({content: " remainder", nextOffset: 17, hasMore: false}); await first;
     assert.equal(calls, 1); assert.equal(cache.get("key").content, "preview remainder"); assert.equal(notifications, 1); unsubscribe();
+});
+
+test("width reflow keeps the reading row in the rendered window before DOM replacement", () => {
+    const messages = [{id: "long"}, {id: "reading"}, {id: "stream"}];
+    const anchor = {id: "reading", start: 4000}, top = 4100;
+    const offsets = [0, 12000, 16000, 18000];
+    // The old viewport selects only the preceding long row: the reader would unmount.
+    assert.equal(virtualRange(offsets, top, 400).end, 1);
+    const next = anchoredVirtualTop(anchor, messages, offsets, top);
+    assert.equal(next, 12100);
+    const range = virtualRange(offsets, next, 400);
+    assert.ok(range.start <= 1 && range.end > 1);
+    // Later output below the reader does not move the reading position.
+    assert.equal(anchoredVirtualTop({id: "reading", start: 12000}, messages, [0, 12000, 16000, 22000], next), next);
+});
+
+test("shrinking or collapsing the anchored row cannot leave the viewport inside its old empty extent", () => {
+    const messages = [{id: "before"}, {id: "reading"}, {id: "after"}];
+    const next = anchoredVirtualTop({id: "reading", start: 6000}, messages, [0, 2000, 2100, 2400], 9500);
+    assert.equal(next, 2099);
+    assert.equal(indexAt([0, 2000, 2100, 2400], next), 1);
+    assert.equal(anchoredVirtualTop(null, messages, [0, 2000, 2100, 2400], 50), 50);
+    assert.equal(anchoredVirtualTop({id: "removed", start: 0}, messages, [0, 2000, 2100, 2400], 50), 50);
 });
 test("failed reads preserve the preview and cursor, allowing exact retry", async () => {
     const cache = createHistoryCache(), initial = {content: "prefix", nextOffset: 6, hasMore: true}; cache.get("x", initial);
