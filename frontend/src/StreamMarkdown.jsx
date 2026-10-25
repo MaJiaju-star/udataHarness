@@ -4,6 +4,8 @@ import remarkGfm from "remark-gfm";
 import {decorateStreamTail} from "./streamTail.js";
 import {createSmoothStream} from "./smoothStream.js";
 import useSmoothScroll from "./useSmoothScroll.js";
+import {StreamPresenceContext, StreamPresenceNode} from "./StreamPresence.jsx";
+import {appendStreamPresence} from "./streamPresence.js";
 
 export const StreamMotionContext = createContext(false);
 
@@ -18,7 +20,9 @@ function TailGlyph({born, tip, moving, children}) {
     const [delay] = useState(() => born - Date.now());
     return <span className="stream-glyph" data-stream-tip={tip} data-stream-moving={moving} style={{animationDelay: `${delay}ms`}}>{children}</span>;
 }
-const components = {span: StreamSpan};
+const components = {span: StreamSpan, "stream-presence": StreamPresenceNode};
+const presencePlugin = () => appendStreamPresence;
+const presencePlugins = [presencePlugin];
 
 function ThinkingPre({children, follow}) {
     const ref = useRef(null);
@@ -68,7 +72,7 @@ function FlowMarkdown({content, plain = false}) {
     const shown = paused || reduced ? content : visible;
     const clock = useMemo(() => new Map(), []);
     const moving = shown !== content;
-    const plugins = useMemo(() => !paused && !reduced ? [() => tree => decorateTail(tree, clock, moving)] : [], [paused, reduced, clock, moving]);
+    const plugins = useMemo(() => [...(!paused && !reduced ? [() => tree => decorateTail(tree, clock, moving)] : []), presencePlugin], [paused, reduced, clock, moving]);
     const plainNodes = useMemo(() => {
         if (!plain) return null;
         const tree = {type: "root", children: [{type: "text", value: shown}]};
@@ -80,9 +84,11 @@ function FlowMarkdown({content, plain = false}) {
     return <ReactMarkdown remarkPlugins={[remarkGfm]} rehypePlugins={plugins} components={components}>{shown}</ReactMarkdown>;
 }
 
-export default memo(function StreamMarkdown({content, active = false, mode = "soft"}) {
-    return active && mode !== "off" ? <FlowMarkdown content={content}/>
-        : <ReactMarkdown remarkPlugins={[remarkGfm]}>{content}</ReactMarkdown>;
+export default memo(function StreamMarkdown({content, active = false, mode = "soft", progressAt}) {
+    const presence = useMemo(() => ({active, content, mode, progressAt}), [active, content, mode, progressAt]);
+    return <StreamPresenceContext.Provider value={presence}>{active && mode !== "off" ? <FlowMarkdown content={content}/>
+        : <ReactMarkdown remarkPlugins={[remarkGfm]} rehypePlugins={active ? presencePlugins : undefined}
+                         components={components}>{content}</ReactMarkdown>}</StreamPresenceContext.Provider>;
 });
 
 export const StreamText = memo(function StreamText({content, active = false, mode = "soft"}) {

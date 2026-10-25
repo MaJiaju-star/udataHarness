@@ -1,6 +1,8 @@
 import {lazy, memo, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState} from "react";
 import ReactMarkdown from "react-markdown";
 import ThinkingPreview from "./ThinkingPreview.jsx";
+import {StreamPresence, useStreamWaiting} from "./StreamPresence.jsx";
+import {streamProgressAt, streamPresenceTarget} from "./streamPresence.js";
 import remarkGfm from "remark-gfm";
 import ChartCard, {chartSpecFromTool} from "./ChartCard.jsx";
 import GlobalSearchDialog from "./GlobalSearchDialog.jsx";
@@ -772,6 +774,8 @@ function reduceAssistantEvent(message, event) {
         next.tools = next.tools.map(tool => ({...tool, running: false, generating: false}));
     }
     if (event.type === "error") next.error = event.message || event.content || "智能体运行失败";
+    next.streamProgressAt = streamProgressAt(message, next, event);
+    if (event.type === "run_start") next.finished = false;
     return next;
 }
 
@@ -1284,7 +1288,8 @@ function App() {
                 subagents: {},
                 runtimeChunks: {},
                 todo: null,
-                finished: false
+                finished: false,
+                streamProgressAt: Date.now()
             }
         ]);
         try {
@@ -1360,7 +1365,7 @@ function App() {
         setRunning(true);
         try {
             setMessages(items => items.map(item => item.id === messageId
-                ? {...item, hitl: null, error: null}
+                ? {...item, hitl: null, error: null, finished: false, streamProgressAt: Date.now()}
                 : item));
             await stream("/api/hitl/decide", {
                 sessionId: current.sessionId, action, alwaysAllow, callUuids
@@ -2393,8 +2398,8 @@ function UsageAuditDialog({api, currentSessionId, onClose}) {
     </div>;
 }
 
-const MarkdownContent = memo(function MarkdownContent({content, active = false, mode = "soft"}) {
-    return <StreamMarkdown content={content} active={active} mode={mode}/>;
+const MarkdownContent = memo(function MarkdownContent({content, active = false, mode = "soft", progressAt}) {
+    return <StreamMarkdown content={content} active={active} mode={mode} progressAt={progressAt}/>;
 });
 
 const Message = memo(function Message({message, onDecide, onOpenFile, toolView, streamActive, streamEffect}) {
@@ -2413,6 +2418,7 @@ const Message = memo(function Message({message, onDecide, onOpenFile, toolView, 
     const extraTools = message.tools?.filter(tool => !activityToolIds.has(tool.callId) && !isTodoTool(tool.name)) || [];
     const extras = toolView === "grouped" ? groupToolActivities(extraTools.map(tool => ({type: "tool", callId: tool.callId})), extraTools) : [];
     const animate = streamActive && !message.finished && !message.hitl && !message.error;
+    const presenceTarget = streamPresenceTarget(message);
     const renderTool = useCallback((tool, grouped) => <ToolCall key={tool.streamId || tool.callId} tool={tool} grouped={grouped}/>, []);
     return <article className={`message-row ${message.role}`}>
         <div className="message-avatar">
@@ -2423,12 +2429,14 @@ const Message = memo(function Message({message, onDecide, onOpenFile, toolView, 
             {message.memoryRecall?.enabled && <details className="memory-recall"><summary>本轮使用记忆 {message.memoryRecall.entries?.length || 0} 条 · 约 {message.memoryRecall.estimatedTokens || 0} Token</summary>
                 {(message.memoryRecall.entries || []).map(row => <article key={row.id}><b>{row.scope === "global" ? "全局" : "项目"} · {row.key}</b><p>{row.content}</p><small>来源：{row.source === "manual" ? "后台录入" : row.source} · 版本 {row.revision}</small></article>)}
                 {!message.memoryRecall.entries?.length && <p>本轮未检索到符合预算的相关记忆。</p>}</details>}
-            {!hasThinkingActivities && thinking && <Thinking content={thinking} active={animate && parsed.pending} streamEffect={streamEffect}/>}
+            {!hasThinkingActivities && thinking && <Thinking content={thinking}
+                active={animate && (parsed.pending || presenceTarget.kind === "thinking")} progressAt={message.streamProgressAt} streamEffect={streamEffect}/>}
             {timeline.map(activity => {
                 if (activity.type === "tool_group") return <ToolGroup key={activity.id} tools={activity.tools} renderTool={renderTool}/>;
                 if (activity.type === "thinking") {
                     return <Thinking key={`thinking-${activity.id}`} disclosureId={activity.id} contentRef={activity.contentRef} content={activity.content}
-                                     active={animate && activity.active} streamEffect={streamEffect}/>;
+                                     active={animate && presenceTarget.kind === "thinking" && presenceTarget.id === activity.id}
+                                     progressAt={message.streamProgressAt} streamEffect={streamEffect}/>;
                 }
                 if (activity.type === "tool") {
                     const tool = message.tools?.find(item => item.callId === activity.callId);
@@ -2448,7 +2456,8 @@ const Message = memo(function Message({message, onDecide, onOpenFile, toolView, 
                 if (activity.type === "text" && activity.content) {
                     return <div className="markdown-body assistant timeline-text" key={activity.id}>
                         <HistoryContent reference={activity.contentRef} initial={activity.content} render={text => <MarkdownContent content={text}
-                            active={animate && activity === activities.at(-1)} mode={streamEffect}/>}/>
+                            active={animate && presenceTarget.kind === "text" && presenceTarget.id === activity.id}
+                            progressAt={message.streamProgressAt} mode={streamEffect}/>}/>
                     </div>;
                 }
                 return null;
@@ -2459,17 +2468,16 @@ const Message = memo(function Message({message, onDecide, onOpenFile, toolView, 
                 : extraTools.map(tool => renderTool(tool, false))}
             {!hasTextActivities && parsed.visible && <div className={`markdown-body ${message.role}`}>
                 {message.role === "assistant"
-                    ? <MarkdownContent content={parsed.visible} active={animate} mode={streamEffect}/>
+                    ? <MarkdownContent content={parsed.visible} active={animate && presenceTarget.kind === "text"}
+                                       progressAt={message.streamProgressAt} mode={streamEffect}/>
                     : <HistoryContent reference={message.contentRef} initial={parsed.visible} render={text => <>{text}</>}/>}
             </div>}
             {message.role === "assistant" && message.finished &&
                 <FileActivitySummary tools={message.tools} activities={message.fileActivities}
                                      onOpenFile={onOpenFile}/>}
-            {!parsed.visible && !thinking && !message.tools?.length
-                && !Object.keys(message.subagents || {}).length
-                && !Object.keys(message.runtimeChunks || {}).length
-                && message.role === "assistant" && !message.error &&
-                <div className="typing-row inline"><span/><span/><span/></div>}
+            {animate && presenceTarget.kind === "fallback" && message.role === "assistant" &&
+                <span className="stream-placeholder"><StreamPresence active progressAt={message.streamProgressAt}
+                    content="" mode={streamEffect}/></span>}
             {message.hitl && <HitlCard event={message.hitl} onDecide={decide}/>}
             {message.error && <div className="message-error"><X size={16}/>{message.error}</div>}
         </div>
@@ -2549,14 +2557,15 @@ function FileActivitySummary({tools, activities, onOpenFile}) {
     </section>;
 }
 
-const Thinking = memo(function Thinking({content, active = false, disclosureId = "thinking", contentRef, streamEffect = "soft"}) {
+const Thinking = memo(function Thinking({content, active = false, disclosureId = "thinking", contentRef, streamEffect = "soft", progressAt}) {
     const [open, setOpen] = useDisclosure(`thinking:${disclosureId}`, false);
+    const waiting = useStreamWaiting(active, content, progressAt);
     return <div className={`thinking-card ${open ? "is-open" : ""} ${active ? "active" : ""}`}>
         <button onClick={() => setOpen(value => !value)} aria-expanded={open}>
-            <span className="thinking-icon"><BrainCircuit size={14}/></span>
+            <span className="thinking-icon" title={waiting || undefined}><BrainCircuit size={14}/></span>
             <span className="thinking-title">
                 <b>{active ? "正在思考" : "已完成思考"}</b>
-                {!open && <ThinkingPreview content={content} active={active} mode={streamEffect}/>}
+                {!open && <ThinkingPreview content={content} active={active} mode={streamEffect} waiting={waiting}/>}
             </span>
             {open ? <ChevronDown size={16}/> : <ChevronRight size={16}/>}
         </button>
