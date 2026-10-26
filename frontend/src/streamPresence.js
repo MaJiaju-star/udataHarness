@@ -1,16 +1,22 @@
-export const SHORT_WAIT_MS = 5000;
-export const LONG_WAIT_MS = 20000;
+export const SHORT_WAIT_MS = 100;
+export const LONG_WAIT_MS = 15000;
 
-/** One pair of deadlines per content revision; heartbeats never reset these clocks. */
-export function watchStreamIdle({schedule, cancel, publish, elapsed = 0}) {
-    const jobs = [];
-    if (elapsed >= LONG_WAIT_MS) publish("响应较慢，仍在等待…");
-    else {
-        if (elapsed >= SHORT_WAIT_MS) publish("等待继续…");
-        else jobs.push(schedule(() => publish("等待继续…"), SHORT_WAIT_MS - elapsed));
-        jobs.push(schedule(() => publish("响应较慢，仍在等待…"), LONG_WAIT_MS - elapsed));
+/** Wall-clock seconds survive delayed timers/remounts; progress cancels the entire clock. */
+export function watchStreamIdle({schedule, cancel, publish, elapsed = 0, now = Date.now}) {
+    const startedAt = now() - elapsed;
+    let job, stopped = false;
+    function tick() {
+        if (stopped) return;
+        const duration = Math.max(0, now() - startedAt);
+        if (duration >= SHORT_WAIT_MS) publish({seconds: Math.floor(duration / 1000), slow: duration >= LONG_WAIT_MS});
+        job = schedule(tick, duration < SHORT_WAIT_MS ? SHORT_WAIT_MS - duration : 1000 - duration % 1000);
     }
-    return () => jobs.forEach(cancel);
+    tick();
+    return () => { stopped = true; cancel(job); };
+}
+
+export function streamWaitingLabel(waiting, thinking = false) {
+    return waiting.slow ? "模型响应较慢，仍在等待" : thinking ? "等待思考继续" : "正在等待模型继续输出";
 }
 
 /** A turn-owned timestamp survives Markdown block replacement and virtual row remounts. */

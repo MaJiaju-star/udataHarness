@@ -1,13 +1,13 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import {watchStreamIdle, appendStreamPresence, streamProgressAt, streamPresenceTarget} from "../src/streamPresence.js";
+import {watchStreamIdle, appendStreamPresence, streamProgressAt, streamPresenceTarget, streamWaitingLabel} from "../src/streamPresence.js";
 
 test("remounting a stalled stream inherits its elapsed time instead of restarting the clock", () => {
     const seen = [], delays = [];
-    const dispose = watchStreamIdle({elapsed: 7000, publish: value => seen.push(value), schedule: (_, delay) => { delays.push(delay); return 1; }, cancel: () => {}});
-    assert.deepEqual(seen, ["等待继续…"]); assert.deepEqual(delays, [13000]); dispose();
-    watchStreamIdle({elapsed: 23000, publish: value => seen.push(value), schedule: () => assert.fail("No new deadline needed"), cancel: () => {}});
-    assert.equal(seen.at(-1), "响应较慢，仍在等待…");
+    const dispose = watchStreamIdle({elapsed: 7400, now: () => 0, publish: value => seen.push(value), schedule: (_, delay) => { delays.push(delay); return 1; }, cancel: () => {}});
+    assert.deepEqual(seen, [{seconds: 7, slow: false}]); assert.deepEqual(delays, [600]); dispose();
+    const stop = watchStreamIdle({elapsed: 23000, now: () => 0, publish: value => seen.push(value), schedule: () => 1, cancel: () => {}});
+    assert.deepEqual(seen.at(-1), {seconds: 23, slow: true}); stop();
 });
 
 test("only real turn progress resets idle time, not heartbeat, usage or repeated text", () => {
@@ -37,23 +37,33 @@ test("presence survives thinking-to-text and tool-to-model gaps without pretendi
     }
 });
 
-test("idle deadlines distinguish short/long waits and progress cancels stale deadlines", () => {
+test("waiting appears at 100ms, counts real seconds, escalates at 15s and cancels on progress", () => {
     let now = 0, serial = 0;
     const jobs = new Map(), seen = [];
     const options = {schedule: (callback, delay) => { const id = ++serial; jobs.set(id, {at: now + delay, callback}); return id; },
-        cancel: id => jobs.delete(id), publish: label => seen.push(label)};
-    const advance = time => { now = time; for (const [id, job] of jobs) if (job.at <= now) { jobs.delete(id); job.callback(); } };
+        cancel: id => jobs.delete(id), publish: label => seen.push(label), now: () => now};
+    const advance = time => { now = time; for (const [id, job] of [...jobs]) if (job.at <= now) { jobs.delete(id); job.callback(); } };
     let dispose = watchStreamIdle(options);
-    advance(4999); assert.deepEqual(seen, []);
-    advance(5000); assert.deepEqual(seen, ["等待继续…"]);
-    // Real content resumes; the previous 20-second deadline must not fire.
+    advance(99); assert.deepEqual(seen, []);
+    advance(100); assert.deepEqual(seen, [{seconds: 0, slow: false}]);
+    advance(4000); assert.deepEqual(seen.at(-1), {seconds: 4, slow: false});
+    advance(14999); assert.deepEqual(seen.at(-1), {seconds: 14, slow: false});
+    advance(15000); assert.deepEqual(seen.at(-1), {seconds: 15, slow: true});
+    // Timers delayed by a background tab catch up from wall time, never by tick count.
+    advance(28000); assert.deepEqual(seen.at(-1), {seconds: 28, slow: true});
     dispose(); dispose = watchStreamIdle(options);
-    advance(10000); assert.equal(seen.length, 2);
-    advance(20000); assert.equal(seen.length, 2);
-    advance(25000); assert.equal(seen.at(-1), "响应较慢，仍在等待…");
+    advance(28099); assert.equal(seen.length, 5);
+    advance(28100); assert.deepEqual(seen.at(-1), {seconds: 0, slow: false});
     dispose(); assert.equal(jobs.size, 0);
+    const count = seen.length;
     dispose = watchStreamIdle(options); dispose(); advance(100000);
-    assert.equal(seen.length, 3); // Completion/error/unmount leaves no live timers.
+    assert.equal(seen.length, count); // Completion/error/unmount leaves no live timers.
+});
+
+test("labels describe waiting rather than claiming the disconnected model is thinking", () => {
+    assert.equal(streamWaitingLabel({slow: false}), "正在等待模型继续输出");
+    assert.equal(streamWaitingLabel({slow: false}, true), "等待思考继续");
+    assert.equal(streamWaitingLabel({slow: true}, true), "模型响应较慢，仍在等待");
 });
 
 test("live marker sits inside final prose or list item, outside code and tables", () => {

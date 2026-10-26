@@ -1,7 +1,7 @@
 import {lazy, memo, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState} from "react";
 import ReactMarkdown from "react-markdown";
 import ThinkingPreview from "./ThinkingPreview.jsx";
-import {StreamPresence, useStreamWaiting} from "./StreamPresence.jsx";
+import {StreamPresence, StreamWaitIndicator, useStreamWaiting} from "./StreamPresence.jsx";
 import {streamProgressAt, streamPresenceTarget} from "./streamPresence.js";
 import remarkGfm from "remark-gfm";
 import ChartCard, {chartSpecFromTool} from "./ChartCard.jsx";
@@ -17,7 +17,7 @@ import ToolGroup from "./ToolGroup.jsx";
 import VirtualMessageList from "./VirtualMessageList.jsx";
 import {HistoryProvider, MessageScope, HistoryContent, DeferredToolDetails, useDisclosure, useHistoryChunks, ChunkActions} from "./HistoryView.jsx";
 import {prependHistory, mergeLatestHistory} from "./historyPaging.js";
-import {createScrollFollow} from "./scrollFollow.js";
+import {consumesNestedScroll, createScrollFollow} from "./scrollFollow.js";
 import useSmoothScroll from "./useSmoothScroll.js";
 import StreamMarkdown, {StreamMotionContext, StreamText} from "./StreamMarkdown.jsx";
 import {streamStyle} from "./streamTail.js";
@@ -1867,6 +1867,7 @@ function ChatView({api, current, messages, historyPage, onLoadOlder, onReloadHis
     };
     const endRef = useRef(null);
     const scrollContainerRef = useRef(null);
+    const scrollTouchY = useRef(null);
     const captureHistoryAnchor = useRef(null);
     const scrollFollowRef = useRef(null);
     if (!scrollFollowRef.current) scrollFollowRef.current = createScrollFollow();
@@ -1913,6 +1914,16 @@ function ChatView({api, current, messages, historyPage, onLoadOlder, onReloadHis
     const handleMessageScroll = () => {
         const element = scrollContainerRef.current;
         if (!element) return;
+        scrollFollowRef.current.scrolled(element);
+        setShowScrollToBottom(!scrollFollowRef.current.isFollowing());
+    };
+
+    const handleScrollIntent = (direction, target) => {
+        const element = scrollContainerRef.current;
+        if (!element || consumesNestedScroll(target, element, direction)) return;
+        scrollFollowRef.current.input(direction, element);
+        if (scrollFollowRef.current.isFollowing()) messageScroller.follow();
+        else messageScroller.stop();
         setShowScrollToBottom(!scrollFollowRef.current.isFollowing());
     };
 
@@ -2085,12 +2096,21 @@ function ChatView({api, current, messages, historyPage, onLoadOlder, onReloadHis
         <div ref={scrollContainerRef} className="message-scroll" data-stream-style={streamEffect} data-stream-paused={showScrollToBottom}
              onScroll={handleMessageScroll} tabIndex={0} role="region" aria-label="对话消息"
              onClickCapture={event => { if (event.target.closest("button, summary") && !event.target.closest(".hitl-card")) { pauseAutoFollow(); captureHistoryAnchor.current?.(); } }}
-             onWheel={event => event.deltaY < 0 && pauseAutoFollow()}
-             onPointerDown={event => { if (event.target === event.currentTarget || event.target.closest(".thinking-content pre")) pauseAutoFollow(); }}
+             onWheel={event => { if (event.deltaY) handleScrollIntent(Math.sign(event.deltaY), event.target); }}
+             onPointerDown={event => { if (event.target === event.currentTarget) handleScrollIntent(0, event.target); }}
              onKeyDown={event => {
-                 if (event.target === event.currentTarget && ["ArrowUp", "PageUp", "Home"].includes(event.key)) pauseAutoFollow();
+                 if (event.target !== event.currentTarget) return;
+                 if (["ArrowUp", "PageUp", "Home"].includes(event.key)) handleScrollIntent(-1, event.target);
+                 if (["ArrowDown", "PageDown", "End", " "].includes(event.key)) handleScrollIntent(event.shiftKey && event.key === " " ? -1 : 1, event.target);
              }}
-             onTouchMove={pauseAutoFollow}>
+             onTouchStart={event => { scrollTouchY.current = event.touches[0]?.clientY ?? null; }}
+             onTouchMove={event => {
+                 const y = event.touches[0]?.clientY;
+                 if (y != null && scrollTouchY.current != null && y !== scrollTouchY.current) handleScrollIntent(Math.sign(scrollTouchY.current - y), event.target);
+                 scrollTouchY.current = y ?? null;
+             }}
+             onTouchEnd={() => { scrollTouchY.current = null; }}
+             onTouchCancel={() => { scrollTouchY.current = null; }}>
             <div className="message-column">
                 {messages.length === 0 && <div className="conversation-empty">
                     <div className="mini-orb"><Sparkles size={20}/></div>
@@ -2562,10 +2582,11 @@ const Thinking = memo(function Thinking({content, active = false, disclosureId =
     const waiting = useStreamWaiting(active, content, progressAt);
     return <div className={`thinking-card ${open ? "is-open" : ""} ${active ? "active" : ""}`}>
         <button onClick={() => setOpen(value => !value)} aria-expanded={open}>
-            <span className="thinking-icon" title={waiting || undefined}><BrainCircuit size={14}/></span>
+            <span className="thinking-icon"><BrainCircuit size={14}/></span>
             <span className="thinking-title">
                 <b>{active ? "正在思考" : "已完成思考"}</b>
                 {!open && <ThinkingPreview content={content} active={active} mode={streamEffect} waiting={waiting}/>}
+                {open && waiting && <small className="thinking-preview-waiting"><StreamWaitIndicator waiting={waiting} thinking compact mode={streamEffect}/></small>}
             </span>
             {open ? <ChevronDown size={16}/> : <ChevronRight size={16}/>}
         </button>

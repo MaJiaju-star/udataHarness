@@ -2685,16 +2685,25 @@ html[data-mode="dark"] .permission-mode-switch { background: var(--surface-2); c
 .thinking-preview.is-tail .thinking-preview-text { flex: 0 0 auto; min-width: 100%; text-align: right; }
 .thinking-preview-tip { animation: thinkingPreviewFade .18s ease-out both; }
 .markdown-body, .stream-placeholder { position: relative; }
-.stream-placeholder { display: block; min-height: 18px; }
-.stream-presence { display: inline-flex; align-items: center; vertical-align: baseline; width: 14px; height: 1em; margin-inline-start: 4px; }
-.stream-presence-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--accent); opacity: .65; animation: stream-presence-breathe 1.8s ease-in-out infinite; }
-.stream-presence[data-block="true"] { position: absolute; inset-inline-end: 0; bottom: 0; }
-.stream-presence-label { position: absolute; inset-inline-end: 0; bottom: -18px; font-family: inherit; font-size: 11px; font-weight: 400; line-height: 16px; color: var(--text-secondary); white-space: nowrap; pointer-events: none; }
+.stream-placeholder { display: block; }
+.stream-presence { display: block; margin: 10px 0 6px; }
+.stream-wait { display: inline-flex; align-items: center; gap: 9px; max-width: 100%; padding: 8px 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface-1); color: var(--text-primary); font-family: inherit; font-size: 12px; font-weight: 500; line-height: 1.6; vertical-align: middle; }
+.stream-wait-track { display: inline-block; position: relative; flex: 0 0 42px; width: 42px; height: 4px; overflow: hidden; border-radius: 8px; background: color-mix(in srgb, var(--accent) 18%, transparent); }
+.stream-wait-track i { display: block; width: 40%; height: 100%; border-radius: inherit; background: var(--accent); animation: stream-wait-slide 1.25s ease-in-out infinite alternate; }
+.stream-wait-copy { min-width: 0; overflow-wrap: anywhere; }
+.stream-presence-label { font: inherit; color: inherit; }
+.stream-wait-seconds { display: inline-block; color: var(--text-secondary); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.stream-wait-hint { display: block; color: var(--text-secondary); font-size: 11px; font-weight: 400; }
+.stream-wait[data-slow="true"] { border-color: color-mix(in srgb, var(--accent) 40%, var(--line)); }
+.stream-wait[data-compact="true"] { gap: 6px; padding: 0; border: 0; border-radius: 0; background: none; font-size: 11px; }
+.stream-wait[data-compact="true"] .stream-wait-track { flex-basis: 28px; width: 28px; }
+.thinking-title:has(.stream-wait) { flex-wrap: wrap; align-items: center; gap: 3px 8px; }
+.thinking-title .thinking-preview-waiting { flex: 1 1 100%; white-space: normal; overflow: visible; text-overflow: clip; }
 .markdown-body:has(.stream-presence) .stream-glyph::after { display: none; }
-.thinking-preview-waiting { color: var(--text-secondary); }
-[data-stream-paused="true"] .stream-presence-dot, .stream-presence[data-motion="off"] .stream-presence-dot { animation: none; }
-@keyframes stream-presence-breathe { 0%, 100% { opacity: .3; transform: scale(.85); } 50% { opacity: .85; transform: scale(1); } }
-@media (prefers-reduced-motion: reduce) { .stream-presence-dot, .thinking-card.active .thinking-icon { animation: none; } }
+[data-stream-paused="true"] .stream-wait-track i { animation-play-state: paused; }
+.stream-wait[data-motion="off"] .stream-wait-track i { animation: none; transform: translateX(75%); }
+@keyframes stream-wait-slide { from { transform: translateX(0); } to { transform: translateX(150%); } }
+@media (prefers-reduced-motion: reduce) { .stream-wait-track i, .thinking-card.active .thinking-icon { animation: none; } }
 @keyframes thinkingPreviewFade { from { opacity: .55; } to { opacity: 1; } }
 @media (prefers-reduced-motion: reduce) { .thinking-preview-tip { animation: none; } }
 .thinking-card > button > svg { flex-shrink: 0; width: 14px; height: 14px; }
