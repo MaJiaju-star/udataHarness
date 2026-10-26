@@ -1,4 +1,4 @@
-export const SHORT_WAIT_MS = 100;
+export const SHORT_WAIT_MS = 500;
 export const LONG_WAIT_MS = 15000;
 
 /** Wall-clock seconds survive delayed timers/remounts; progress cancels the entire clock. */

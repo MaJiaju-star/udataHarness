@@ -37,23 +37,23 @@ test("presence survives thinking-to-text and tool-to-model gaps without pretendi
     }
 });
 
-test("waiting appears at 100ms, counts real seconds, escalates at 15s and cancels on progress", () => {
+test("waiting appears at 500ms, counts real seconds, escalates at 15s and cancels on progress", () => {
     let now = 0, serial = 0;
     const jobs = new Map(), seen = [];
     const options = {schedule: (callback, delay) => { const id = ++serial; jobs.set(id, {at: now + delay, callback}); return id; },
         cancel: id => jobs.delete(id), publish: label => seen.push(label), now: () => now};
     const advance = time => { now = time; for (const [id, job] of [...jobs]) if (job.at <= now) { jobs.delete(id); job.callback(); } };
     let dispose = watchStreamIdle(options);
-    advance(99); assert.deepEqual(seen, []);
-    advance(100); assert.deepEqual(seen, [{seconds: 0, slow: false}]);
+    advance(499); assert.deepEqual(seen, []);
+    advance(500); assert.deepEqual(seen, [{seconds: 0, slow: false}]);
     advance(4000); assert.deepEqual(seen.at(-1), {seconds: 4, slow: false});
     advance(14999); assert.deepEqual(seen.at(-1), {seconds: 14, slow: false});
     advance(15000); assert.deepEqual(seen.at(-1), {seconds: 15, slow: true});
     // Timers delayed by a background tab catch up from wall time, never by tick count.
     advance(28000); assert.deepEqual(seen.at(-1), {seconds: 28, slow: true});
     dispose(); dispose = watchStreamIdle(options);
-    advance(28099); assert.equal(seen.length, 5);
-    advance(28100); assert.deepEqual(seen.at(-1), {seconds: 0, slow: false});
+    advance(28499); assert.equal(seen.length, 5);
+    advance(28500); assert.deepEqual(seen.at(-1), {seconds: 0, slow: false});
     dispose(); assert.equal(jobs.size, 0);
     const count = seen.length;
     dispose = watchStreamIdle(options); dispose(); advance(100000);
