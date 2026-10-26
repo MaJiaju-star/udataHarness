@@ -90,6 +90,49 @@ class StreamEventMapperTest {
     }
 
     @Test
+    void doesNotExposeSyntheticHitlTextInEitherPermissionMode() {
+        for (String marker : new String[]{"高危操作，需要人工介入确认。", "等待自定义工具授权"}) {
+            AgentSession session = InMemoryAgentSession.of("hitl-placeholder");
+            session.pending(true, marker);
+            ReActTrace trace = new ReActTrace() {
+                @Override public AgentSession getSession() { return session; }
+            };
+            trace.setFinalAnswer(marker, true);
+            for (ChatEvent chatEvent : new ChatEvent[]{
+                    ChatEventDefault.of(ChatEventType.TEXT_DELTA).text(marker).build(),
+                    ChatEventDefault.of(ChatEventType.TEXT_END).build()}) {
+                ONode event = ONode.ofJson(StreamEventMapper.map(new ReasonDeltaEvent(trace, chatEvent)));
+                assertEquals("reason_interrupted", event.get("type").getString());
+                assertFalse(event.hasKey("content"));
+                assertEquals(trace.getCurrentTurnId(), event.get("reasonId").getString());
+            }
+            // Real model text remains visible, including when it happens to quote the same sentence.
+            session.pending(false, null);
+            ONode realText = ONode.ofJson(StreamEventMapper.map(new ReasonDeltaEvent(trace,
+                    ChatEventDefault.of(ChatEventType.TEXT_DELTA).text(marker).build())));
+            assertEquals("text", realText.get("type").getString());
+            assertEquals(marker, realText.get("content").getString());
+        }
+    }
+
+    @Test
+    void pendingTraceDoesNotHideUnrelatedModelTextOrThinking() {
+        AgentSession session = InMemoryAgentSession.of("hitl-real-content");
+        session.pending(true, "等待授权");
+        ReActTrace trace = new ReActTrace() {
+            @Override public AgentSession getSession() { return session; }
+        };
+        trace.setFinalAnswer("等待授权", true);
+        ONode event = ONode.ofJson(StreamEventMapper.map(new ReasonDeltaEvent(trace,
+                ChatEventDefault.of(ChatEventType.TEXT_DELTA).text("真正的模型正文").build())));
+        assertEquals("text", event.get("type").getString());
+        assertEquals("真正的模型正文", event.get("content").getString());
+        ReasonDeltaEvent thinkingEnd = new ReasonDeltaEvent(trace,
+                ChatEventDefault.of(ChatEventType.THINKING_END).build());
+        assertEquals("thinking", ONode.ofJson(StreamEventMapper.map(thinkingEnd)).get("type").getString());
+    }
+
+    @Test
     void marksAccumulatedTextFromToolCallReasonAsReplayCandidate() {
         AssistantMessage toolCallMessage = (AssistantMessage) ChatMessage.fromJson(
                 "{\"role\":\"assistant\","

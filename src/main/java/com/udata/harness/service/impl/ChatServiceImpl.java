@@ -24,6 +24,8 @@ import org.noear.solon.ai.agent.react.task.ToolCallStartEvent;
 import org.noear.solon.ai.harness.HarnessEngine;
 import org.noear.solon.ai.chat.ChatRole;
 import org.noear.solon.ai.chat.message.ChatMessage;
+import org.noear.solon.ai.chat.message.AssistantMessage;
+import org.noear.solon.ai.chat.tool.ToolCall;
 import org.noear.solon.ai.chat.prompt.Prompt;
 import org.noear.solon.annotation.Component;
 import org.noear.solon.annotation.Inject;
@@ -52,6 +54,10 @@ public class ChatServiceImpl implements ChatService {
      * 单次运行内自动批准工具的调用次数上限，防止授权失控。
      */
     private static final int MAX_AUTO_APPROVALS = 100;
+    static final String REJECTED_TURN_MESSAGE = "你已拒绝执行，本轮任务已终止。";
+    static final String SKIPPED_TOOL_MESSAGE = "用户选择跳过此工具，本次调用未执行。请向用户说明原计划执行的操作、用途，"
+            + "以及跳过后对任务的影响。不得声称已执行或编造结果；未经用户重新明确授权，"
+            + "不要重试此操作或通过其他工具执行等价操作。";
 
     /**
      * 会话中记录“始终允许”工具集合的元数据键。
@@ -202,7 +208,7 @@ public class ChatServiceImpl implements ChatService {
                 selectedModel,
                 thinkingDepth,
                 isFullPermission(metadata),
-                null);
+                null, false);
         } catch (RuntimeException e) {
             activeRuns.end(sessionId);
             session.getContext().put(com.udata.harness.common.support.ScheduledRunEvents.SESSION_KEY, "");
@@ -252,6 +258,27 @@ public class ChatServiceImpl implements ChatService {
                         "All pending HITL tasks must be decided together"));
             }
 
+            HarnessEngine engine = engines.get(userId, metadata.getWorkspaceId(), metadata.getCapabilityMode());
+            ReActTrace trace = engine.getMainAgent().getTrace(session);
+            if ("reject".equalsIgnoreCase(request.getAction().trim())) {
+                removePendingMarker(engine, session);
+                rejectPendingTurn(session, trace);
+                Map<String, Object> text = new LinkedHashMap<>();
+                text.put("type", "text");
+                text.put("reasonId", "hitl-reject-" + java.util.UUID.randomUUID());
+                text.put("content", "\n\n" + REJECTED_TURN_MESSAGE);
+                Map<String, Object> end = new LinkedHashMap<>();
+                end.put("type", "run_end");
+                if (trace != null) end.put("runId", trace.getRunId());
+                end.put("status", "cancelled");
+                end.put("terminationReason", "hitl_rejected");
+                Flux<String> termination = bindRun(userId, session, Flux.just(
+                        StreamEventMapper.session(session.getSessionId()), hitlDecisionEvent("reject"),
+                        ONode.serialize(text), ONode.serialize(end)), true);
+                handedOff = true;
+                return termination;
+            }
+
             //3. 记录会话级“始终允许”工具（若用户勾选），再为每个任务提交决策。
             boolean approved = "approve".equalsIgnoreCase(request.getAction().trim());
             if (approved && request.isAlwaysAllow()) {
@@ -262,12 +289,11 @@ public class ChatServiceImpl implements ChatService {
             }
 
             //4. 记录挂起前的 reasonId 用于过滤恢复时的重放文本，再清除 pending 并恢复运行。
-            HarnessEngine engine = engines.get(userId, metadata.getWorkspaceId(), metadata.getCapabilityMode());
-            ReActTrace trace = engine.getMainAgent().getTrace(session);
             String suspendedReasonId = trace == null ? null : trace.getCurrentTurnId();
             // 只有整批任务都有决策后才能清除 pending 并恢复。否则 ReAct 会重新 Reason，
             // 产生新的 tool call UUID，看起来像前端不断重复要求审批。
             session.pending(false, null);
+            boolean explainOnly = "skip".equalsIgnoreCase(request.getAction().trim());
             Flux<String> continuation = run(
                     userId,
                     session,
@@ -275,7 +301,8 @@ public class ChatServiceImpl implements ChatService {
                     readSessionOption(session, SELECTED_MODEL_KEY, metadata.getModel()),
                     readSessionOption(session, THINKING_DEPTH_KEY, "auto"),
                     isFullPermission(metadata),
-                    suspendedReasonId);
+                    suspendedReasonId, explainOnly);
+            if (explainOnly) continuation = Flux.concat(Flux.just(hitlDecisionEvent("skip")), continuation);
             handedOff = true;
             return continuation;
         } catch (RuntimeException e) {
@@ -308,10 +335,9 @@ public class ChatServiceImpl implements ChatService {
             String selectedModel,
             String thinkingDepth,
             boolean fullPermission,
-            String suspendedReasonId) {
+            String suspendedReasonId, boolean explainOnly) {
         //1. 确保持有活动运行占位；已有占位说明本会话正在运行，直接拒绝。
         String sessionId = session.getSessionId();
-        final String executionId = session.getContext().getAs(com.udata.harness.common.support.ScheduledRunEvents.SESSION_KEY);
         if (!activeRuns.isActive(sessionId) && !activeRuns.begin(sessionId)) {
             return Flux.just(StreamEventMapper.error("This session is already running"));
         }
@@ -322,7 +348,7 @@ public class ChatServiceImpl implements ChatService {
         //   完成时刷新时间戳，任何终止信号都统一释放活动状态。
         // session 事件固定在首位。完整权限的自动审批续跑也属于同一个外层流，
         // 因而只绑定一次取消订阅，并在所有工具链完成后统一清理 active 状态。
-        return Flux.concat(
+        return bindRun(userId, session, Flux.concat(
                         Flux.just(StreamEventMapper.session(sessionId)),
                         runSegments(
                                 userId,
@@ -332,19 +358,33 @@ public class ChatServiceImpl implements ChatService {
                                 thinkingDepth,
                                 fullPermission,
                                 0,
-                                suspendedReasonId))
+                                suspendedReasonId, explainOnly)), false);
+    }
+
+    private String hitlDecisionEvent(String action) {
+        Map<String, Object> event = new LinkedHashMap<>();
+        event.put("type", "hitl_decision"); event.put("action", action);
+        return ONode.serialize(event);
+    }
+
+    /** Same persistence, cancellation and background-job completion for execution and explicit rejection. */
+    private Flux<String> bindRun(String userId, AgentSession session, Flux<String> source, boolean rejected) {
+        String sessionId = session.getSessionId();
+        final String executionId = session.getContext().getAs(com.udata.harness.common.support.ScheduledRunEvents.SESSION_KEY);
+        if (rejected && notifications != null) notifications.resume(session);
+        return source
                 .doOnSubscribe(subscription -> activeRuns.bind(sessionId, subscription))
-                .transform(source -> activeRuns.cancellable(sessionId, source))
+                .transform(stream -> activeRuns.cancellable(sessionId, stream))
                 .doOnComplete(() -> sessionRepository.touch(userId, sessionId))
                 .doOnNext(event -> {
                     if (scheduledRunEvents != null) scheduledRunEvents.event(executionId, event);
-                    if (notifications != null && event.contains("error")) {
+                    if (notifications != null && (rejected || event.contains("error"))) {
                         Map<String, Object> notificationEvent = ONode.ofJson(event).toBean(Map.class);
-                        if ("error".equals(notificationEvent.get("type"))) notifications.observe(session, notificationEvent);
+                        if (rejected || "error".equals(notificationEvent.get("type"))) notifications.observe(session, notificationEvent);
                     }
                 })
                 .doFinally(signal -> {
-                    boolean stopped = activeRuns.wasStopped(sessionId);
+                    boolean stopped = rejected || activeRuns.wasStopped(sessionId);
                     boolean pending = session.isPending() || !HITL.getPendingTasks(session).isEmpty();
                     try {
                         if (notifications != null) notifications.ended(userId, session, signal.name(), stopped, pending);
@@ -356,6 +396,34 @@ public class ChatServiceImpl implements ChatService {
                         activeRuns.end(sessionId);
                     }
                 });
+    }
+
+    /** End without invoking the engine: no tool in a rejected batch may execute or trigger another model call. */
+    void rejectPendingTurn(AgentSession session, ReActTrace trace) {
+        List<HITLTask> pending = new ArrayList<>(HITL.getPendingTasks(session));
+        List<ChatMessage> messages = new ArrayList<>();
+        AssistantMessage reason = trace == null ? null : trace.getLastReasonMessage();
+        if (reason != null && reason.isToolCalls()) {
+            // ActionTask persists this pair only after execution. Record unexecuted results
+            // so a later user turn never inherits dangling provider tool-call IDs.
+            messages.add(reason);
+            for (ToolCall call : reason.getToolCalls()) {
+                messages.add(ChatMessage.ofTool("用户已拒绝执行，此工具未执行，本轮任务已终止。", call.getName(), call.getId()));
+            }
+        }
+        messages.add(ChatMessage.ofAssistant(REJECTED_TURN_MESSAGE));
+        session.addMessage(messages);
+        HITL.clear(session);
+        for (HITLTask task : pending) session.getContext().remove("_hitl_applied_" + task.getCallUuid());
+        session.getContext().remove(PENDING_FILE_ACTIVITIES_KEY);
+        session.pending(false, null);
+        if (trace != null) {
+            trace.getWorkingMemory().addMessage(messages);
+            trace.setLastReasonMessage(null);
+            trace.setFinalAnswer(REJECTED_TURN_MESSAGE, false);
+            trace.setRoute(org.noear.solon.ai.agent.Agent.ID_END);
+        }
+        session.updateSnapshot();
     }
 
     /**
@@ -385,7 +453,7 @@ public class ChatServiceImpl implements ChatService {
             String thinkingDepth,
             boolean fullPermission,
             int autoApprovalCount,
-            String suspendedReasonId) {
+            String suspendedReasonId, boolean explainOnly) {
         // Resolve from the persisted session, including on deferred HITL continuation threads.
         SessionMetadata metadata = sessionRepository.read(userId, session.getSessionId());
         Path workspace = java.nio.file.Paths.get(workspaces.resolve(userId, metadata.getWorkspaceId()).getPath());
@@ -393,11 +461,16 @@ public class ChatServiceImpl implements ChatService {
         //1. 组装本次模型调用的重试、拦截器、cwd、模型与思考档位配置。
         Object saved = session.getContext().get(com.udata.harness.memory.MemoryService.SNAPSHOT_KEY);
         final Map<String, Object> memorySnapshot = saved instanceof Map ? (Map<String, Object>) saved : java.util.Collections.emptyMap();
+        final com.udata.harness.common.support.ExplainOnlyAfterSkipInterceptor skipGuard = explainOnly
+                ? new com.udata.harness.common.support.ExplainOnlyAfterSkipInterceptor(SKIPPED_TOOL_MESSAGE) : null;
         Flux<String> chunks = engine.prompt(prompt)
                 .session(session)
                 .options(options -> {
                     options.retryConfig(modelMaxAttempts, modelRetryInitialDelayMs);
-                    options.interceptorAdd(new ToolCallStreamInterceptor());
+                    options.interceptorAdd(new ToolCallStreamInterceptor(explainOnly));
+                    if (explainOnly) {
+                        options.interceptorAdd(skipGuard, Integer.MAX_VALUE);
+                    }
                     options.toolContextPut(HarnessEngine.ATTR_CWD, workspace.toString());
                     com.udata.harness.memory.MemoryTalent.configure(options, memories, userId,
                             metadata.getWorkspaceId(), session.getSessionId(), memorySnapshot);
@@ -413,16 +486,19 @@ public class ChatServiceImpl implements ChatService {
                     }
                 })
                 .stream()
+                .doFinally(signal -> { if (skipGuard != null) skipGuard.setEnabled(false); })
                 // HITL 审批恢复会重放挂起前同一 reasonId 的文本；该文本已经在上一个
                 // SSE 分段发给浏览器，必须在映射前过滤，避免前端再次追加。
                 .filter(chunk -> !StreamEventMapper.isReasonReplay(chunk, suspendedReasonId))
                 .doOnNext(chunk -> {
-                    trackFileActivity(workspace, session, chunk);
+                    if (!explainOnly) trackFileActivity(workspace, session, chunk);
                     if (engine.getMainAgent().name().equals(chunk.getAgentName()))
                         com.udata.harness.memory.MemoryService.recordRecall(session, chunk.getRunId(), memorySnapshot);
                 })
                 .map(chunk -> {
                     Map<String, Object> event = StreamEventMapper.mapData(chunk);
+                    if (explainOnly && (chunk instanceof ToolCallStartEvent || chunk instanceof ToolCallEndEvent))
+                        event.put("disposition", "skip");
                     if (notifications != null) notifications.observe(session, event);
                     usageAuditRepository.record(userId, session.getSessionId(),
                             metadata.getWorkspaceId(), selectedModel, event);
@@ -479,7 +555,7 @@ public class ChatServiceImpl implements ChatService {
                     thinkingDepth,
                     fullPermission,
                     autoApprovalCount + pendingTasks.size(),
-                    nextSuspendedReasonId);
+                    nextSuspendedReasonId, explainOnly);
         }));
     }
 
@@ -551,7 +627,7 @@ public class ChatServiceImpl implements ChatService {
      * @return 可直接提交给框架的决策对象
      * @throws IllegalArgumentException 动作不受支持时抛出
      */
-    private HITLDecision createDecision(HitlDecisionRequest request) {
+    HITLDecision createDecision(HitlDecisionRequest request) {
         HITLDecision decision;
         switch (request.getAction().trim().toLowerCase()) {
             case "approve":
@@ -563,7 +639,8 @@ public class ChatServiceImpl implements ChatService {
                 }
                 return decision;
             case "skip":
-                return HITLDecision.skip(request.getComment());
+                return HITLDecision.skip(SKIPPED_TOOL_MESSAGE + (isBlank(request.getComment())
+                        ? "" : "\n用户补充说明：" + request.getComment()));
             case "reject":
                 return HITLDecision.reject(request.getComment());
             default:

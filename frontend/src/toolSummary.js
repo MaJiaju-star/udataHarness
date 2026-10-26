@@ -75,6 +75,8 @@ export function toolSummary(tool) {
 }
 
 export function toolStatus(tool) {
+    if (tool.disposition === "reject") return {kind: "rejected", label: "已拒绝 · 未执行"};
+    if (tool.disposition === "skip") return {kind: "skipped", label: "已跳过 · 未执行"};
     if (tool.error) return {kind: "error", label: "执行失败"};
     if (tool.generating) return {kind: "generating", label: "生成参数"};
     if (tool.running) return {kind: "running", label: "执行中"};

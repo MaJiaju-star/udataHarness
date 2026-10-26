@@ -9,7 +9,7 @@ export default function ToolCallHeader({tool, open, onToggle}) {
     const summary = toolSummary(tool);
     const status = toolStatus(tool);
     const Icon = icons[summary.kind] || Wrench;
-    const StatusIcon = status.kind === "error" ? X : status.kind === "waiting" ? Clock3
+    const StatusIcon = ["error", "rejected", "skipped"].includes(status.kind) ? X : status.kind === "waiting" ? Clock3
         : ["running", "generating"].includes(status.kind) ? RefreshCw : Check;
     const duration = toolDuration(tool.durationMs);
     const separator = Math.max(summary.target.lastIndexOf("/"), summary.target.lastIndexOf("\\"));

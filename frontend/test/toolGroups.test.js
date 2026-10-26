@@ -43,7 +43,7 @@ test("summary counts actual states and exposes failures independently of active 
         tool("run", "grep", {running: true}), tool("gen", "read", {generating: true}),
         tool("wait", "read", {output: "", argsText: "{}"})];
     const summary = summarizeToolGroup(tools);
-    assert.deepEqual(summary.counts, {success: 1, error: 1, running: 1, generating: 1, waiting: 1});
+    assert.deepEqual(summary.counts, {success: 1, error: 1, running: 1, generating: 1, waiting: 1, rejected: 0, skipped: 0});
     assert.match(summary.failures, /bash npm test/);
     assert.match(summary.current, /另有 1 项/);
     assert.match(summary.categories, /读取 3/);

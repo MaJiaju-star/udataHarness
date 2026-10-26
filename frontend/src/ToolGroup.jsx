@@ -15,6 +15,7 @@ export default function ToolGroup({tools, renderTool}) {
     useEffect(() => { if (!manual) setOpen(active); }, [active, manual, setOpen]);
     if (tools.length === 1) return renderTool(tools[0], false);
     const status = [pending && `执行中 ${pending}`, counts.waiting && `等待 ${counts.waiting}`,
+        counts.rejected && `已拒绝 ${counts.rejected}`, counts.skipped && `已跳过 ${counts.skipped}`,
         counts.error && `失败 ${counts.error}`, counts.success && `已完成 ${counts.success}`].filter(Boolean).join(" / ");
     return <section className={`tool-group ${open ? "is-open" : ""} ${counts.error ? "has-error" : ""}`} aria-label={`工具组，${tools.length} 项`}>
         <button type="button" className="tool-group-heading" aria-expanded={open} aria-controls={id} title={[categories, current || targets, status].filter(Boolean).join("；")}

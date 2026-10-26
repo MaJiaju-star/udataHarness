@@ -5,6 +5,7 @@ import org.noear.snack4.ONode;
 import org.noear.solon.Utils;
 import org.noear.solon.ai.AiUsage;
 import org.noear.solon.ai.agent.AgentEvent;
+import org.noear.solon.ai.agent.AgentSession;
 import org.noear.solon.ai.agent.trace.Metrics;
 import org.noear.solon.ai.agent.react.RunEndEvent;
 import org.noear.solon.ai.agent.react.RunStartEvent;
@@ -217,6 +218,20 @@ public final class StreamEventMapper {
             event.put("reasonId", reason.getReasonId());
         } else if (agentEvent instanceof ReasonDeltaEvent) {
             ReasonDeltaEvent reason = (ReasonDeltaEvent) agentEvent;
+            AgentSession session = reason.getTrace().getSession();
+            // ReAct appends synthetic TEXT_DELTA/TEXT_END events when HITL suspends.
+            // Full permission auto-approves only after this segment finishes, so these
+            // events must not appear as model prose in either permission mode.
+            if (reason.getTrace().isAbnormal() && session != null && session.isPending()
+                    && (reason.getChatEvent().is(ChatEventType.TEXT_END)
+                    || (reason.getChatEvent().is(ChatEventType.TEXT_DELTA)
+                    && Utils.isNotBlank(session.getPendingReason())
+                    && session.getPendingReason().equals(reason.getText())))) {
+                event.put("type", "reason_interrupted");
+                event.put("reasonId", reason.getReasonId());
+                event.put("finished", true);
+                return event; // Do not let the generic text fallback reintroduce the marker.
+            }
             event.put("type", reason.isThinking() ? "thinking" : "text");
             event.put("reasonId", reason.getReasonId());
             event.put("finished", reason.getChatEvent().is(ChatEventType.THINKING_END));

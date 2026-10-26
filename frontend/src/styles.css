@@ -2686,6 +2686,7 @@ html[data-mode="dark"] .permission-mode-switch { background: var(--surface-2); c
 .thinking-preview-tip { animation: thinkingPreviewFade .18s ease-out both; }
 .markdown-body, .stream-placeholder { position: relative; }
 .stream-placeholder { display: block; }
+.tool-heading-status.rejected, .tool-heading-status.skipped { color: var(--text-secondary); }
 .stream-presence { display: block; margin: 10px 0 6px; }
 .stream-wait { display: inline-flex; align-items: center; gap: 9px; max-width: 100%; padding: 8px 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface-1); color: var(--text-primary); font-family: inherit; font-size: 12px; font-weight: 500; line-height: 1.6; vertical-align: middle; }
 .stream-wait-track { display: inline-block; position: relative; flex: 0 0 42px; width: 42px; height: 4px; overflow: hidden; border-radius: 8px; background: color-mix(in srgb, var(--accent) 18%, transparent); }

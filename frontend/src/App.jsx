@@ -22,6 +22,7 @@ import useSmoothScroll from "./useSmoothScroll.js";
 import StreamMarkdown, {StreamMotionContext, StreamText} from "./StreamMarkdown.jsx";
 import {streamStyle} from "./streamTail.js";
 import {groupToolActivities} from "./toolGroups.js";
+import {applyHitlDisposition} from "./hitlDisposition.js";
 import ModelSettings from "./ModelSettings.jsx";
 import NotificationSettings from "./NotificationSettings.jsx";
 import MemorySettings from "./MemorySettings.jsx";
@@ -699,8 +700,9 @@ function reduceAssistantEvent(message, event) {
             next.tools[streamedIndex] = {
                 ...next.tools[streamedIndex], callId,
                 name: event.toolName || next.tools[streamedIndex].name,
-                args: event.args || {}, generating: false, running: true,
-                executionStarted: true, fileOperation: event.fileOperation
+                args: event.args || {}, generating: false, running: !event.disposition,
+                executionStarted: true, fileOperation: event.fileOperation,
+                disposition: event.disposition || next.tools[streamedIndex].disposition
             };
             next.activities = next.activities.map(item =>
                 item.type === "tool" && item.callId === previousCallId
@@ -710,8 +712,8 @@ function reduceAssistantEvent(message, event) {
         } else {
             const tool = {
                 callId: event.callId || uid(), name: event.toolName || "tool",
-                args: event.args || {}, running: true, executionStarted: true,
-                fileOperation: event.fileOperation
+                args: event.args || {}, running: !event.disposition, executionStarted: true,
+                disposition: event.disposition, fileOperation: event.fileOperation
             };
             next.tools.push(tool);
             if (isTodoTool(tool.name)) ensureTodoActivity(tool.callId);
@@ -762,6 +764,11 @@ function reduceAssistantEvent(message, event) {
         next.hitl = event;
         // HITL 是等待用户决策的正常暂停，不应和普通运行错误同时展示。
         next.error = null;
+    }
+    if (event.type === "hitl_decision") {
+        next.tools = applyHitlDisposition(next.tools, event.action);
+        if (event.action === "reject") next.subagents = Object.fromEntries(Object.entries(next.subagents || {}).map(([id, child]) =>
+            [id, ["running", "pending"].includes(child.status) ? {...child, status: "cancelled"} : child]));
     }
     if (event.type === "done" && !next.content && event.content) next.content = event.content;
     if (event.type === "done" || event.type === "run_end" || event.type === "error") {
@@ -1360,12 +1367,13 @@ function App() {
 
     async function decideHitl(messageId, action, alwaysAllow, callUuids) {
         if (!current || running || stopping || current.active) return;
+        if (action === "reject") setQueuePaused(true);
         const controller = new AbortController();
         streamAbortRef.current = controller;
         setRunning(true);
         try {
             setMessages(items => items.map(item => item.id === messageId
-                ? {...item, hitl: null, error: null, finished: false, streamProgressAt: Date.now()}
+                ? {...item, tools: applyHitlDisposition(item.tools || [], action), hitl: null, error: null, finished: false, streamProgressAt: Date.now()}
                 : item));
             await stream("/api/hitl/decide", {
                 sessionId: current.sessionId, action, alwaysAllow, callUuids
@@ -2765,8 +2773,9 @@ function HitlCard({event, onDecide}) {
             {multiple ? "本会话始终允许这些工具" : "本会话始终允许此工具"}</label>
         <div className="hitl-actions">
             <button className="danger-soft"
+                    title="不执行待审批操作，并结束本轮任务"
                     onClick={() => onDecide("reject", always, callUuids)}>拒绝</button>
-            <button onClick={() => onDecide("skip", always, callUuids)}>跳过</button>
+            <button title="不执行待审批操作，让模型解释原计划及跳过的影响" onClick={() => onDecide("skip", always, callUuids)}>跳过</button>
             <button className="primary-button small"
                     onClick={() => onDecide("approve", always, callUuids)}>
                 {multiple ? "全部允许执行" : "允许执行"}

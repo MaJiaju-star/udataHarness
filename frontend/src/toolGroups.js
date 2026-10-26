@@ -28,7 +28,7 @@ export function groupToolActivities(activities, tools = []) {
 }
 
 export function summarizeToolGroup(tools) {
-    const counts = {success: 0, error: 0, running: 0, generating: 0, waiting: 0};
+    const counts = {success: 0, error: 0, running: 0, generating: 0, waiting: 0, rejected: 0, skipped: 0};
     const kinds = new Map();
     const labels = {read: "读取", edit: "编辑", write: "写入", grep: "搜索", glob: "搜索", ls: "目录", bash: "命令", task: "子代理", multitask: "子代理"};
     const active = [], failures = [], targets = [];
@@ -40,7 +40,7 @@ export function summarizeToolGroup(tools) {
         const target = `${tool.name} ${summary.target}`;
         targets.push(target);
         if (status.kind === "error") failures.push(target);
-        else if (status.kind !== "success") active.push(target);
+        else if (["waiting", "running", "generating"].includes(status.kind)) active.push(target);
     }
     const preview = values => values.slice(0, 2).join("、") + (values.length > 2 ? `，另有 ${values.length - 2} 项` : "");
     return {counts, categories: [...kinds].map(([name, count]) => `${name} ${count}`).join(" · "),
