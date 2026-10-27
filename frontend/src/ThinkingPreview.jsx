@@ -1,8 +1,7 @@
 import {memo, useEffect, useMemo, useState} from "react";
 import {thinkingPreview} from "./thinkingPreview.js";
-import {StreamWaitIndicator} from "./StreamPresence.jsx";
 
-export default memo(function ThinkingPreview({content, active, mode = "soft", waiting = ""}) {
+export default memo(function ThinkingPreview({content, active, mode = "soft"}) {
     // Historical cards start at the head. Only a card that was streaming holds its tail.
     const [holdTail, setHoldTail] = useState(active);
     useEffect(() => {
@@ -14,7 +13,6 @@ export default memo(function ThinkingPreview({content, active, mode = "soft", wa
     const tail = active || holdTail;
     const preview = useMemo(() => thinkingPreview(content, tail), [content, tail]);
     const suffix = thinkingPreview(preview.text, true, 6).text;
-    if (active && waiting) return <small className="thinking-preview thinking-preview-waiting"><StreamWaitIndicator waiting={waiting} thinking compact mode={mode}/></small>;
     return <small className={`thinking-preview ${tail ? "is-tail" : ""}`} title={preview.text}>
         <span className="thinking-preview-text">{tail ? <>
             {preview.clipped ? "…" : ""}{preview.text.slice(0, preview.text.length - suffix.length)}

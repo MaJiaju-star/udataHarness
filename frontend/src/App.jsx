@@ -1,7 +1,8 @@
 import {lazy, memo, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState} from "react";
 import ReactMarkdown from "react-markdown";
 import ThinkingPreview from "./ThinkingPreview.jsx";
-import {StreamPresence, StreamWaitIndicator, useStreamWaiting} from "./StreamPresence.jsx";
+import ThinkingElapsed from "./ThinkingElapsed.jsx";
+import {StreamPresence} from "./StreamPresence.jsx";
 import {streamProgressAt, streamPresenceTarget} from "./streamPresence.js";
 import remarkGfm from "remark-gfm";
 import ChartCard, {chartSpecFromTool} from "./ChartCard.jsx";
@@ -156,6 +157,7 @@ function mergeThinkingActivity(activities, event) {
             reasonId: event.reasonId || null,
             content: asText(event.content),
             active: event.finished !== true,
+            thinkingStartedAt: event.finished !== true ? Date.now() : undefined,
             source: "native"
         });
     } else {
@@ -165,6 +167,7 @@ function mergeThinkingActivity(activities, event) {
                 ? asText(event.content)
                 : mergeStreamText(next[index].content, event.content),
             active: event.finished !== true,
+            thinkingStartedAt: next[index].thinkingStartedAt ?? (event.finished !== true ? Date.now() : undefined),
             source: "native"
         };
     }
@@ -207,6 +210,8 @@ function mergeReasonContentActivities(activities, reasonBuffers, event, preserve
                 ? mergeStreamText(nextActivities[thinkingIndex].content, parsed.thinking)
                 : parsed.thinking,
             active: parsed.pending && event.finished !== true,
+            thinkingStartedAt: nextActivities[thinkingIndex]?.thinkingStartedAt
+                ?? (parsed.pending && event.finished !== true ? Date.now() : undefined),
             source: "embedded"
         };
         if (thinkingIndex >= 0) {
@@ -2466,13 +2471,13 @@ const Message = memo(function Message({message, onDecide, onOpenFile, toolView, 
                 {(message.memoryRecall.entries || []).map(row => <article key={row.id}><b>{row.scope === "global" ? "全局" : "项目"} · {row.key}</b><p>{row.content}</p><small>来源：{row.source === "manual" ? "后台录入" : row.source} · 版本 {row.revision}</small></article>)}
                 {!message.memoryRecall.entries?.length && <p>本轮未检索到符合预算的相关记忆。</p>}</details>}
             {!hasThinkingActivities && thinking && <Thinking content={thinking}
-                active={animate && (parsed.pending || presenceTarget.kind === "thinking")} progressAt={message.streamProgressAt} streamEffect={streamEffect}/>}
+                active={animate && (parsed.pending || presenceTarget.kind === "thinking")} streamEffect={streamEffect}/>}
             {timeline.map(activity => {
                 if (activity.type === "tool_group") return <ToolGroup key={activity.id} tools={activity.tools} renderTool={renderTool}/>;
                 if (activity.type === "thinking") {
                     return <Thinking key={`thinking-${activity.id}`} disclosureId={activity.id} contentRef={activity.contentRef} content={activity.content}
                                      active={animate && presenceTarget.kind === "thinking" && presenceTarget.id === activity.id}
-                                     progressAt={message.streamProgressAt} streamEffect={streamEffect}/>;
+                                     startedAt={activity.thinkingStartedAt} streamEffect={streamEffect}/>;
                 }
                 if (activity.type === "tool") {
                     const tool = message.tools?.find(item => item.callId === activity.callId);
@@ -2593,17 +2598,16 @@ function FileActivitySummary({tools, activities, onOpenFile}) {
     </section>;
 }
 
-const Thinking = memo(function Thinking({content, active = false, disclosureId = "thinking", contentRef, streamEffect = "soft", progressAt}) {
+const Thinking = memo(function Thinking({content, active = false, disclosureId = "thinking", contentRef, streamEffect = "soft", startedAt}) {
     const [open, setOpen] = useDisclosure(`thinking:${disclosureId}`, false);
-    const waiting = useStreamWaiting(active, content, progressAt);
     return <div className={`thinking-card ${open ? "is-open" : ""} ${active ? "active" : ""}`}>
         <button onClick={() => setOpen(value => !value)} aria-expanded={open}>
             <span className="thinking-icon"><BrainCircuit size={14}/></span>
             <span className="thinking-title">
                 <b>{active ? "正在思考" : "已完成思考"}</b>
-                {!open && <ThinkingPreview content={content} active={active} mode={streamEffect} waiting={waiting}/>}
-                {open && waiting && <small className="thinking-preview-waiting"><StreamWaitIndicator waiting={waiting} thinking compact mode={streamEffect}/></small>}
+                {!open && <ThinkingPreview content={content} active={active} mode={streamEffect}/>}
             </span>
+            {active && <ThinkingElapsed id={disclosureId} startedAt={startedAt}/>}
             {open ? <ChevronDown size={16}/> : <ChevronRight size={16}/>}
         </button>
         <div className={`thinking-collapse ${open ? "open" : ""}`} aria-hidden={!open}>
@@ -2647,7 +2651,8 @@ function SubagentCard({subagent, streamEffect}) {
             {activities.map(activity => {
                 if (activity.type === "thinking") {
                     return <Thinking key={`subagent-thinking-${activity.id}`} disclosureId={activity.id}
-                                     content={activity.content} active={running && activity.active} streamEffect={streamEffect}/>;
+                                     content={activity.content} active={running && activity.active}
+                                     startedAt={activity.thinkingStartedAt} streamEffect={streamEffect}/>;
                 }
                 if (activity.type === "text" && activity.content) {
                     return running

@@ -2708,8 +2708,7 @@ html[data-mode="dark"] .permission-mode-switch { background: var(--surface-2); c
 .stream-wait[data-slow="true"] { border-color: color-mix(in srgb, var(--accent) 40%, var(--line)); }
 .stream-wait[data-compact="true"] { gap: 6px; padding: 0; border: 0; border-radius: 0; background: none; font-size: 11px; }
 .stream-wait[data-compact="true"] .stream-wait-track { flex-basis: 28px; width: 28px; }
-.thinking-title:has(.stream-wait) { flex-wrap: wrap; align-items: center; gap: 3px 8px; }
-.thinking-title .thinking-preview-waiting { flex: 1 1 100%; white-space: normal; overflow: visible; text-overflow: clip; }
+.thinking-elapsed { flex: 0 0 auto; margin-left: auto; color: var(--text-secondary); font-size: 11px; font-variant-numeric: tabular-nums; white-space: nowrap; }
 .markdown-body:has(.stream-presence) .stream-glyph::after { display: none; }
 [data-stream-paused="true"] .stream-wait-track i { animation-play-state: paused; }
 .stream-wait[data-motion="off"] .stream-wait-track i { animation: none; transform: translateX(75%); }

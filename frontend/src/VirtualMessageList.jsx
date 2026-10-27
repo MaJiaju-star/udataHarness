@@ -1,4 +1,4 @@
-import {memo, useCallback, useLayoutEffect, useMemo, useRef, useState} from "react";
+import {memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState} from "react";
 import {anchoredVirtualTop, indexAt, virtualOffsets, virtualRange} from "./historyPaging.js";
 import {MessageScope} from "./HistoryView.jsx";
 
@@ -24,7 +24,9 @@ export default memo(function VirtualMessageList({messages, scrollRef, captureRef
         if (captureRef) captureRef.current = refresh;
         return () => { if (captureRef) captureRef.current = null; };
     }, [captureRef, refresh]);
-    useLayoutEffect(() => {
+    // The scroll element belongs to an ancestor. Its ref is attached after child
+    // layout effects on mount; subscribing there can silently skip both listeners.
+    useEffect(() => {
         const element = scrollRef.current; if (!element) return;
         // Capture native scroll immediately: a stream commit can run before the next animation frame.
         const scroll = refresh;
@@ -45,12 +47,12 @@ export default memo(function VirtualMessageList({messages, scrollRef, captureRef
         return () => { element.removeEventListener("scroll", scroll); resize.disconnect(); };
     }, [scrollRef, refresh]);
     useLayoutEffect(() => {
+        geometry.current = {messages, offsets};
         const element = scrollRef.current, list = root.current;
         if (!element || !list) return;
         const previousTop = viewportRef.current.top;
         const top = anchoredVirtualTop(anchor.current, messages, offsets, previousTop);
         const shift = top - previousTop;
-        geometry.current = {messages, offsets};
         if (isFollowing()) followOutput(!initialized.current);
         else if (Math.abs(shift) >= 1) {
             const origin = list.getBoundingClientRect().top - element.getBoundingClientRect().top + element.scrollTop;
