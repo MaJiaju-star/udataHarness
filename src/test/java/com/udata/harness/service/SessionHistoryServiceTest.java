@@ -14,6 +14,29 @@ import static org.junit.jupiter.api.Assertions.*;
 class SessionHistoryServiceTest {
     @TempDir Path root;
     @SuppressWarnings("unchecked") private List<Map<String, Object>> rows(Map<String, Object> page) { return (List<Map<String, Object>>) page.get("messages"); }
+    @Test void frameworkInstructionsStayInAuditHistoryWithoutBecomingChatBubblesOrPagingBoundaries() {
+        SessionRepository repo = new SessionRepository(root); String id = repo.create("alice", "history", "").getSessionId();
+        AgentSession session = repo.getSession("alice", id);
+        for (int n = 0; n < 20; n++) {
+            session.addMessage(ChatMessage.ofUser("task-" + n));
+            ChatMessage instructions = ChatMessage.ofUser("project-context-" + n);
+            instructions.addMetadata(com.udata.harness.common.support.WorkspaceInstructionMessages.MARKER, true);
+            session.addMessage(instructions);
+            session.addMessage(ChatMessage.ofAssistant("answer-" + n));
+        }
+        SessionHistoryService history = new SessionHistoryService(repo);
+        Map<String, Object> latest = history.page("alice", id, null, 6);
+        assertEquals(6, rows(latest).size());
+        assertEquals("task-17", rows(latest).get(0).get("content"));
+        assertEquals("answer-19", rows(latest).get(5).get("content"));
+        Map<String, Object> older = history.page("alice", id, ((Number) latest.get("nextBefore")).intValue(), 6);
+        assertEquals("task-14", rows(older).get(0).get("content"));
+        assertEquals("answer-16", rows(older).get(5).get("content"));
+        assertEquals(60, session.getMessages().size());
+        ChatMessage quoted = ChatMessage.ofUser("<system-reminder>Workspace project instructions</system-reminder>");
+        session.addMessage(quoted);
+        assertEquals(quoted.getContent(), rows(history.page("alice", id, null, 1)).get(0).get("content"));
+    }
     @Test void pageCursorKeepsBatchesAndDoesNotShiftWhenNewMessagesArrive() {
         SessionRepository repo = new SessionRepository(root); String id = repo.create("alice", "history", "").getSessionId();
         AgentSession session = repo.getSession("alice", id);

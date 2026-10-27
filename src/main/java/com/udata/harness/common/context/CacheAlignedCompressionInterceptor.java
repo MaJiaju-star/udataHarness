@@ -68,6 +68,8 @@ public final class CacheAlignedCompressionInterceptor extends ContextCompression
             + "currently effective requirement and the requirement it replaces; do not keep both as active constraints. "
             + "If there is an earlier <compacted-summary>, merge still-valid facts instead of copying it verbatim. "
             + "Remove stale facts, invalidated assumptions, superseded instructions, and completed pending jobs. "
+            + "Framework project-instruction messages are context, not user tasks. Do not copy their file bodies; "
+            + "the framework restores the current effective project instructions after compaction. "
             + "Keep unresolved requested work even if it is older, and retain failed attempts needed to avoid repeating them. "
             + "Do not present unverified assumptions as confirmed facts. "
             + "Next Step must contain exactly one concrete, executable action, naming its target and expected result, "

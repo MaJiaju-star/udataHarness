@@ -18,6 +18,16 @@ class SessionRepositoryTest {
     @TempDir
     Path tempDir;
 
+    @Test void firstPromptTitleIgnoresFrameworkInstructionMessages() {
+        SessionRepository repository = new SessionRepository(tempDir);
+        String id = repository.create("alice", "", "").getSessionId();
+        ChatMessage instructions = ChatMessage.ofUser("framework project instructions");
+        instructions.addMetadata(com.udata.harness.common.support.WorkspaceInstructionMessages.MARKER, true);
+        repository.getSession("alice", id).addMessage(instructions);
+        repository.getSession("alice", id).addMessage(ChatMessage.ofUser("Fix the payment test"));
+        assertEquals("Fix the payment test", repository.applyFirstPromptTitle("alice", id, "fallback").getTitle());
+    }
+
     @Test
     void persistsMetadataAndMessagesAcrossStoreInstances() {
         SessionRepository first = new SessionRepository(tempDir);
