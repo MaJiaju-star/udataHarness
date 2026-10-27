@@ -2,6 +2,7 @@ package com.udata.harness.service;
 
 import com.udata.harness.repository.SessionRepository;
 import com.udata.harness.memory.MemoryService;
+import com.udata.harness.common.support.WorkspaceInstructionMessages;
 import org.noear.solon.annotation.*;
 import org.noear.solon.ai.agent.AgentSession;
 import org.noear.solon.ai.chat.message.*;
@@ -23,9 +24,11 @@ public class SessionHistoryService {
         if (end < raw.size() && raw.get(end) instanceof ToolMessage) throw new IllegalArgumentException("历史游标必须位于消息边界");
         int count = Math.max(1, Math.min(60, size == null ? 30 : size)), start = end, found = 0;
         // Stop only at a user/assistant boundary, keeping each tool-call batch with its observations.
-        while (start > 0 && found < count) { start--; if (!(raw.get(start) instanceof ToolMessage)) found++; }
+        while (start > 0 && found < count) { start--; if (!(raw.get(start) instanceof ToolMessage)
+                && !WorkspaceInstructionMessages.isInstruction(raw.get(start))) found++; }
         // Whole user turns give each UI bubble a stable identity even as later replies are appended.
-        while (start > 0 && raw.get(start).getRole() != org.noear.solon.ai.chat.ChatRole.USER) start--;
+        while (start > 0 && (raw.get(start).getRole() != org.noear.solon.ai.chat.ChatRole.USER
+                || WorkspaceInstructionMessages.isInstruction(raw.get(start)))) start--;
         List<Map<String, Object>> items = new ArrayList<>();
         Map<String, Map<String, Object>> tools = new HashMap<>(); int remaining = 32000;
         Object stored = session.getContext().get(MemoryService.HISTORY_KEY);
@@ -33,6 +36,7 @@ public class SessionHistoryService {
         Set<String> shown = new HashSet<>();
         for (int i = start; i < end; i++) {
             ChatMessage message = raw.get(i);
+            if (WorkspaceInstructionMessages.isInstruction(message)) continue;
             if (message instanceof ToolMessage) {
                 ToolMessage result = (ToolMessage) message; Map<String, Object> tool = tools.get(result.getToolCallId());
                 if (tool != null) {

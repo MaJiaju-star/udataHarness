@@ -340,6 +340,7 @@ public class SessionRepository implements AgentSessionProvider {
         String firstPrompt = "";
         for (ChatMessage message : getSession(userId, sessionId).getMessages()) {
             if (message.getRole() == ChatRole.USER
+                    && !com.udata.harness.common.support.WorkspaceInstructionMessages.isInstruction(message)
                     && Utils.isNotBlank(message.getContent())) {
                 firstPrompt = message.getContent();
                 break;

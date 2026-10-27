@@ -598,9 +598,10 @@ public class UserHarnessEngineServiceImpl implements UserHarnessEngineService {
                 .extensionAdd((engine, agentName, agentBuilder) -> {
                     agentBuilder.defaultInterceptorAdd(Integer.MIN_VALUE,
                             new com.udata.harness.common.support.GatewaySessionHeaderInterceptor());
-                    agentBuilder.defaultInterceptorAdd(Integer.MIN_VALUE + 1,
+                    com.udata.harness.common.support.WorkspaceInstructionsInterceptor instructions =
                             new com.udata.harness.common.support.WorkspaceInstructionsInterceptor(workspace,
-                                    () -> projectInstructionSettings == null ? "auto" : projectInstructionSettings.mode(userId, workspaceId)));
+                                    () -> projectInstructionSettings == null ? "auto" : projectInstructionSettings.mode(userId, workspaceId));
+                    instructions.install(agentBuilder);
                     // Only replace read when AgentFactory granted the built-in read to this agent.
                     agentBuilder.modelOptions(options -> {
                         if (!nowToolEnabled || !CapabilityMode.SUPER.equals(capabilityMode)) {
