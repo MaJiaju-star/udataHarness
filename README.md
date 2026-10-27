@@ -18,6 +18,17 @@ SolonCode、Solon Harness 和 `D:\code\dev-agent` 实现。
 
 架构图与安全边界见 [docs/architecture.md](docs/architecture.md)，模块职责、数据模型、执行流程与演进方向见 [系统设计文档](docs/design.md)。
 
+## 项目指令文件
+
+可在当前工作区根目录放置 `CLAUDE.md` 或 `AGENTS.md`，无需在界面注册：
+
+- 优先读取 `CLAUDE.md`；文件不存在、不可读、不是有效 UTF-8 或内容为空时，尝试 `AGENTS.md`。
+- 两者均不可用时不追加项目指令；两份文件不会合并。
+- 主 Agent 和子 Agent 每次模型推理前重新读取文件，包括后续对话和审批恢复，无需重建引擎。
+- 按会话所属工作区隔离，不读取进程启动目录、用户主目录、`.soloncode` 或子目录中的同名文件。
+- 使用 UTF-8，支持 BOM；最多注入 10000 个字符，超过时明确标记截断。修改或删除文件后，下次模型请求使用最新版本。
+- 项目指令作为系统提示词的一部分注入，不覆盖原有系统提示词，也不替代权限与沙箱检查。
+
 ## 可选工具开关
 
 `model.yml` 的 `agent.tools.optional` 默认关闭 `render_echart`、`render_antv_chart`、
