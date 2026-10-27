@@ -103,6 +103,7 @@ public class UserHarnessEngineServiceImpl implements UserHarnessEngineService {
 
     @Inject
     private UsageAuditRepository usageAuditRepository;
+    @Inject private com.udata.harness.repository.ProjectInstructionSettings projectInstructionSettings;
 
     /**
      * 用户工作区服务，用于解析用户当前激活的工作目录作为引擎工作区。
@@ -598,7 +599,8 @@ public class UserHarnessEngineServiceImpl implements UserHarnessEngineService {
                     agentBuilder.defaultInterceptorAdd(Integer.MIN_VALUE,
                             new com.udata.harness.common.support.GatewaySessionHeaderInterceptor());
                     agentBuilder.defaultInterceptorAdd(Integer.MIN_VALUE + 1,
-                            new com.udata.harness.common.support.WorkspaceInstructionsInterceptor(workspace));
+                            new com.udata.harness.common.support.WorkspaceInstructionsInterceptor(workspace,
+                                    () -> projectInstructionSettings == null ? "auto" : projectInstructionSettings.mode(userId, workspaceId)));
                     // Only replace read when AgentFactory granted the built-in read to this agent.
                     agentBuilder.modelOptions(options -> {
                         if (!nowToolEnabled || !CapabilityMode.SUPER.equals(capabilityMode)) {

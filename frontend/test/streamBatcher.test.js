@@ -18,9 +18,35 @@ test("a burst is committed once with every original event in source order", () =
     assert.equal(f.commits[0][0], events[0]);
 });
 test("approval, errors and terminal events flush preceding tool/text events immediately", () => {
-    for (const type of ["hitl", "run_pending", "error", "run_end", "done"]) {
+    for (const type of ["hitl", "hitl_decision", "run_pending", "error", "run_end", "done"]) {
         const f = fixture(); const events = [{type: "tool_args_start"}, {type: "tool_args_delta", content: "{"}, {type}];
         events.forEach(f.batcher.push); assert.deepEqual(f.commits, [events]); assert.equal(f.timers.size, 0);
+    }
+});
+
+test("actual batched message path delivers instruction status including the unloaded transition", () => {
+    let messages = [{id: "active", role: "assistant"}];
+    const batcher = createStreamBatcher(events => {
+        messages = applyMessageBatch(messages, "active", events, (message, event) =>
+            ({...message, projectInstructions: event}));
+    });
+    for (const event of [
+        {type: "project_instructions", loaded: true, source: "CLAUDE.md"},
+        {type: "project_instructions", loaded: true, source: "AGENTS.md"},
+        {type: "project_instructions", loaded: false, source: null}
+    ]) {
+        batcher.push(event); batcher.flush();
+        assert.equal(messages[0].projectInstructions, event);
+    }
+    batcher.close();
+});
+
+test("approval outcomes reach message reducer instead of being dropped as invisible metadata", () => {
+    for (const action of ["skip", "reject"]) {
+        const events = [{type: "hitl_decision", action}];
+        const messages = applyMessageBatch([{id: "pending"}], "pending", events,
+            (message, event) => ({...message, action: event.action}));
+        assert.equal(messages[0].action, action);
     }
 });
 test("closing on EOF, disconnect or abort flushes exactly once and cancels pending callbacks", () => {

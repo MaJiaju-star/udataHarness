@@ -9,6 +9,7 @@ import com.udata.harness.repository.SessionRepository;
 import com.udata.harness.repository.UsageAuditRepository;
 import com.udata.harness.service.ChatService;
 import com.udata.harness.service.SessionService;
+import com.udata.harness.service.UserWorkspaceService;
 import com.udata.harness.service.impl.ContextDashboardService;
 import org.noear.solon.ai.agent.AgentSession;
 import org.noear.solon.ai.agent.react.intercept.HITL;
@@ -62,6 +63,8 @@ public class SessionController {
      */
     @Inject
     private SessionRepository sessionRepository;
+    @Inject private com.udata.harness.repository.ProjectInstructionSettings projectInstructionSettings;
+    @Inject private UserWorkspaceService instructionWorkspaces;
 
     @Inject
     private UsageAuditRepository usageAuditRepository;
@@ -112,8 +115,23 @@ public class SessionController {
         boolean active = activeRuns.isActive(sessionId);
         Map<String, Object> data = new java.util.LinkedHashMap<>();
         data.put("active", active);
+        data.put("projectInstructions", session.getContext().get(com.udata.harness.common.support.WorkspaceInstructionsInterceptor.STATUS_KEY));
+        SessionMetadata metadata = sessionRepository.read(userId, sessionId);
+        data.put("projectInstructionMode", projectInstructionSettings.mode(userId, metadata.getWorkspaceId()));
         List<org.noear.solon.ai.agent.react.intercept.HITLTask> pending = HITL.getPendingTasks(session);
         data.put("hitl", active || pending.isEmpty() ? null : StreamEventMapper.hitl(pending));
+        return Result.succeed(data);
+    }
+
+    @Post
+    @Mapping("/sessions/project-instructions")
+    public Result<Map<String, Object>> projectInstructionMode(@Header("X-User-Id") String userId,
+            @Param("sessionId") String sessionId, @Param("mode") String mode) {
+        SessionMetadata metadata = sessionRepository.read(userId, sessionId);
+        instructionWorkspaces.resolve(userId, metadata.getWorkspaceId());
+        projectInstructionSettings.save(userId, metadata.getWorkspaceId(), mode);
+        Map<String, Object> data = new java.util.LinkedHashMap<>();
+        data.put("mode", mode); data.put("workspaceId", metadata.getWorkspaceId());
         return Result.succeed(data);
     }
 

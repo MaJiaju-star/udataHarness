@@ -58,6 +58,19 @@ class WorkspaceInstructionsInterceptorTest {
         assertEquals(10000, injected.chars().filter(c -> c == '字').count());
     }
 
+    @Test void selectedModeIsRereadAndManualModesNeverFallBack() throws Exception {
+        write("CLAUDE.md", "claude-only-rule"); write("AGENTS.md", "agents-only-rule");
+        java.util.concurrent.atomic.AtomicReference<String> mode = new java.util.concurrent.atomic.AtomicReference<>("auto");
+        WorkspaceInstructionsInterceptor loader = new WorkspaceInstructionsInterceptor(directory, mode::get);
+        assertTrue(prompt(loader).contains("claude-only-rule"));
+        mode.set("agents"); assertTrue(prompt(loader).contains("agents-only-rule"));
+        assertFalse(prompt(loader).contains("claude-only-rule"));
+        Files.delete(directory.resolve("AGENTS.md")); assertEquals("base", prompt(loader));
+        mode.set("claude"); assertTrue(prompt(loader).contains("claude-only-rule"));
+        mode.set("off"); assertEquals("base", prompt(loader));
+        mode.set("auto"); assertTrue(prompt(loader).contains("claude-only-rule"));
+    }
+
     @Test void actualModelRequestsUseLatestRulesAndRemoveDeletedOnesWithoutRebuildingEngine() throws Throwable {
         List<String> systems = new ArrayList<>();
         HttpServer server = server((body) -> {
@@ -65,15 +78,33 @@ class WorkspaceInstructionsInterceptorTest {
         });
         try {
             HarnessEngine engine = engine(server);
-            InMemoryAgentSession session = InMemoryAgentSession.of("live-rules");
+            Path sessionDirectory = directory.resolve("saved-session");
+            org.noear.solon.ai.agent.AgentSession session = new com.udata.harness.repository.CompactingFileAgentSession(
+                    "live-rules", sessionDirectory.toString());
             write("CLAUDE.md", "CLAUDE_VERSION_ONE"); write("AGENTS.md", "AGENT_FALLBACK");
             engine.prompt("first").session(session).call();
             write("CLAUDE.md", "CLAUDE_VERSION_TWO");
             engine.prompt("second").session(session).call();
             Files.delete(directory.resolve("CLAUDE.md"));
-            engine.prompt("third").session(session).stream().blockLast();
+            java.util.List<org.noear.solon.ai.agent.AgentEvent> stream = engine.prompt("third").session(session).stream().collectList().block();
+            WorkspaceInstructionsEvent statusEvent = (WorkspaceInstructionsEvent) stream.stream()
+                    .filter(event -> event instanceof WorkspaceInstructionsEvent).findFirst().get();
+            String json = com.udata.harness.common.util.StreamEventMapper.map(statusEvent);
+            ONode status = ONode.ofJson(json);
+            assertEquals("project_instructions", status.get("type").getString());
+            assertEquals("AGENTS.md", status.get("source").getString());
+            assertTrue(status.get("loaded").getBoolean());
+            assertFalse(json.contains("AGENT_FALLBACK"), "Status must not include instruction contents");
+            org.noear.solon.ai.agent.AgentSession restored = new com.udata.harness.repository.CompactingFileAgentSession(
+                    "live-rules", sessionDirectory.toString());
+            java.util.Map<?, ?> savedStatus = restored.getContext().getAs(WorkspaceInstructionsInterceptor.STATUS_KEY);
+            assertEquals("AGENTS.md", savedStatus.get("source"));
+            assertEquals(true, savedStatus.get("loaded"));
             Files.delete(directory.resolve("AGENTS.md"));
             engine.prompt("fourth").session(session).call();
+            java.util.Map<?, ?> cleared = session.getContext().getAs(WorkspaceInstructionsInterceptor.STATUS_KEY);
+            assertEquals(false, cleared.get("loaded"));
+            assertNull(cleared.get("source"));
             assertEquals(4, systems.size());
             assertTrue(systems.get(0).contains("CLAUDE_VERSION_ONE"));
             assertFalse(systems.get(0).contains("AGENT_FALLBACK"));
@@ -112,13 +143,39 @@ class WorkspaceInstructionsInterceptorTest {
     }
 
     private HarnessEngine engine(HttpServer server) {
+        return engine(server, () -> "auto");
+    }
+
+    @Test void persistedSelectionChangesActualModelRequestsWithoutRebuildingEngine() throws Throwable {
+        java.util.List<String> systems = new java.util.ArrayList<>();
+        HttpServer server = server(body -> { systems.add(system(body)); return answer("done"); });
+        try {
+            com.udata.harness.repository.ProjectInstructionSettings settings = new com.udata.harness.repository.ProjectInstructionSettings(directory.resolve("config"));
+            HarnessEngine engine = engine(server, () -> settings.mode("alice", "workspace"));
+            InMemoryAgentSession session = InMemoryAgentSession.of("selected-rules");
+            write("CLAUDE.md", "CLAUDE_SELECTED"); write("AGENTS.md", "AGENTS_SELECTED");
+            engine.prompt("auto").session(session).call();
+            settings.save("alice", "workspace", "agents"); engine.prompt("agents").session(session).call();
+            settings.save("alice", "workspace", "off"); engine.prompt("off").session(session).stream().blockLast();
+            settings.save("alice", "workspace", "agents"); Files.delete(directory.resolve("AGENTS.md"));
+            engine.prompt("unavailable").session(session).call();
+            assertTrue(systems.get(0).contains("CLAUDE_SELECTED"));
+            assertTrue(systems.get(1).contains("AGENTS_SELECTED")); assertFalse(systems.get(1).contains("CLAUDE_SELECTED"));
+            assertFalse(systems.get(2).contains("workspace-instructions"));
+            assertFalse(systems.get(3).contains("workspace-instructions"));
+            java.util.Map<?, ?> status = session.getContext().getAs(WorkspaceInstructionsInterceptor.STATUS_KEY);
+            assertEquals("agents", status.get("mode")); assertEquals(false, status.get("loaded"));
+        } finally { server.stop(0); }
+    }
+
+    private HarnessEngine engine(HttpServer server, java.util.function.Supplier<String> mode) {
         ChatConfig config = new ChatConfig(); config.setName("stub"); config.setModel("stub"); config.setProvider("openai");
         config.setApiUrl("http://127.0.0.1:" + server.getAddress().getPort() + "/v1/chat/completions");
         return HarnessEngine.of(directory.toString(), ".soloncode").systemPrompt("BASE_SYSTEM")
                 .subagentEnabled(true).toolsAdd(java.util.Arrays.asList("task", "multitask"))
                 .sessionProvider(InMemoryAgentSession::of).modelAdd(config).defaultModel("stub").modelRetries(1).maxTurns(5)
                 .extensionAdd((owner, name, builder) -> builder.defaultInterceptorAdd(Integer.MIN_VALUE + 1,
-                        new WorkspaceInstructionsInterceptor(directory))).build();
+                        new WorkspaceInstructionsInterceptor(directory, mode))).build();
     }
 
     private interface Responder { String reply(String body) throws Exception; }

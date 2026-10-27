@@ -2686,6 +2686,16 @@ html[data-mode="dark"] .permission-mode-switch { background: var(--surface-2); c
 .thinking-preview-tip { animation: thinkingPreviewFade .18s ease-out both; }
 .markdown-body, .stream-placeholder { position: relative; }
 .stream-placeholder { display: block; }
+.composer-token-meter .project-instructions-metric { min-width: 0; max-width: 220px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.composer-token-meter .project-instructions-metric[data-loaded="true"] { color: var(--accent-dark); }
+.composer-token-meter .project-instructions-open { padding: 0 0 0 8px; border: 0; border-left: 1px solid var(--border-default); background: transparent; font: inherit; line-height: inherit; cursor: pointer; text-align: left; }
+.composer-token-meter .project-instructions-open:hover { text-decoration: underline; text-underline-offset: 3px; }
+.composer-token-meter .project-instructions-open:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; border-radius: 3px; }
+.project-instructions-control { display: inline-flex; align-items: center; min-width: 0; gap: 3px; }
+.composer-token-meter .project-instructions-control .project-instructions-open { padding-left: 0; border-left: 0; }
+.instruction-mode-button { display: inline-flex; align-items: center; padding: 3px; border: 0; background: transparent; color: var(--text-secondary); cursor: pointer; }
+.instruction-mode-pending { color: var(--text-secondary); font-size: inherit; white-space: nowrap; }
+.instruction-mode-button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 .tool-heading-status.rejected, .tool-heading-status.skipped { color: var(--text-secondary); }
 .stream-presence { display: block; margin: 10px 0 6px; }
 .stream-wait { display: inline-flex; align-items: center; gap: 9px; max-width: 100%; padding: 8px 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface-1); color: var(--text-primary); font-family: inherit; font-size: 12px; font-weight: 500; line-height: 1.6; vertical-align: middle; }

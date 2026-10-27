@@ -51,6 +51,11 @@ public class HarnessConfiguration {
         return new UsageAuditRepository(resolve(dataDir));
     }
 
+    @Bean
+    public com.udata.harness.repository.ProjectInstructionSettings projectInstructionSettings() {
+        return new com.udata.harness.repository.ProjectInstructionSettings(resolve(dataDir));
+    }
+
     /**
      * 创建工作区服务，工作区根为 {@code <workspace>}，注册表位于数据目录。
      *

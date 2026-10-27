@@ -1,7 +1,7 @@
 // Preserve every event and its order. Only React commits are batched; timers and
 // first-token accounting can still observe the original events on arrival.
-const urgent = new Set(["hitl", "run_pending", "run_end", "done", "error"]);
-const visible = new Set(["memory_recall", "text", "text_replay", "thinking", "tool_args_start", "tool_args_delta",
+const urgent = new Set(["hitl", "hitl_decision", "run_pending", "run_end", "done", "error"]);
+const visible = new Set(["memory_recall", "project_instructions", "hitl_decision", "text", "text_replay", "thinking", "tool_args_start", "tool_args_delta",
     "tool_args_end", "tool_start", "tool_end", "subagent_event", "chunk", "hitl", "done", "run_end", "error"]);
 export function applyMessageBatch(messages, id, events, reduce) {
     const batch = (Array.isArray(events) ? events : [events]).filter(event => visible.has(event.type));

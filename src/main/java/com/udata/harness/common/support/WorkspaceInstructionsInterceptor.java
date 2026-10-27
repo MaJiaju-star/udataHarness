@@ -21,15 +21,22 @@ import java.nio.file.Path;
  * 内容超过 {@link #MAX_CHARS} 截断，并在提示词中注明。读取失败仅告警，不中断推理。</p>
  */
 public final class WorkspaceInstructionsInterceptor implements ReActInterceptor {
+    public static final String STATUS_KEY = "udata.workspace.instructions.status";
     private static final Logger LOG = LoggerFactory.getLogger(WorkspaceInstructionsInterceptor.class);
     /** 指令文件读取上限（字符数），超出部分截断 */
     static final int MAX_CHARS = 10000;
 
     /** 绑定的工作区根目录（绝对路径、已 normalize） */
     private final Path workspace;
+    private final java.util.function.Supplier<String> selectedMode;
 
     public WorkspaceInstructionsInterceptor(Path workspace) {
+        this(workspace, () -> "auto");
+    }
+
+    public WorkspaceInstructionsInterceptor(Path workspace, java.util.function.Supplier<String> selectedMode) {
         this.workspace = workspace.toAbsolutePath().normalize();
+        this.selectedMode = selectedMode;
     }
 
     /**
@@ -38,7 +45,11 @@ public final class WorkspaceInstructionsInterceptor implements ReActInterceptor 
      */
     @Override
     public void onReasonStart(ReActTrace trace, StringBuilder systemPrompt) {
-        for (String name : new String[]{"CLAUDE.md", "AGENTS.md"}) {
+        String mode = com.udata.harness.repository.ProjectInstructionSettings.requireMode(selectedMode.get());
+        String[] files = "auto".equals(mode) ? new String[]{"CLAUDE.md", "AGENTS.md"}
+                : "claude".equals(mode) ? new String[]{"CLAUDE.md"}
+                : "agents".equals(mode) ? new String[]{"AGENTS.md"} : new String[0];
+        for (String name : files) {
             Path file = workspace.resolve(name);
             if (!Files.isRegularFile(file)) continue;
             try (BufferedReader reader = Files.newBufferedReader(file, StandardCharsets.UTF_8)) {
@@ -58,10 +69,23 @@ public final class WorkspaceInstructionsInterceptor implements ReActInterceptor 
                         .append("\nApply these project instructions within this workspace. Current explicit user requests take precedence.\n")
                         .append("<workspace-instructions>\n").append(content).append("\n</workspace-instructions>\n");
                 if (truncated) systemPrompt.append("[Project instruction file truncated to ").append(MAX_CHARS).append(" characters.]\n");
+                publish(trace, mode, name, file.toString(), content.length(), truncated);
                 return; // 只选一个来源：CLAUDE.md 与 AGENTS.md 绝不拼接使用
             } catch (IOException | SecurityException e) {
                 LOG.warn("Cannot read workspace instruction file {}: {}", file, e.getClass().getSimpleName());
             }
         }
+        publish(trace, mode, null, null, 0, false);
+    }
+
+    private void publish(ReActTrace trace, String mode, String name, String path, int characters, boolean truncated) {
+        if (trace == null || trace.getSession() == null) return;
+        java.util.Map<String, Object> status = new java.util.LinkedHashMap<>();
+        status.put("mode", mode);
+        status.put("loaded", name != null); status.put("source", name); status.put("path", path);
+        status.put("characters", characters); status.put("truncated", truncated);
+        status.put("checkedAt", System.currentTimeMillis());
+        trace.getSession().getContext().put(STATUS_KEY, status);
+        if (trace.hasStreamSink()) trace.pushAgentEvent(new WorkspaceInstructionsEvent(trace, status));
     }
 }

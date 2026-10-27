@@ -171,7 +171,10 @@ public final class StreamEventMapper {
         String type = agentEvent.getClass().getSimpleName();
         Map<String, Object> event = base("chunk", agentEvent);
 
-        if (agentEvent instanceof RunStartEvent) {
+        if (agentEvent instanceof com.udata.harness.common.support.WorkspaceInstructionsEvent) {
+            event.put("type", "project_instructions");
+            event.putAll(((com.udata.harness.common.support.WorkspaceInstructionsEvent) agentEvent).getStatus());
+        } else if (agentEvent instanceof RunStartEvent) {
             event.put("type", "run_start");
         } else if (agentEvent instanceof RunEndEvent) {
             RunEndEvent runEnd = (RunEndEvent) agentEvent;

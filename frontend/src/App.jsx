@@ -7,6 +7,7 @@ import remarkGfm from "remark-gfm";
 import ChartCard, {chartSpecFromTool} from "./ChartCard.jsx";
 import GlobalSearchDialog from "./GlobalSearchDialog.jsx";
 import ThemePicker from "./ThemePicker.jsx";
+import ProjectInstructionsStatus from "./ProjectInstructionsStatus.jsx";
 import {useWorkspaceStore} from "./workspaceStore.js";
 import {callIdea, isIdea, initialUserId, initialWorkspaceId} from "./host.js";
 import IdeaToolbar from "./IdeaToolbar.jsx";
@@ -602,6 +603,7 @@ function reduceAssistantEvent(message, event) {
         }
     };
     if (event.type === "memory_recall") next.memoryRecall = event;
+    if (event.type === "project_instructions") next.projectInstructions = event;
     if (event.type === "text" || event.type === "text_replay") {
         const merged = mergeReasonContentActivities(
             next.activities,
@@ -923,8 +925,11 @@ function App() {
                 api(`/api/sessions/status?sessionId=${encodeURIComponent(sessionId)}`)
             ]);
             const restored = restoreHistory(page.messages);
+            const lastAssistant = restored.findLast(item => item.role === "assistant");
+            if (lastAssistant && status.projectInstructions) lastAssistant.projectInstructions = status.projectInstructions;
             if (status.hitl) restored.push({id: `pending-${sessionId}`, role: "assistant", content: "", tools: [], hitl: JSON.parse(status.hitl), finished: true});
             if (generation === historyGeneration.current && historyOwner.current === sessionId) {
+                setCurrent(selected => selected?.sessionId === sessionId ? {...selected, projectInstructions: status.projectInstructions} : selected);
                 const previous = historyState.current;
                 const merged = preserveOlder && previous.page.sessionId === sessionId ? mergeLatestHistory(previous.messages, restored) : {messages: restored, keptOlder: false};
                 setMessages(merged.messages);
@@ -1028,7 +1033,7 @@ function App() {
         const data = await api("/api/sessions");
         setSessions(data || []);
         setCurrent(selected => selected
-            ? (data || []).find(item => item.sessionId === selected.sessionId) || selected
+            ? {...selected, ...((data || []).find(item => item.sessionId === selected.sessionId) || {})}
             : selected);
         return data || [];
     }, [api]);
@@ -1592,7 +1597,7 @@ function App() {
                                   setThinkingDepth(value);
                                   localStorage.setItem("udataThinkingDepth", value);
                               }}
-                              onOpenFile={path => openFile(path).catch(error => notify(error.message))}
+                              onOpenFile={(path, location) => openFile(path, location).catch(error => notify(error.message))}
                               onSend={enqueuePrompt} onCreate={openCreateSession}
                               onDecide={decideHitl}
                               onSandboxChange={enabled => changeSandbox(enabled)
@@ -2313,7 +2318,9 @@ function ChatView({api, current, messages, historyPage, onLoadOlder, onReloadHis
                     </div>
                 </div>
             </div>
-            <TokenMeter usage={tokenUsage} timer={conversationTimer} sessionId={current?.sessionId} contextLength={contextLength}
+            <TokenMeter api={api} usage={tokenUsage} timer={conversationTimer} sessionId={current?.sessionId} contextLength={contextLength}
+                        onOpenFile={stableOpenFile}
+                        instructions={messages.findLast(item => item.projectInstructions)?.projectInstructions || current?.projectInstructions}
                         provider={provider} running={running} onOpenAudit={() => setAuditOpen(true)}
                         onOpenContext={current?.sessionId ? () => setContextOpen(true) : null}/>
             {contextOpen && current?.sessionId && <ContextPanel key={current.sessionId} api={api}
@@ -2328,7 +2335,7 @@ function Feature({icon: Icon, title, text}) {
     return <div className="feature-card"><Icon size={19}/><div><b>{title}</b><span>{text}</span></div></div>;
 }
 
-function TokenMeter({usage, timer, sessionId, contextLength, running, onOpenAudit, onOpenContext}) {
+function TokenMeter({api, usage, timer, sessionId, contextLength, running, onOpenAudit, onOpenContext, instructions, onOpenFile}) {
     const elapsed = useConversationElapsed(timer, sessionId);
     const cacheTokens = usage.cacheReadInputTokens + usage.cacheCreationInputTokens;
     const hitRate = cacheHitRate(usage);
@@ -2357,6 +2364,7 @@ function TokenMeter({usage, timer, sessionId, contextLength, running, onOpenAudi
         <span className="first-token-metric" title={firstTokenDescription}>首 Token 延迟 {firstToken}</span>
         <span className="conversation-elapsed" aria-live="off" title={elapsedHint}>耗时 {elapsedText}{elapsed?.status === "paused" ? " · 待审批" : ""}</span>
         <span className="wide-cache-metric" title={hitRateFormula}>缓存命中率 {hitRateText}</span>
+        {sessionId && <ProjectInstructionsStatus api={api} sessionId={sessionId} live={instructions} running={running} onOpenFile={onOpenFile}/>}
         <ComposerPopover label="用量详情" className="metric-details-button" trigger={<>详情<ChevronDown size={12}/></>}>
             {close => <>
                 <dl className="usage-detail-grid">
