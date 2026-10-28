@@ -14,6 +14,7 @@ const output = path.join(temporary, 'fixture');
 const fixture = `
 import React, {useEffect, useState} from 'react';
 import {createRoot} from 'react-dom/client';
+import {flushSync} from 'react-dom';
 import {ChatView, reduceAssistantEvent} from './src/App.jsx';
 import './src/styles.css';
 const noop = () => {};
@@ -30,6 +31,23 @@ function Demo() {
     useEffect(() => {
         let thinkingMessage, embedded = false;
         window.scrollFixture = {
+            mixedTail: streaming => {
+                setSession('mixed-tail-' + streaming);
+                setRunning(streaming);
+                setMessages([...initial, {id: 'qa-penultimate', role: 'assistant', finished: true,
+                    content: '倒数第二条完整回复：长正文和换行。\\n\\n'.repeat(700), tools: [], activities: []},
+                    {id: 'qa-last-user', role: 'user', finished: true, content: '继续输出', tools: [], activities: []},
+                    {id: 'qa-live', role: 'assistant', finished: !streaming, content: '最新回复：第一段。', tools: [], activities: []}]);
+            },
+            longTail: streaming => {
+                setRunning(streaming);
+                setMessages([...initial, {id: 'qa-live', role: 'assistant', finished: !streaming,
+                    content: '最新回复：长正文滚动回归。\\n\\n'.repeat(350), tools: [], activities: []}]);
+            },
+            commit: streaming => flushSync(() => setMessages(old => old.map((message, i) => i === old.length - 1
+                ? {...message, content: message.content + (streaming ? 'x' : '')} : message))),
+            prepend: () => flushSync(() => setMessages(old => [{id: 'prepended-' + old.length, role: 'user', finished: true,
+                content: '前部几何变化：校正必须基于最新滚动位置。', tools: [], activities: []}, ...old])),
             append: () => setMessages(old => old.map((message, i) => i === old.length - 1
                 ? {...message, finished: false, content: message.content + '\\n\\n新增流式正文。'.repeat(15)} : message)),
             finish: () => { setRunning(false); setMessages(old => old.map(m => ({...m, finished: true}))); },
@@ -79,8 +97,12 @@ async function visible(page) {
     return snapshot;
 }
 async function home(page) {
-    await page.locator('.message-scroll').focus();
-    await page.keyboard.press('Home');
+    await page.locator('.message-scroll').evaluate(element => {
+        // A native scrollbar jump avoids keyboard smooth-scroll timing while rows are measured.
+        element.dispatchEvent(new WheelEvent('wheel', {deltaY: -1000, bubbles: true}));
+        element.scrollTop = 0;
+        element.dispatchEvent(new Event('scroll'));
+    });
     await page.waitForTimeout(180);
     const snapshot = await visible(page);
     assert.equal(snapshot.visible[0].id, 'qa-0');
@@ -119,6 +141,102 @@ async function main() {
             page.on('pageerror', error => errors.push(error.message));
             await page.goto(`http://127.0.0.1:${server.address().port}/${host}`);
             await page.waitForTimeout(800);
+            for (const streaming of [false, true]) {
+                await page.evaluate(streaming => window.scrollFixture.mixedTail(streaming), streaming);
+                await page.waitForTimeout(700);
+                const tail = page.locator('[data-message-id="qa-live"]');
+                await tail.evaluate(element => { element.dataset.scrollInstance = 'stable-tail'; });
+                await home(page);
+                assert.equal(await tail.count(), 1, 'Latest reply was replaced by a spacer while reading history');
+                if (streaming) {
+                    const reading = await state(page);
+                    for (let i = 0; i < 6; i++) { await page.evaluate(() => window.scrollFixture.append()); await page.waitForTimeout(35); }
+                    const held = await visible(page);
+                    assert.equal(held.visible[0].id, reading.visible[0].id);
+                    assert.ok(Math.abs(held.top - reading.top) < 3, 'Offscreen SSE pulled the reader down');
+                }
+                await page.locator('.message-scroll').hover();
+                for (let i = 0; i < 8; i++) {
+                    await page.mouse.wheel(0, 100000);
+                    await page.waitForTimeout(100);
+                    const bottom = await state(page);
+                    if (bottom.max - bottom.top <= 3) break;
+                }
+                await page.waitForTimeout(500);
+                assert.equal(await tail.getAttribute('data-scroll-instance'), 'stable-tail', 'Tail row remounted and can flash');
+                if (streaming) {
+                    for (let i = 0; i < 8; i++) { await page.evaluate(() => window.scrollFixture.append()); await page.waitForTimeout(65); }
+                    await page.evaluate(() => window.scrollFixture.finish());
+                    await page.waitForTimeout(700);
+                }
+                const samples = await page.locator('.message-scroll').evaluate(async element => {
+                    const result = [];
+                    for (let i = 0; i < 35; i++) {
+                        await new Promise(requestAnimationFrame);
+                        const tail = element.querySelector('[data-message-id="qa-live"]');
+                        result.push({gap: element.scrollHeight - element.clientHeight - element.scrollTop,
+                            instance: tail?.dataset.scrollInstance, visible: tail?.getBoundingClientRect().bottom > element.getBoundingClientRect().top});
+                    }
+                    return result;
+                });
+                assert.ok(samples.every(sample => sample.gap <= 3 && sample.instance === 'stable-tail' && sample.visible),
+                    `Bottom oscillated back to the penultimate reply (${host || 'web'}, streaming=${streaming}): ${JSON.stringify(samples)}`);
+            }
+            for (const streaming of [false, true]) {
+                await page.evaluate(streaming => window.scrollFixture.longTail(streaming), streaming);
+                await page.waitForTimeout(600);
+                const scroller = page.locator('.message-scroll');
+                // Move the DOM before its asynchronous scroll event, then immediately commit SSE/state.
+                // This reproduces scrollbar / fast wheel input racing a virtual-list layout commit.
+                for (let attempt = 0; attempt < 5; attempt++) {
+                    await scroller.evaluate(element => {
+                        element.dispatchEvent(new WheelEvent('wheel', {deltaY: -400, bubbles: true}));
+                        element.scrollTop = Math.max(0, element.scrollHeight - element.clientHeight - 1500);
+                        element.dispatchEvent(new Event('scroll'));
+                    });
+                    await page.waitForTimeout(60);
+                    await scroller.evaluate(element => {
+                        element.dispatchEvent(new WheelEvent('wheel', {deltaY: 1500, bubbles: true}));
+                        element.scrollTop = element.scrollHeight - element.clientHeight;
+                        window.scrollFixture.commit(false);
+                    });
+                    await page.waitForTimeout(450);
+                    const tail = await visible(page);
+                    assert.ok(tail.max - tail.top <= 3,
+                        `Returning to bottom jumped to an older completed reply (${host || 'web'}, streaming=${streaming}): ${JSON.stringify(tail)}`);
+                    assert.equal(tail.visible.at(-1).id, 'qa-live');
+                }
+                await scroller.evaluate(element => {
+                    element.dispatchEvent(new WheelEvent('wheel', {deltaY: -400, bubbles: true}));
+                    element.scrollTop = Math.max(0, element.scrollHeight - element.clientHeight - 1500);
+                    element.dispatchEvent(new Event('scroll'));
+                });
+                await page.waitForTimeout(60);
+                const target = await scroller.evaluate(element => {
+                    element.dispatchEvent(new WheelEvent('wheel', {deltaY: 1500, bubbles: true}));
+                    element.scrollTop = element.scrollHeight - element.clientHeight;
+                    const target = element.scrollTop;
+                    window.scrollFixture.prepend();
+                    return target;
+                });
+                await page.waitForTimeout(500);
+                const corrected = await visible(page);
+                assert.ok(corrected.top >= target - 2,
+                    `Geometry correction replayed the old scroll position: ${target} -> ${JSON.stringify(corrected)}`);
+                if (streaming) {
+                    await page.evaluate(() => window.scrollFixture.append());
+                    await page.waitForTimeout(900);
+                    const growing = await visible(page);
+                    assert.ok(growing.max - growing.top <= 3, `Resumed following lost the growing tail: ${JSON.stringify(growing)}`);
+                }
+                if (process.env.BROWSER_ARTIFACT_DIR) {
+                    fs.mkdirSync(process.env.BROWSER_ARTIFACT_DIR, {recursive: true});
+                    await page.screenshot({path: path.join(process.env.BROWSER_ARTIFACT_DIR,
+                        `scroll-bottom-${host ? 'idea' : 'web'}-${streaming ? 'streaming' : 'finished'}.png`)});
+                }
+            }
+            await page.evaluate(() => window.scrollFixture.switchSession());
+            await page.waitForTimeout(400);
             await home(page); // Parent-owned ref must be available when subscriptions are installed.
             await descend(page);
             const before = await visible(page), anchor = before.visible[0];
@@ -191,7 +309,7 @@ async function main() {
                 assert.ok((await card.locator(':scope > button').innerText()).includes('已完成思考'));
             }
             assert.deepEqual(errors, []);
-            console.log(`${host ? 'IDEA H5 mode' : 'Browser'}: scrolling, resize, remount, native/embedded thinking timers and no thinking wait bars passed`);
+            console.log(`${host ? 'IDEA H5 mode' : 'Browser'}: long-tail bottom returns, pending-scroll geometry races, manual reading, resize, remount and thinking checks passed`);
             await page.close();
         }
     } finally {

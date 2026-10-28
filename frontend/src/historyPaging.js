@@ -27,14 +27,28 @@ export function virtualRange(offsets, top, height, overscan = 900) {
     return {start: indexAt(offsets, Math.max(0, top - overscan)), end: Math.min(count, indexAt(offsets, top + height + overscan) + 1)};
 }
 
+/** Keep the newest exchange mounted while older rows are windowed. Never bridge the history gap. */
+export function virtualRanges(offsets, top, height, overscan = 900, tailCount = 3) {
+    const count = offsets.length - 1;
+    if (!count) return [];
+    const visible = virtualRange(offsets, top, height, overscan);
+    const tail = {start: Math.max(0, count - tailCount), end: count};
+    return visible.end >= tail.start ? [{start: Math.min(visible.start, tail.start), end: count}] : [visible, tail];
+}
+
 /** Select rows using the corrected anchor before React removes the old window. */
 export function anchoredVirtualTop(anchor, messages, offsets, top) {
     if (!anchor) return top;
     const index = messages.findIndex(message => message.id === anchor.id);
     if (index < 0) return top;
+    if (top < anchor.start || (anchor.height != null && top >= anchor.start + anchor.height)) return top;
     const inset = Math.max(0, top - anchor.start);
-    // A collapsed/reflowed message may no longer contain the old reading offset.
-    return offsets[index] + Math.min(inset, Math.max(0, offsets[index + 1] - offsets[index] - 1));
+    const height = offsets[index + 1] - offsets[index];
+    // Clamp only an actual shrink of the reader's row. A pending wheel/scrollbar
+    // movement may already have left that row; clamping it would jump backward.
+    const shrank = anchor.height == null || height < anchor.height;
+    const wasInside = anchor.height == null || inset < anchor.height;
+    return offsets[index] + (shrank && wasInside ? Math.min(inset, Math.max(0, height - 1)) : inset);
 }
 
 /** Session-owned async cache. Pending requests survive row unmounts; subscriptions never do. */

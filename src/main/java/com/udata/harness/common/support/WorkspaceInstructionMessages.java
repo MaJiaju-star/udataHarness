@@ -65,7 +65,7 @@ public final class WorkspaceInstructionMessages {
                 : known != null || visible != null ? "replace" : "load";
         String text = render(selected, version, action);
         ChatMessage message = ChatMessage.ofUser(text);
-        message.addMetadata(MARKER, true).addMetadata(SCOPE, scope).addMetadata(VERSION, version)
+        message.addMetadata(ContextMessageIds.INTERNAL_CONTEXT, true).addMetadata(MARKER, true).addMetadata(SCOPE, scope).addMetadata(VERSION, version)
                 .addMetadata(ACTION, action).addMetadata(BODY_HASH, digest(text));
         ContextMessageIds.ensure(message);
         // Keep the transcript and working memory in the same order; never rewrite an old prefix.

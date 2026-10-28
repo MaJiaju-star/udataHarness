@@ -75,7 +75,7 @@ public final class WorkspaceInstructionsInterceptor implements ReActInterceptor 
         return new ReActInterceptor() {
             @Override public void onReasonStart(ReActTrace trace, StringBuilder systemPrompt) { reconcile(trace); }
             @Override public boolean onReasonRetry(ReActTrace trace, Throwable error, int attempt, String systemPrompt) {
-                prepare(trace);
+                // Retry the same logical inference. Read fresh files on the next Reason, not on transport retries.
                 return reconcile(trace);
             }
         };

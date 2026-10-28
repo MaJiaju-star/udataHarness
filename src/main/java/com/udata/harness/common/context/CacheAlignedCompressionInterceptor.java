@@ -70,6 +70,8 @@ public final class CacheAlignedCompressionInterceptor extends ContextCompression
             + "Remove stale facts, invalidated assumptions, superseded instructions, and completed pending jobs. "
             + "Framework project-instruction messages are context, not user tasks. Do not copy their file bodies; "
             + "the framework restores the current effective project instructions after compaction. "
+            + "Framework memory-context snapshots are also reference data, not user tasks. Do not copy their bodies; current recall is restored after compaction. "
+            + "Framework capability catalogs are discovery data, not user tasks. Do not copy their bodies; current catalogs are restored after compaction. "
             + "Keep unresolved requested work even if it is older, and retain failed attempts needed to avoid repeating them. "
             + "Do not present unverified assumptions as confirmed facts. "
             + "Next Step must contain exactly one concrete, executable action, naming its target and expected result, "
@@ -114,6 +116,7 @@ public final class CacheAlignedCompressionInterceptor extends ContextCompression
 
     @Override
     public ChatResponse interceptCall(ChatRequest request, CallChain chain) throws IOException {
+        com.udata.harness.common.support.StableToolDefinitionsInterceptor.normalize(request.getOptions());
         Object key = request.getOptions().toolContext().get(ChatSession.ATTR_SESSIONID);
         RequestSnapshot snapshot = key == null ? null : RequestSnapshot.of(request);
         ChatResponse response = chain.doIntercept(request);
@@ -124,6 +127,7 @@ public final class CacheAlignedCompressionInterceptor extends ContextCompression
 
     @Override
     public Flux<ChatEvent> interceptStream(ChatRequest request, StreamChain chain) {
+        com.udata.harness.common.support.StableToolDefinitionsInterceptor.normalize(request.getOptions());
         Object key = request.getOptions().toolContext().get(ChatSession.ATTR_SESSIONID);
         if (key == null) return chain.doIntercept(request);
         RequestSnapshot snapshot = RequestSnapshot.of(request);
@@ -191,6 +195,8 @@ public final class CacheAlignedCompressionInterceptor extends ContextCompression
             ChatResponse response = trace.getOptions().getChatModel().prompt(summaryInput)
                     .options(options -> {
                         options.autoToolCall(false);
+                        options.interceptorAdd(com.udata.harness.common.support.StableToolDefinitionsInterceptor.ORDER,
+                                com.udata.harness.common.support.StableToolDefinitionsInterceptor.INSTANCE);
                         if (cacheAligned) options.toolAdd(previous.tools);
                         else {
                             options.toolAdd(trace.getOptions().getTools());

@@ -5,7 +5,6 @@ import org.noear.solon.ai.chat.message.UserMessage;
 import org.noear.snack4.ONode;
 import java.util.List;
 import org.noear.solon.ai.agent.react.ReActTrace;
-import com.udata.harness.common.support.WorkspaceInstructionMessages;
 
 /** Protect the current user turn when its request is summarized but its recent tool work is retained. */
 final class CurrentTurnIntent {
@@ -16,7 +15,7 @@ final class CurrentTurnIntent {
     static CurrentTurnIntent prepare(List<ChatMessage> messages, int cutoff) {
         for (int i = messages.size() - 1; i >= 0; i--) {
             ChatMessage message = messages.get(i);
-            if (message instanceof UserMessage && !ContextMessageIds.checkpoint(message) && !WorkspaceInstructionMessages.isInstruction(message))
+            if (message instanceof UserMessage && !ContextMessageIds.checkpoint(message) && !ContextMessageIds.internal(message))
                 return new CurrentTurnIntent(i < cutoff, message.getContent() == null ? "" : message.getContent());
         }
         return new CurrentTurnIntent(false, "");
@@ -28,12 +27,12 @@ final class CurrentTurnIntent {
         List<ChatMessage> memory = trace.getWorkingMemory().getMessages();
         for (int i = original.size() - 1; i >= 0; i--) {
             ChatMessage user = original.get(i);
-            if (!(user instanceof UserMessage) || ContextMessageIds.checkpoint(user) || WorkspaceInstructionMessages.isInstruction(user)) continue;
+            if (!(user instanceof UserMessage) || ContextMessageIds.checkpoint(user) || ContextMessageIds.internal(user)) continue;
             String id = ContextMessageIds.id(user);
             for (int j = memory.size() - 1; j >= 0; j--) {
                 ChatMessage candidate = memory.get(j);
                 if (id != null ? id.equals(ContextMessageIds.id(candidate))
-                        : candidate instanceof UserMessage && !WorkspaceInstructionMessages.isInstruction(candidate)
+                        : candidate instanceof UserMessage && !ContextMessageIds.internal(candidate)
                             && java.util.Objects.equals(user.getContent(), candidate.getContent()))
                     return new CurrentTurnIntent(j < cutoff, user.getContent() == null ? "" : user.getContent());
             }

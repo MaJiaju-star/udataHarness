@@ -602,6 +602,8 @@ public class UserHarnessEngineServiceImpl implements UserHarnessEngineService {
                             new com.udata.harness.common.support.WorkspaceInstructionsInterceptor(workspace,
                                     () -> projectInstructionSettings == null ? "auto" : projectInstructionSettings.mode(userId, workspaceId));
                     instructions.install(agentBuilder);
+                    agentBuilder.defaultInterceptorAdd(Integer.MIN_VALUE + 3,
+                            new com.udata.harness.common.support.ContextOverflowRetryInterceptor());
                     // Only replace read when AgentFactory granted the built-in read to this agent.
                     agentBuilder.modelOptions(options -> {
                         if (!nowToolEnabled || !CapabilityMode.SUPER.equals(capabilityMode)) {
@@ -654,11 +656,14 @@ public class UserHarnessEngineServiceImpl implements UserHarnessEngineService {
                     if (contextOptions != null) {
                         agentBuilder.defaultInterceptorAdd(1000,
                                 new ToolResultContextInterceptor(contextStore, contextOptions, null, workspace, contextCacheConfiguration));
-                        if (contextCacheConfiguration != null) {
-                            agentBuilder.defaultInterceptorAdd(Integer.MAX_VALUE,
-                                    new ContextTelemetryInterceptor(contextStore, contextCacheConfiguration));
-                        }
                     }
+                    agentBuilder.defaultInterceptorAdd(2000, new com.udata.harness.memory.MemoryContextInterceptor());
+                    com.udata.harness.common.support.CapabilityCatalogInterceptor.install(agentBuilder);
+                    if (contextOptions != null && contextCacheConfiguration != null) {
+                        agentBuilder.defaultInterceptorAdd(Integer.MAX_VALUE,
+                                new ContextTelemetryInterceptor(contextStore, contextCacheConfiguration));
+                    }
+                    com.udata.harness.common.support.StableToolDefinitionsInterceptor.install(agentBuilder);
                 })
                 .sandboxEnabled(isSandboxEnabled(userId))
                 .sandboxAllowUserHome(false)

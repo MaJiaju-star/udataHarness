@@ -9,6 +9,7 @@ public final class ContextMessageIds {
     public static final String ENTRY_ID = "udata_entry_id";
     public static final String SOURCE_ID = "udata_source_entry_id";
     public static final String CHECKPOINT = "udata_checkpoint";
+    public static final String INTERNAL_CONTEXT = "udata_internal_context";
 
     private ContextMessageIds() { }
 
@@ -42,5 +43,12 @@ public final class ContextMessageIds {
 
     public static boolean checkpoint(ChatMessage message) {
         return Boolean.TRUE.equals(message.getMetadataAs(CHECKPOINT));
+    }
+
+    public static boolean internal(ChatMessage message) {
+        return message instanceof org.noear.solon.ai.chat.message.UserMessage
+                && (Boolean.TRUE.equals(message.getMetadataAs(INTERNAL_CONTEXT))
+                    // Compatibility with project messages persisted before the shared marker existed.
+                    || Boolean.TRUE.equals(message.getMetadataAs("udata_workspace_instruction")));
     }
 }

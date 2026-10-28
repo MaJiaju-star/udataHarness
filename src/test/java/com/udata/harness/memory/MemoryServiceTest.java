@@ -71,8 +71,11 @@ class MemoryServiceTest {
         MemoryService service = new MemoryService(root); service.settings("alice", true, 1000);
         Map<String, Object> ordinary = service.snapshot("alice", "ws-a", "请查看当前项目");
         MemoryTalent read = new MemoryTalent(service, "alice", "ws-a", "session-a", ordinary);
-        assertEquals(1, read.getTools(Prompt.of("test")).size());
+        assertEquals(3, read.getTools(Prompt.of("test")).size());
         assertTrue(read.save("a", "bad", "global", null, null, false).contains("未获得"));
+        assertTrue(read.forget("unknown", 1).contains("未获得"));
+        ordinary.put("canWrite", true);
+        assertTrue(read.save("a", "bad", "project", null, null, false).contains("未获得"), "Captured grants are immutable");
         Map<String, Object> explicit = service.snapshot("alice", "ws-a", "请记住这个项目使用 Java 8");
         MemoryTalent writer = new MemoryTalent(service, "alice", "ws-a", "session-a", explicit);
         assertTrue(writer.save("java", "Java 8", "global", null, null, false).contains("全局记忆需要"));
