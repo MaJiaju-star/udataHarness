@@ -24,6 +24,7 @@ class ContextDashboardServiceTest {
             Map<String, Object> event = new java.util.LinkedHashMap<>();
             event.put("id", "request-" + i); event.put("estimatedTokens", i + 100);
             artifacts.recordObservation(a.getSessionId(), event);
+            artifacts.recordRequestDiagnostic(a.getSessionId(), event);
         }
         artifacts.save(a.getSessionId(), "call", "read", "PRIVATE_BODY", "limit", 2);
         ContextDashboardService service = new ContextDashboardService();
@@ -32,8 +33,10 @@ class ContextDashboardServiceTest {
         inject(service, "config", new ContextCacheConfiguration());
         Map<String, Object> result = service.overview("alice", a.getSessionId(), 2);
         assertEquals(2, ((java.util.List<?>) result.get("observations")).size());
+        assertEquals(2, ((java.util.List<?>) result.get("requestDiagnostics")).size());
         assertFalse(org.noear.snack4.ONode.serialize(result).contains("PRIVATE_BODY"));
         assertTrue(((java.util.List<?>) service.overview("alice", b.getSessionId(), 2).get("observations")).isEmpty());
+        assertTrue(((java.util.List<?>) service.overview("alice", b.getSessionId(), 2).get("requestDiagnostics")).isEmpty());
         assertThrows(IllegalArgumentException.class, () -> service.overview("bob", a.getSessionId(), 2));
         assertThrows(IllegalArgumentException.class, () -> service.overview("../alice", a.getSessionId(), 2));
     }

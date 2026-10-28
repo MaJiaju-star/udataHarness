@@ -58,6 +58,8 @@ class UserHarnessEngineServiceImplTest {
                 .getDefaultOptions().getInterceptors().stream()
                 .anyMatch(item -> item.target instanceof com.udata.harness.common.context.ContextTelemetryInterceptor));
         assertEquals(4, service.get("alice").getModelRetries());
+        assertTrue(service.get("alice").getMainAgent().getConfig().getDefaultOptions().getInterceptors().stream()
+                .anyMatch(item -> item.target instanceof com.udata.harness.common.context.FinalRequestPrefixInterceptor));
         org.noear.solon.ai.harness.HarnessEngine original = service.get("alice");
         UserWorkspaceServiceImpl workspaces = (UserWorkspaceServiceImpl) read(service, "workspaces");
         String workspaceId = workspaces.register("alice",

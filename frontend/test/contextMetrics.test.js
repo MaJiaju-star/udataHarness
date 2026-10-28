@@ -1,6 +1,15 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import {chartPath, knownNumber, moneyText, summarizeContext} from "../src/contextMetrics.js";
+import {chartPath, knownNumber, moneyText, prefixChanges, summarizeContext} from "../src/contextMetrics.js";
+
+test("physical request diagnostics stay separate from usage accounting and filter by agent", () => {
+    const a = {id: "a", timestamp: 1, agentName: "main"}, b = {id: "b", timestamp: 2, agentName: "child"};
+    const result = summarizeContext({requestDiagnostics: [a, a, b]});
+    assert.deepEqual(result.diagnostics, [b, a]); assert.equal(result.calls.length, 0);
+    assert.deepEqual(summarizeContext({requestDiagnostics: [a, b]}, "main").diagnostics, [a]);
+    assert.equal(prefixChanges({baselineAvailable: true, appendOnly: true, changedSections: ["messages"]}), "历史仅追加");
+    assert.match(prefixChanges({changedSections: ["system", "tools"], changedParameters: ["thinking"]}), /系统指令.*工具定义.*thinking/);
+});
 
 test("unknown metrics remain unknown and explicit zero is retained", () => {
     assert.equal(knownNumber(null), null);

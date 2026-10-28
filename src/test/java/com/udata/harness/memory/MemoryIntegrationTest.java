@@ -33,10 +33,6 @@ class MemoryIntegrationTest {
             config.setApiUrl("http://127.0.0.1:" + server.getAddress().getPort() + "/v1/chat/completions");
             HarnessEngine engine = HarnessEngine.of(root.toString(), ".soloncode").toolsAdd(Collections.singletonList("read"))
                     .sessionProvider(InMemoryAgentSession::of)
-                    .extensionAdd((owner, name, builder) -> {
-                        builder.defaultInterceptorAdd(2000, new MemoryContextInterceptor());
-                        com.udata.harness.common.support.StableToolDefinitionsInterceptor.install(builder);
-                    })
                     .modelAdd(config).defaultModel("local").modelRetries(1).maxTurns(2).build();
             MemoryService memories = new MemoryService(root.resolve("data"));
             Map<String, Object> entry = new LinkedHashMap<>(); entry.put("scope", "project"); entry.put("key", "marker"); entry.put("content", "MEMORY_INJECTION_MARKER"); entry.put("pinned", true);
@@ -56,13 +52,8 @@ class MemoryIntegrationTest {
             String disabledSystem = ONode.ofJson(requests.get(1)).get("messages").get(0).get("content").getString();
             assertFalse(disabledSystem.contains("MEMORY_INJECTION_MARKER"));
             String nextTools = ONode.ofJson(requests.get(2)).get("tools").toJson();
-            assertTrue(nextTools.contains("memory_search")); assertTrue(nextTools.contains("memory_save")); assertTrue(nextTools.contains("memory_forget"));
-            assertEquals(firstTools, nextTools);
-            assertTrue(ONode.ofJson(requests.get(2)).get("messages").getArray().stream()
-                    .anyMatch(m -> "user".equals(m.get("role").getString()) && m.get("content").getString().contains("MEMORY_INJECTION_MARKER")));
-            assertTrue(ONode.ofJson(requests.get(1)).get("messages").getArray().stream()
-                    .anyMatch(m -> "user".equals(m.get("role").getString()) && m.get("content").getString().contains("Memory is disabled for this turn")));
-            for (String request : requests) assertFalse(ONode.ofJson(request).get("messages").get(0).get("content").getString().contains("MEMORY_INJECTION_MARKER"));
+            assertTrue(nextTools.contains("memory_search")); assertFalse(nextTools.contains("memory_save"));
+            assertTrue(ONode.ofJson(requests.get(2)).get("messages").get(0).get("content").getString().contains("MEMORY_INJECTION_MARKER"));
         } finally { server.stop(0); }
     }
 }

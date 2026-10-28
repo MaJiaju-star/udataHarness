@@ -1,7 +1,7 @@
 import {useEffect, useMemo, useRef, useState} from "react";
 import {createPortal} from "react-dom";
 import {Activity, Archive, RefreshCw, X} from "lucide-react";
-import {actionLabels, chartPath, contextCategories, knownNumber, moneyText, reasonLabels, summarizeContext, tokenText} from "./contextMetrics.js";
+import {actionLabels, chartPath, contextCategories, knownNumber, moneyText, prefixAssessmentLabels, prefixChanges, reasonLabels, summarizeContext, tokenText} from "./contextMetrics.js";
 
 const time = value => value ? new Date(Number(value)).toLocaleTimeString("zh-CN") : "—";
 
@@ -34,13 +34,13 @@ export default function ContextPanel({api, sessionId, running, onClose}) {
         return () => clearInterval(timer);
     }, [running]);
     const summary = useMemo(() => summarizeContext(data, agent), [data, agent]);
-    const agents = useMemo(() => [...new Set((data?.observations || []).map(row => row.agentName).filter(Boolean))], [data]);
+    const agents = useMemo(() => [...new Set([...(data?.observations || []), ...(data?.requestDiagnostics || [])].map(row => row.agentName).filter(Boolean))], [data]);
     const {latest} = summary;
     const hit = knownNumber(latest?.usage?.cacheHitRate);
     function onKeyDown(event) {
         if (event.key === "Escape") { event.preventDefault(); onClose(); }
         if (event.key === "Tab") {
-            const elements = [...panel.current.querySelectorAll("button:not(:disabled), select")];
+            const elements = [...panel.current.querySelectorAll("button:not(:disabled), select, summary")];
             const first = elements[0], last = elements.at(-1);
             if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last?.focus(); }
             else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first?.focus(); }
@@ -89,10 +89,15 @@ export default function ContextPanel({api, sessionId, running, onClose}) {
                                 <span key={key}><i className={`context-color-${index}`}/>{label}<b>{tokenText(latest.categories?.[key])}</b></span>)}</div></>
                             : <p className="context-empty">暂无观测。启用上下文管理后，完成一次模型调用即可看到记录。</p>}
                     </section>
-                    <div className="context-tabs" aria-label="上下文记录分类">{[["actions", "管理动作"], ["calls", "模型调用"], ["tasks", "任务档案"], ["compactions", "压缩开销"]].map(([key, label]) =>
+                    <div className="context-tabs" aria-label="上下文记录分类">{[["actions", "管理动作"], ["calls", "模型调用"], ["prefix", "请求前缀"], ["tasks", "任务档案"], ["compactions", "压缩开销"]].map(([key, label]) =>
                         <button type="button" key={key} aria-pressed={tab === key} onClick={() => setTab(key)}>{label}</button>)}</div>
                     {tab === "actions" && <div className="context-action-list">{!(data.actions || []).length && <p className="context-empty">暂无管理动作。任务切换、归档或恢复后会显示在这里。</p>}
                         {[...(data.actions || [])].reverse().map((row, index) => <Action key={`${row.timestamp}-${index}`} row={row}/>)}</div>}
+                    {tab === "prefix" && <div className="context-action-list">
+                        <p className="context-caption">比较同一会话、同一 Agent 的相邻推理请求，包含重试，不含压缩请求。只保存结构指纹，不保存正文。前缀相同不保证服务端缓存命中。</p>
+                        {summary.diagnostics.map(row => <PrefixDiagnostic key={row.id} row={row}/>)}
+                        {!summary.diagnostics.length && <p className="context-empty">暂无请求前缀诊断。开启诊断后，完成新的模型调用即可查看。</p>}
+                    </div>}
                     {tab === "calls" && <div className="context-table-scroll"><table className="context-table"><caption>逐请求 Usage 与应用层估算；费用按该调用记录的配置计算。</caption>
                         <thead><tr><th>时间 / 模型</th><th>上下文估算</th><th>公共前缀估算</th><th>Usage 原始输入</th><th>实际输入汇总</th><th>Cache Read</th><th>费用估算</th><th>耗时</th></tr></thead>
                         <tbody>{[...summary.calls].reverse().map(row => <tr key={row.id}><td title={row.id}>{time(row.timestamp)}<small>{row.agentName} · {row.model}</small></td>
@@ -118,6 +123,32 @@ export default function ContextPanel({api, sessionId, running, onClose}) {
 
 function Metric({label, value, detail}) {
     return <article className="context-metric"><span>{label}</span><strong>{value}</strong><small>{detail}</small></article>;
+}
+
+function PrefixDiagnostic({row}) {
+    const first = row.firstMessageDifference;
+    const rate = value => knownNumber(value) == null ? "未知" : `${(value * 100).toFixed(1)}%`;
+    return <article className="context-action">
+        <div><b>{prefixAssessmentLabels[row.assessment] || row.assessment}</b><time>{time(row.timestamp)}</time></div>
+        <p>{prefixChanges(row)}</p>
+        <small>输入 {tokenText(row.previousInputTokens)} → {tokenText(row.usage?.inputTokens)} tokens · 缓存读取 {tokenText(row.previousCacheReadTokens)} → {tokenText(row.usage?.cacheReadTokens)} tokens · 命中率 {rate(row.previousCacheHitRate)} → {rate(row.usage?.cacheHitRate)}</small>
+        <small>{row.agentName} · {row.format} · 状态 {row.status} · 间隔 {knownNumber(row.intervalMs) == null ? "—" : `${(row.intervalMs / 1000).toFixed(1)} 秒`}</small>
+        <details><summary>查看变化位置</summary>
+            <p>共同历史前缀 {row.messagePrefixCount ?? "—"} 项；请求消息 {row.previousMessageCount ?? "—"} → {row.messageCount ?? "—"} 项。</p>
+            {row.firstSystemDifference && <p>系统指令首先变化的片段：{row.firstSystemDifference.previousSection || "—"} → {row.firstSystemDifference.section || "—"}，字符 {row.firstSystemDifference.previousChars ?? "—"} → {row.firstSystemDifference.chars ?? "—"}。</p>}
+            {first && <p>第 {first.index + 1} 项：{first.kind === "appended" ? "新增" : first.kind === "removed" ? "移除" : "修改"}，角色 {first.previousRole || "—"} → {first.role || "—"}，序列化字符 {first.previousChars ?? "—"} → {first.chars ?? "—"}
+                {first.changedFields?.length > 0 && `；字段 ${first.changedFields.join("、")}`}
+                {first.type && first.type !== "unknown" && `；类型 ${first.previousType || "—"} → ${first.type}`}
+                {first.sharedContentBlocks != null && `；其中前 ${first.sharedContentBlocks} 个内容块相同`}
+                {first.changedContentBlockFields?.length > 0 && `；随后内容块的字段 ${first.changedContentBlockFields.join("、")} 变化`}。</p>}
+            {row.toolOrderChanged && <p>工具排列或集合发生变化。</p>}
+            {row.addedTools?.length > 0 && <p>新增工具：{row.addedTools.join("、")}</p>}
+            {row.removedTools?.length > 0 && <p>移除工具：{row.removedTools.join("、")}</p>}
+            {row.changedTools?.map(tool => <p key={tool.name}>工具 {tool.name}：{tool.fields.join("、") || "定义结构"} 变化。</p>)}
+            {row.previousStatus && row.previousStatus !== "success" && <p>上一次请求未成功完成，不能据此假定它已建立缓存。</p>}
+            <small>调用 {row.runId}:{row.reasonId} · 请求 {row.id} · 指纹 {row.requestHash?.slice(0, 16)}…</small>
+        </details>
+    </article>;
 }
 
 function Action({row}) {

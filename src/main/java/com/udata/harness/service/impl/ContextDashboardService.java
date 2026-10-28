@@ -34,6 +34,7 @@ public class ContextDashboardService {
         result.put("sessionId", sessionId); result.put("workspaceId", session.getWorkspaceId());
         result.put("limit", limit); result.put("observations", store.observations(sessionId, false, limit));
         result.put("actions", store.observations(sessionId, true, limit));
+        result.put("requestDiagnostics", store.requestDiagnostics(sessionId, limit));
         result.put("tasks", new ContextTaskStore(store).summaries(sessionId));
         result.put("policyEnabled", config.enabled);
         result.put("prices", config.policy(session.getModel()).prices.view());

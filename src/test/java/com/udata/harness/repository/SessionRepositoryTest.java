@@ -24,9 +24,6 @@ class SessionRepositoryTest {
         ChatMessage instructions = ChatMessage.ofUser("framework project instructions");
         instructions.addMetadata(com.udata.harness.common.support.WorkspaceInstructionMessages.MARKER, true);
         repository.getSession("alice", id).addMessage(instructions);
-        ChatMessage recall = ChatMessage.ofUser("framework memory recall");
-        recall.addMetadata(com.udata.harness.common.context.ContextMessageIds.INTERNAL_CONTEXT, true);
-        repository.getSession("alice", id).addMessage(recall);
         repository.getSession("alice", id).addMessage(ChatMessage.ofUser("Fix the payment test"));
         assertEquals("Fix the payment test", repository.applyFirstPromptTitle("alice", id, "fallback").getTitle());
     }

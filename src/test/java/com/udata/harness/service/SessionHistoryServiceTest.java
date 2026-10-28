@@ -20,9 +20,7 @@ class SessionHistoryServiceTest {
         for (int n = 0; n < 20; n++) {
             session.addMessage(ChatMessage.ofUser("task-" + n));
             ChatMessage instructions = ChatMessage.ofUser("project-context-" + n);
-            if (n % 2 == 0) instructions.addMetadata(com.udata.harness.common.support.WorkspaceInstructionMessages.MARKER, true);
-            else instructions.addMetadata(com.udata.harness.common.context.ContextMessageIds.INTERNAL_CONTEXT, true)
-                    .addMetadata(com.udata.harness.memory.MemoryContextInterceptor.MARKER, true);
+            instructions.addMetadata(com.udata.harness.common.support.WorkspaceInstructionMessages.MARKER, true);
             session.addMessage(instructions);
             session.addMessage(ChatMessage.ofAssistant("answer-" + n));
         }

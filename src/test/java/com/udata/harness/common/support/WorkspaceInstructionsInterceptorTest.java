@@ -305,8 +305,8 @@ class WorkspaceInstructionsInterceptorTest {
         trace.getWorkingMemory().replaceMessages(java.util.Collections.emptyList());
         write("CLAUDE.md", "NEW_RETRY_RULE");
         assertTrue(messages.onReasonRetry(trace, new RuntimeException("retry after compaction"), 2, "stable-system"));
-        assertTrue(lastInstruction(trace).getContent().contains("CURRENT_COMPLETE_RULE"));
-        assertFalse(lastInstruction(trace).getContent().contains("NEW_RETRY_RULE"));
+        assertTrue(lastInstruction(trace).getContent().contains("NEW_RETRY_RULE"));
+        assertFalse(lastInstruction(trace).getContent().contains("CURRENT_COMPLETE_RULE"));
         loader.onReasonStart(trace, new StringBuilder()); messages.onReasonStart(trace, new StringBuilder());
         assertTrue(lastInstruction(trace).getContent().contains("NEW_RETRY_RULE"));
         mode.set("off"); loader.onReasonStart(trace, new StringBuilder()); messages.onReasonStart(trace, new StringBuilder());

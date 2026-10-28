@@ -70,25 +70,15 @@ public class TaskTalent extends AbsTalent {
 
     @Override
     public String getInstruction(Prompt prompt) {
-        return getCatalog() + getAllocationPolicy();
-    }
-
-    public String getCatalog() {
         StringBuilder sb = new StringBuilder();
 
         sb.append("## 当前可用的子代理\n");
         sb.append("<available_agents>\n");
-        List<AgentDefinition> agents = new ArrayList<>(engine.getAgentManager().getAgents());
-        agents.sort(java.util.Comparator.comparing(AgentDefinition::getName));
-        for (AgentDefinition agentDefinition : agents) {
+        for (AgentDefinition agentDefinition : engine.getAgentManager().getAgents()) {
             sb.append(String.format("  - \"%s\": %s\n", agentDefinition.getName(), agentDefinition.getDescription()));
         }
         sb.append("</available_agents>\n\n");
-        return sb.toString();
-    }
 
-    public String getAllocationPolicy() {
-        StringBuilder sb = new StringBuilder();
         int maxTasks = engine.getMultitaskMaxTasks();
         sb.append("## 任务分配策略：\n");
         sb.append("1. **优先并行**: 当任务可以被拆分为互不干扰的独立单元（例如：不同的模块开发、多路搜索）时，**必须**使用 `multitask` 以节省时间。单次建议 2-" + maxTasks + " 个单元。\n");

@@ -2472,6 +2472,8 @@ html[data-mode="dark"] .context-panel { --context-highlight: var(--success); --c
 .context-action > div { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; font-size: 12px; }
 .context-action time { margin-left: auto; font-size: 10px; color: var(--muted); }
 .context-action p { margin: 7px 0; font-size: 12px; }
+.context-action details { font-size: 12px; overflow-wrap: anywhere; }
+.context-action summary { cursor: pointer; margin-top: 8px; color: var(--text-secondary); }
 .context-action small { display: block; color: var(--muted); font-size: 10px; line-height: 1.7; overflow-wrap: anywhere; }
 .context-decision { padding: 3px 7px; border-radius: 5px; font-size: 10px; }
 .context-decision.allow { background: var(--context-selected-bg); color: var(--context-highlight); }

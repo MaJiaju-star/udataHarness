@@ -18,6 +18,20 @@ export const reasonLabels = {
 };
 
 export const knownNumber = value => typeof value === "number" && Number.isFinite(value) ? value : null;
+export const prefixAssessmentLabels = {
+    first_request: "首次记录，正在建立对照", fixed_prefix_changed: "固定前缀发生变化",
+    history_changed: "历史前缀发生变化", parameters_changed: "请求参数发生变化",
+    comparison_incomplete: "请求过大，前缀对照不完整", cache_usage_unknown: "上游缓存数据未知",
+    stable_prefix_lower_cache_read: "前缀保持稳定，但缓存读取下降",
+    appended_input_growth: "新增输入使命中率下降",
+    prefix_preserved: "前缀保持稳定", request_not_successful: "请求未成功完成"
+};
+export function prefixChanges(row) {
+    const labels = {provider: "协议", endpoint: "接口地址", model: "模型", system: "系统指令", tools: "工具定义", messages: "历史消息"};
+    const changes = (row.changedSections || []).map(key => key === "messages" && row.appendOnly ? "历史仅追加" : labels[key] || key);
+    if (row.changedParameters?.length) changes.push(`参数：${row.changedParameters.join("、")}`);
+    return changes.join("；") || (row.baselineAvailable ? "未发现请求内容变化" : "尚无上一次请求可对比");
+}
 export const tokenText = value => knownNumber(value) == null ? "未知" : Math.round(value).toLocaleString("zh-CN");
 export const moneyText = (value, currency = "USD") => knownNumber(value) == null ? "未知" :
     `${currency} ${value.toLocaleString("zh-CN", {minimumFractionDigits: 4, maximumFractionDigits: 6})}`;
@@ -37,7 +51,9 @@ export function summarizeContext(data, agent = "all") {
         knownCosts++;
     }
     const actions = data?.actions || [];
-    return {calls, latest: calls.at(-1), costs, knownCosts, unknownCosts,
+    const diagnostics = [...new Map((data?.requestDiagnostics || []).filter(row => agent === "all" || row.agentName === agent)
+        .map(row => [row.id, row])).values()].sort((a, b) => b.timestamp - a.timestamp);
+    return {calls, latest: calls.at(-1), costs, knownCosts, unknownCosts, diagnostics,
         archives: actions.filter(row => row.action === "archive").length,
         restores: actions.filter(row => row.action === "restore").length,
         decisions: actions.filter(row => row.action === "cache_decision"), compactions};

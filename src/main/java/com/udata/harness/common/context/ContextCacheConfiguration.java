@@ -9,6 +9,8 @@ import org.noear.solon.core.Props;
 /** Prices are explicitly configured per routed model alias; no vendor prices are hard coded. */
 @Component
 public class ContextCacheConfiguration {
+    @Inject("${agent.context.cache.prefix-diagnostics.enabled:true}")
+    public boolean prefixDiagnosticsEnabled = true;
     @Inject("${agent.context.cache.enabled:true}")
     public boolean enabled = true;
     @Inject("${agent.context.cache.expected-remaining-calls:4}")

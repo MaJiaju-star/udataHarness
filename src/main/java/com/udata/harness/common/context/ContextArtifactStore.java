@@ -391,6 +391,14 @@ public class ContextArtifactStore {
         appendEvent(sessionId, "context-observations.jsonl", event);
     }
 
+    public synchronized void recordRequestDiagnostic(String sessionId, Map<String, Object> event) {
+        appendEvent(sessionId, "request-prefix-diagnostics.jsonl", event);
+    }
+
+    public List<Map<String, Object>> requestDiagnostics(String sessionId, int limit) throws IOException {
+        return eventTail(sessionId, "request-prefix-diagnostics.jsonl", limit);
+    }
+
     synchronized void recordDecision(String sessionId, Map<String, Object> event) {
         appendEvent(sessionId, "context-actions.jsonl", event);
     }
@@ -408,7 +416,11 @@ public class ContextArtifactStore {
 
     /** Keep only a bounded tail in memory; tolerate an interrupted final JSONL write. */
     public List<Map<String, Object>> observations(String sessionId, boolean actions, int limit) throws IOException {
-        Path file = sessionDirectory(sessionId).resolve(actions ? "context-actions.jsonl" : "context-observations.jsonl");
+        return eventTail(sessionId, actions ? "context-actions.jsonl" : "context-observations.jsonl", limit);
+    }
+
+    private List<Map<String, Object>> eventTail(String sessionId, String name, int limit) throws IOException {
+        Path file = sessionDirectory(sessionId).resolve(name);
         java.util.Deque<Map<String, Object>> tail = new java.util.ArrayDeque<>();
         if (!Files.exists(file)) return new ArrayList<>();
         int count = Math.max(1, Math.min(limit, 500));
