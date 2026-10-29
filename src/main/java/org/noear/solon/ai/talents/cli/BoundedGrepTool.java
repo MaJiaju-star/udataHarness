@@ -104,7 +104,9 @@ public final class BoundedGrepTool extends AbsTalent {
      */
     @Override
     public String getInstruction(Prompt prompt) {
-        return "先用 grep 的默认概览定位文件和行号，再用 read 查看相关代码；需要逐条匹配和续页时使用 output_mode=content。path=@tool-results 仅搜索当前会话归档。";
+        return "按业务含义搜索时，先推导源码或配置中的实现表示（如表达式、数值与单位、常量、API 和配置项），结合项目约定构造正则或分次检索，不要只翻译业务词。"
+                + "先用 grep 的默认概览定位文件和行号，再用 read 确认实际行为；需要逐条匹配和续页时使用 output_mode=content。"
+                + "未命中不能直接证明实现不存在，应调整表达式或范围继续查证。path=@tool-results 仅搜索当前会话归档。";
     }
 
     /**
