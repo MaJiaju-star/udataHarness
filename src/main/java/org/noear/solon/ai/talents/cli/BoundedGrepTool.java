@@ -37,34 +37,42 @@ import java.util.regex.PatternSyntaxException;
  *   <li><b>四种输出模式</b>：{@code summary}（默认，按文件聚合并显示少量定位行）、
  *       {@code content}（逐行展示匹配行及前后文）、
  *       {@code files_with_matches}（只定位文件）、{@code count}（统计每个文件的匹配行数）；</li>
- *   <li><b>有界输出</b>：单页默认 {@value #DEFAULT_LIMIT} 行、上限 {@value #MAX_LIMIT} 行，
- *       正文另受 {@value #MAX_BODY_CHARS} 字符预算约束，单条片段截断至 {@value #MAX_SNIPPET_CHARS} 字符；</li>
- *   <li><b>游标续页</b>：结果按键（content 模式为 {@code 文件路径#行号}，其余模式为文件路径）
- *       字典序排序，内容未完时输出 {@code after} 游标，携带相同查询参数即可继续取下一页；</li>
- *   <li><b>安全策略</b>：遍历时跳过隐藏目录与沙盒策略拒绝的路径，以及非文本文件；</li>
+ *   <li><b>有界输出</b>：非 summary 模式单页默认 {@value #DEFAULT_LIMIT} 项、上限 {@value #MAX_LIMIT} 项；
+ *       summary 最多展示 {@value #SUMMARY_FILES} 个文件，每文件 {@value #SUMMARY_SAMPLES} 条片段。
+ *       正文另受 {@value #MAX_BODY_CHARS} 字符预算约束，片段原文预算在 summary/content 模式下分别为
+ *       {@value #SUMMARY_SNIPPET_CHARS}/{@value #MAX_SNIPPET_CHARS} 字符，省略及位置标记另计；</li>
+ *   <li><b>游标续页</b>：非 summary 模式按键（content 模式为 {@code 文件路径#十位补零行号}，
+ *       其余模式为文件路径）字典序排序，内容未完时输出 {@code after} 游标。
+ *       续页需保持查询参数不变；每页重新扫描，文件变更时不保证快照一致性。summary 不支持续页；</li>
+ *   <li><b>安全策略</b>：复用 Solon 忽略与读取守卫，并过滤受保护配置和非文本文件；</li>
  *   <li><b>显式省略</b>：超过 {@value #MAX_FILE_BYTES} 字节的文件、超过 {@value #MAX_LINE_CHARS}
- *       字符的超长行与读取失败的文件不参与匹配，计数后在结果尾部统一告警“搜索不完整”；</li>
+ *       字符的超长行会跳过；读取或遍历失败也会计数，并在结果尾部统一告警“搜索不完整”；</li>
  *   <li><b>非本地挂载降级</b>：非本地逻辑挂载沿用 Solon 原始 grep，且不支持输出模式、
  *       前后文与分页参数；</li>
  *   <li><b>归档检索</b>：{@code path=@tool-results} 时检索当前会话已归档的历史工具结果
  *       （仅接受 {@code [a-f0-9]{64}.txt} 形式的归档文件）。</li>
  * </ul>
+ * <p>输出预算不限制扫描工作量：本地搜索仍遍历整个允许的范围（files_with_matches 在每文件首个命中后
+ * 停止读取该文件）。当前没有扫描时限、总读取量上限或正则匹配超时。</p>
  *
  * @see #grep(String, String, String, String, Integer, String, Integer, Boolean, String, String)
  */
 public final class BoundedGrepTool extends AbsTalent {
-    /** 未显式传 limit 时的单页默认结果数。 */
+    /** 非 summary 模式下，limit 为空或小于 1 时的单页默认结果数。 */
     private static final int DEFAULT_LIMIT = 200;
     /** 单页结果数硬上限（更大的 limit 会被截断到该值）。 */
     private static final int MAX_LIMIT = 500;
-    /** 单次输出正文的字符预算；累计超出即触发续页提示。 */
+    /** 单次输出正文的字符预算；非 summary 模式超出时给出续页提示，summary 则省略其余文件。 */
     private static final int MAX_BODY_CHARS = 32_000;
+    /** 概览最多展示的文件数，按命中行数降序、展示路径升序选择。 */
     private static final int SUMMARY_FILES = 20;
+    /** 概览中每文件最多展示的匹配行数，取文件内最早的匹配行。 */
     private static final int SUMMARY_SAMPLES = 2;
+    /** 概览中单条片段的原文字符预算，省略及位置标记另计。 */
     private static final int SUMMARY_SNIPPET_CHARS = 180;
     /** 读入单行的字符上限；超出部分丢弃并将该行标记为超长（不参与匹配）。 */
     private static final int MAX_LINE_CHARS = 16 * 1024;
-    /** 单条匹配片段的展示上限（字符），超出截断并标记。 */
+    /** content 模式单条匹配片段的原文字符预算，省略及位置标记另计。 */
     private static final int MAX_SNIPPET_CHARS = 1000;
     /** 参与搜索的单文件大小上限（字节），超过则跳过并计数告警。 */
     private static final long MAX_FILE_BYTES = 10L * 1024 * 1024;
@@ -112,24 +120,25 @@ public final class BoundedGrepTool extends AbsTalent {
     /**
      * 按正则搜索文件内容，支持概览、逐行、文件名和计数输出。
      *
-     * <p>执行流程：目标为非本地逻辑挂载时，若请求了输出模式、前后文或分页等高级参数
-     * 直接返回错误，否则降级为 Solon 原始 grep（结果可能不完整）。本地搜索则先校验
+     * <p>执行流程：目标为非本地逻辑挂载时，仅允许省略输出模式或显式指定 content，且不传
+     * 前后文、分页参数、不启用 literal；否则返回错误。允许时降级为 Solon 原始 grep（结果可能不完整）。本地搜索则先校验
      * pattern、output_mode、include，再遍历目标目录树（跳过隐藏/被拒目录、非文本文件、
-     * 超大文件与超长行），{@code content} 模式下维护一个容量为 {@code pageSize + 1} 的
-     * 按键逆序最大堆，遍历结束后按键升序截取当前页，并在超出 {@value #MAX_BODY_CHARS}
-     * 字符预算时提前截断；所有被跳过的项目计数并在尾部告警。</p>
+     * 超大文件与超长行）。summary 汇总全局命中行数并保留命中最多的文件；其余模式维护容量为
+     * {@code pageSize + 1} 的按键逆序最大堆，扫描结束后按键升序截取当前页，再按字符预算截断。
+     * limit 与 after 不会提前终止目录扫描；超长行、超大文件和读取/遍历失败会计数告警，
+     * 正常忽略或策略过滤的路径不计入这些告警。</p>
      *
      * @param pattern      正则表达式；{@code literal=true} 时按字面匹配。必填，不超过 1000 字符
      * @param path         搜索根目录，缺省为当前工作区 {@code .}；{@code @tool-results} 表示会话归档
      * @param include      文件名 glob 过滤（如 {@code *.{ts,tsx}}），仅匹配文件名本身，可空
-     * @param outputMode   {@code content}（默认）/ {@code files_with_matches} / {@code count}
+     * @param outputMode   {@code summary}（默认）/ {@code content} / {@code files_with_matches} / {@code count}
      * @param contextLines content 模式下每条匹配前后各展示的行数，缺省 0、上限 3
-     * @param after        续页游标（上一页最后一条的键），为空表示取首页
-     * @param limit        单页最多返回项数，缺省 {@value #DEFAULT_LIMIT}、上限 {@value #MAX_LIMIT}
+     * @param after        非 summary 模式的续页游标（上一页最后一条的键），为空表示取首页
+     * @param limit        非 summary 模式单页最多返回项数，缺省或小于 1 时为 {@value #DEFAULT_LIMIT}，上限 {@value #MAX_LIMIT}；summary 忽略此参数
      * @param literal      {@code true} 时按字面字符串搜索，不将 pattern 当正则
      * @param __cwd        当前工作目录（由框架注入）
      * @param __sessionId  当前会话 ID（由框架注入；解析 {@code @tool-results} 时必需）
-     * @return 结果页文本，尾部带“内容未完/搜索完毕”标记；参数非法时返回 {@code 错误：…} 说明
+     * @return 概览或结果页文本，附扫描完整性或续页提示；参数非法时返回 {@code 错误：…} 说明
      * @throws IOException 遍历目标路径失败时抛出
      */
     @ToolMapping(name = "grep", description = "定位文本所在文件和行号。默认返回命中分布与关键片段；需要逐条结果时用 output_mode=content，再用 read 查看代码。")
@@ -377,10 +386,10 @@ public final class BoundedGrepTool extends AbsTalent {
      * @param pattern      正则表达式；{@code literal=true} 时按字面匹配
      * @param path         搜索根目录，缺省为当前工作区 {@code .}
      * @param include      文件名 glob 过滤，可空
-     * @param outputMode   {@code content}（默认）/ {@code files_with_matches} / {@code count}
+     * @param outputMode   {@code summary}（默认）/ {@code content} / {@code files_with_matches} / {@code count}
      * @param contextLines content 模式下每条匹配前后各展示的行数，缺省 0、上限 3
-     * @param after        续页游标，为空表示取首页
-     * @param limit        单页最多返回项数，缺省 {@value #DEFAULT_LIMIT}、上限 {@value #MAX_LIMIT}
+     * @param after        非 summary 模式的续页游标，为空表示取首页
+     * @param limit        非 summary 模式单页最多返回项数，缺省或小于 1 时为 {@value #DEFAULT_LIMIT}，上限 {@value #MAX_LIMIT}；summary 忽略此参数
      * @param literal      {@code true} 时按字面字符串搜索，不将 pattern 当正则
      * @param __cwd        当前工作目录
      * @return 结果页文本；参数非法时返回 {@code 错误：…} 说明
